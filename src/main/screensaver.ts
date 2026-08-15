@@ -35,6 +35,10 @@ export class ScreensaverController {
   private lastSeq = 0
   /** 最近一次激活时间:进入宽限期内不因空闲检测退出(避免点击按钮后立刻被踢出)。 */
   private activatedAt = 0
+  /** 最近一次退出时间:空闲自动激活的冷却(防止"点击关闭后立刻又弹出")。 */
+  private lastDeactivatedAt = 0
+  /** 本次激活的来源(manual/idle),决定安全网是否生效。 */
+  private activationOrigin: 'manual' | 'idle' | 'system' = 'manual'
 
   constructor(
     private config: ConfigStore,
@@ -92,9 +96,22 @@ export class ScreensaverController {
     this.window.webContents.send('screensaver:event', frame)
   }
 
-  /** 立即进入 AI 屏保。 */
-  async activate(): Promise<void> {
+  /**
+   * 进入 AI 屏保。
+   * @param origin - manual:用户主动(按钮、托盘);system:Windows 系统屏保 /s 拉起;
+   *   idle:空闲检测自动触发。
+   *   只有 manual 不受冷却约束(用户明确意愿);system/idle 距上次退出 5 分钟内拒绝,
+   *   防止"退出后立刻又被系统/空闲检测拉起"的循环弹出。
+   *   idle 起源还启用"空闲回落安全网"(机器空闲时才激活,用户活动即退出);
+   *   manual 激活时机器往往并不空闲,安全网会误杀屏保,因此不启用。
+   */
+  async activate(origin: 'manual' | 'idle' | 'system' = 'manual'): Promise<void> {
     if (this.active) return
+    if (origin !== 'manual' && Date.now() - this.lastDeactivatedAt < 300000) {
+      console.log('[screensaver] 退出冷却中(5 分钟),跳过自动激活 origin=', origin)
+      return
+    }
+    this.activationOrigin = origin
     // 确保 harness 可用(托管模式自动拉起,并等待就绪)。
     const status = this.harness.status()
     if (status.state === 'idle' || status.state === 'stopped' || status.state === 'error') {
@@ -144,7 +161,17 @@ export class ScreensaverController {
       if (this.window === win) this.window = null
       this.active = false
     })
-    win.on('leave-full-screen', () => this.deactivate())
+    win.on('leave-full-screen', () => this.deactivate('leave-fullscreen'))
+    // 主进程输入兜底:任何真实键盘/鼠标输入都退出 —— 不依赖渲染进程 JS 状态,
+    // 即使页面崩溃也能关闭。宽限 2 秒避免窗口打开瞬间的合成事件误触发。
+    // 排除 mouseMove:鼠标抖动/合成移动不应触发退出。
+    win.webContents.on('before-input-event', (_event, input) => {
+      if (input.type === 'keyDown' || input.type === 'mouseDown' || input.type === 'mouseWheel') {
+        if (Date.now() - this.activatedAt > 2000) {
+          this.deactivate('input')
+        }
+      }
+    })
     const debugKeep = process.argv.includes('--ss-debug')
     await win.loadFile(join(__dirname, '..', 'renderer', 'screensaver.html'), debugKeep ? { query: { keep: '1' } } : undefined)
     console.log('[screensaver] 窗口已加载,active=', this.active)
@@ -157,6 +184,7 @@ export class ScreensaverController {
     this.active = false
     this.lastSessionId = this.sessionId
     this.sessionId = null
+    this.lastDeactivatedAt = Date.now()
     const win = this.window
     this.window = null
     if (win !== null && !win.isDestroyed()) win.destroy()
@@ -346,11 +374,13 @@ export class ScreensaverController {
   }
 
   private async onIdleTick(): Promise<void> {
-    // 屏保激活期间:检测到用户活动(空闲时间回落)立即退出 —— 渲染进程事件失效时的安全网。
-    // 进入宽限期(3 秒)内不退出,避免激活瞬间鼠标尚未移开就被关闭;--ss-debug 时禁用。
+    // 屏保激活期间:空闲起源的安全网 —— 空闲时间回落(用户回来)立即退出,
+    // 渲染进程事件失效时的兜底。进入宽限期(3 秒)内不退出;--ss-debug 时禁用。
+    // manual 起源不启用:手动进入时机器通常并不空闲,安全网会误杀屏保。
     if (this.active) {
       const debugKeep = process.argv.includes('--ss-debug')
-      if (!debugKeep && Date.now() - this.activatedAt > 3000 &&
+      if (!debugKeep && this.activationOrigin === 'idle' &&
+          Date.now() - this.activatedAt > 3000 &&
           powerMonitor.getSystemIdleTime() < ACTIVITY_GRACE_SECONDS) {
         this.deactivate('idle-reset')
       }
@@ -359,10 +389,11 @@ export class ScreensaverController {
     const cfg = this.config.get().screensaver
     if (!cfg.enabled || this.locked) return
     if (this.window !== null && !this.window.isDestroyed()) return
+    // 退出冷却由 activate() 统一处理(system/idle 起源 5 分钟内拒绝)。
     const idleSeconds = powerMonitor.getSystemIdleTime()
     if (idleSeconds >= cfg.idleMinutes * 60) {
       try {
-        await this.activate()
+        await this.activate('idle')
       } catch (error) {
         console.error('[screensaver] 激活失败:', error)
         // 避免失败后立刻重试风暴:3 分钟后重试。

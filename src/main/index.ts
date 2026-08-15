@@ -36,7 +36,8 @@ if (!gotLock) {
     const wantsScreensaver = argv.some((arg) => SCREENSAVER_ARGS.includes(arg.toLowerCase()))
     console.log('[main] wantsScreensaver:', wantsScreensaver)
     if (wantsScreensaver) {
-      void screensaver.activate().catch((error) => console.error('[screensaver] 激活失败:', error))
+      // Windows 系统屏保拉起:受退出冷却约束,防止"退出后又立刻被拉起"循环。
+      void screensaver.activate('system').catch((error) => console.error('[screensaver] 激活失败:', error))
     } else if (mainWindow !== null && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.show()
@@ -71,7 +72,7 @@ if (!gotLock) {
       screensaver.start()
       await harness.start()
       try {
-        await screensaver.activate()
+        await screensaver.activate('system')
       } catch (error) {
         console.error('[screensaver] 屏保模式启动失败:', error)
         app.quit()
