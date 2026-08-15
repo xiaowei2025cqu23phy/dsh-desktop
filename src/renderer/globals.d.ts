@@ -29,6 +29,7 @@ interface ScreensaverConfigView {
   autoTask: boolean
   taskPrompt: string
   taskCwd: string | null
+  taskMaxMinutes: number
   keepSessionAfterExit: boolean
 }
 

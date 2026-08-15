@@ -86,22 +86,15 @@ export class ModelManager {
 
   /**
    * 设置默认模型:通过 session.selectModel 写入(host 侧会同时持久化为新会话默认)。
-   * 应用到最近一个会话;没有会话时创建一个空会话承载该选择。
+   *
+   * 不依赖 session.list(该接口在 harness 高负载时会非常慢):直接创建一个空会话
+   * 承载该选择。会话会出现在会话列表中,可被后续任务复用。
    * @returns 被应用的会话 id。
    */
   async setDefault(provider: string, model: string): Promise<{ appliedToSession: string }> {
     const client = this.get()
-    let sessionId: string | null = null
-    try {
-      const list = await client.rpc<{ items: Array<{ sessionId: string }> }>('session.list')
-      sessionId = list.items[0]?.sessionId ?? null
-    } catch {
-      sessionId = null
-    }
-    if (sessionId === null) {
-      const created = await client.rpc<{ sessionId: string }>('session.create', {})
-      sessionId = created.sessionId
-    }
+    const created = await client.rpc<{ sessionId: string }>('session.create', {})
+    const sessionId = created.sessionId
     await client.rpc('session.selectModel', { sessionId, provider, model })
     return { appliedToSession: sessionId }
   }

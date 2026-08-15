@@ -127,6 +127,8 @@ body {
   border-radius: 12px;
   padding: 14px 18px;
   line-height: 1.75;
+}
+.msg-assistant .msg-text {
   white-space: pre-wrap;
   word-break: break-word;
 }

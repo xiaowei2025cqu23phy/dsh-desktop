@@ -98,6 +98,11 @@
           <label for="ss-cwd">任务工作目录(可选)</label>
           <input id="ss-cwd" type="text" placeholder="留空使用 harness 默认目录" />
         </div>
+        <div class="field">
+          <label for="ss-max">任务超时(分钟,防失控自动停止)</label>
+          <input id="ss-max" type="number" min="1" max="120" />
+        </div>
+        <p class="hint">提示:默认不自动跑任务,进入屏保只显示环境画面;勾选「自动启动任务」才会执行,并受超时护栏保护。</p>
         <div class="field-row">
           <button id="btn-ss-now" class="btn btn-primary">立即进入 AI 屏保</button>
         </div>

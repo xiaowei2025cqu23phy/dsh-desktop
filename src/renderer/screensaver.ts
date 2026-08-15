@@ -19,11 +19,17 @@ interface StreamMessage {
   root: HTMLElement
   body: HTMLElement
   think: HTMLElement | null
+  /** 思考文本节点:增量 appendData,避免全量重建 DOM。 */
+  thinkNode: Text | null
+  /** 正文文本节点:增量 appendData。 */
+  textNode: Text | null
   text: string
   thinking: string
   toolName: string
   toolState: HTMLElement | null
   toolArgs: HTMLElement | null
+  /** 工具参数文本节点:增量追加。 */
+  argsNode: Text | null
   streaming: boolean
 }
 
@@ -89,11 +95,14 @@ function addMessage(kind: StreamMessage['kind']): StreamMessage {
     root,
     body,
     think: null,
+    thinkNode: null,
+    textNode: null,
     text: '',
     thinking: '',
     toolName: '',
     toolState: null,
     toolArgs: null,
+    argsNode: null,
     streaming: false,
   }
 
@@ -111,11 +120,27 @@ function addMessage(kind: StreamMessage['kind']): StreamMessage {
     head.appendChild(toolState)
     const toolArgs = document.createElement('div')
     toolArgs.className = 'tool-args'
+    message.argsNode = document.createTextNode('')
+    toolArgs.appendChild(message.argsNode)
     inner.appendChild(head)
     inner.appendChild(toolArgs)
     body.appendChild(inner)
     message.toolState = toolState
     message.toolArgs = toolArgs
+  } else if (kind === 'assistant') {
+    root.appendChild(avatar)
+    const think = document.createElement('div')
+    think.className = 'msg-think'
+    think.style.display = 'none'
+    message.thinkNode = document.createTextNode('')
+    think.appendChild(message.thinkNode)
+    const text = document.createElement('div')
+    text.className = 'msg-text'
+    message.textNode = document.createTextNode('')
+    text.appendChild(message.textNode)
+    body.appendChild(think)
+    body.appendChild(text)
+    root.appendChild(body)
   } else {
     root.appendChild(avatar)
     root.appendChild(body)
@@ -133,20 +158,27 @@ function lastAssistant(): StreamMessage | null {
   return null
 }
 
-function renderText(message: StreamMessage): void {
-  if (message.kind === 'tool') {
-    if (message.toolArgs !== null) {
-      message.toolArgs.textContent = message.text
+/** 增量追加一段文本到正文/思考文本节点(性能:避免每 token 全量重建 DOM)。 */
+function appendText(message: StreamMessage, kind: 'text' | 'thinking', delta: string): void {
+  if (delta === '') return
+  if (kind === 'text') {
+    message.text += delta
+    if (message.textNode !== null) message.textNode.appendData(delta)
+  } else {
+    message.thinking += delta
+    if (message.thinkNode !== null) {
+      if (message.think !== null) message.think.style.display = ''
+      message.thinkNode.appendData(delta)
     }
-    return
   }
-  let html = ''
-  if (message.thinking !== '') {
-    html += `<div class="msg-think">${S.escapeHtml(message.thinking)}</div>`
-  }
-  html += S.escapeHtml(message.text)
-  message.body.innerHTML = html
-  message.body.classList.toggle('cursor-blink', message.streaming)
+  message.body.classList.add('cursor-blink')
+}
+
+/** 结束流式状态:移除光标闪烁。 */
+function finishStreaming(message: StreamMessage | null): void {
+  if (message === null) return
+  message.streaming = false
+  message.body.classList.remove('cursor-blink')
 }
 
 // ---- 事件折叠 ----
@@ -186,12 +218,7 @@ function handleSessionEvent(event: { type?: unknown; seq?: unknown; data?: unkno
           message.streaming = true
           state.messages.push(message)
         }
-        if (chunk.type === 'text-delta') {
-          message.text += delta
-        } else {
-          message.thinking += delta
-        }
-        renderText(message)
+        appendText(message, chunk.type === 'text-delta' ? 'text' : 'thinking', delta)
         autoScroll()
       } else if (chunk.type === 'tool-call-delta') {
         const toolName = typeof chunk.name === 'string' ? chunk.name : message?.toolName ?? '工具'
@@ -207,21 +234,17 @@ function handleSessionEvent(event: { type?: unknown; seq?: unknown; data?: unkno
           state.messages.push(message)
         }
         message.text += deltaArgs
-        if (message.toolArgs !== null) message.toolArgs.textContent = message.text
+        if (message.argsNode !== null) message.argsNode.appendData(deltaArgs)
         if (message.toolState !== null && message.toolState.textContent === '') {
           message.toolState.textContent = '调用中…'
         }
         autoScroll()
       } else if (chunk.type === 'block-end') {
         if (message !== null) {
-          message.streaming = false
-          renderText(message)
+          finishStreaming(message)
         }
       } else if (chunk.type === 'finish') {
-        if (message !== null) {
-          message.streaming = false
-          renderText(message)
-        }
+        finishStreaming(message)
         state.status = 'idle'
         setStatus('空闲(本轮完成)', 'idle')
       }
@@ -235,10 +258,10 @@ function handleSessionEvent(event: { type?: unknown; seq?: unknown; data?: unkno
         message = addMessage('assistant')
         state.messages.push(message)
       }
-      message.streaming = false
+      finishStreaming(message)
       if (fullText !== '') {
         message.text = fullText
-        renderText(message)
+        if (message.textNode !== null) message.textNode.textContent = fullText
       }
       autoScroll()
       break
@@ -252,7 +275,7 @@ function handleSessionEvent(event: { type?: unknown; seq?: unknown; data?: unkno
         message.toolState.textContent = '调用中…'
         message.toolState.className = 'tool-state'
       }
-      if (message.toolArgs !== null) message.toolArgs.textContent = message.text
+      if (message.argsNode !== null) message.argsNode.textContent = message.text
       message.root.querySelector('.tool-name')!.textContent = toolName
       state.messages.push(message)
       break
@@ -393,7 +416,7 @@ async function boot(): Promise<void> {
 let exitArmedAt = 0
 
 function bindExitEvents(): void {
-  exitArmedAt = Date.now() + 1500
+  exitArmedAt = Date.now() + 800
   const exit = (): void => {
     if (Date.now() < exitArmedAt) return
     // 调试/演示钩子:window.__SS_KEEP_OPEN__ = true 时保持打开。
