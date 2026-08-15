@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:" />
+  <title>AI 屏保 — DeepSeek Harness</title>
+  <link rel="stylesheet" href="./screensaver.css" />
+</head>
+<body>
+  <div id="root">
+    <header id="ss-top">
+      <div class="ss-top-left">
+        <span class="ss-logo">◈</span>
+        <span id="ss-title" class="ss-title">AI 屏保</span>
+        <span id="ss-status" class="ss-status">启动中…</span>
+      </div>
+      <div class="ss-top-right">
+        <span id="ss-model" class="ss-model"></span>
+        <span id="ss-clock" class="ss-clock">--:--:--</span>
+      </div>
+    </header>
+
+    <main id="ss-stream" class="ss-stream">
+      <div id="ss-ambient" class="ss-ambient">
+        <div class="ss-ambient-logo">◈</div>
+        <h1 id="ss-ambient-title">DeepSeek Harness</h1>
+        <p class="ss-ambient-sub">AI 屏保 · 空闲时让智能体替你工作</p>
+        <div id="ss-ambient-clock" class="ss-ambient-clock">--:--</div>
+      </div>
+    </main>
+
+    <footer id="ss-bottom">
+      <span class="ss-hint">移动鼠标或按任意键退出</span>
+      <span id="ss-url" class="ss-url"></span>
+    </footer>
+  </div>
+  <div id="toast-host"></div>
+  <script src="./shared.js"></script>
+  <script src="./screensaver.js"></script>
+</body>
+</html>

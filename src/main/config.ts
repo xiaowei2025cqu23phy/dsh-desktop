@@ -1,0 +1,126 @@
+/**
+ * 应用配置持久化(userData/config.json)。
+ * 配置项:harness 托管、AI 屏保、窗口尺寸。
+ */
+
+import { app } from 'electron'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+
+export interface HarnessConfig {
+  /** auto: 先探测已运行实例,没有则托管启动;external: 只连接外部地址;managed: 始终自己启动。 */
+  mode: 'auto' | 'external' | 'managed'
+  /** external 模式下的服务地址。 */
+  url: string
+  /** managed/auto 模式下监听的端口。 */
+  port: number
+  /** 托管启动命令模板,{port} 会被替换为实际端口。 */
+  command: string
+  /** 应用启动时自动启动托管服务。 */
+  autoStart: boolean
+  /** 托管进程意外退出后自动重启。 */
+  restartOnCrash: boolean
+  /** 退出应用时关闭托管服务。 */
+  stopOnQuit: boolean
+  /** 可选的 DSH_HOME 环境变量覆盖。 */
+  dshHome: string | null
+}
+
+export interface ScreensaverConfig {
+  /** 空闲检测开启。 */
+  enabled: boolean
+  /** 空闲多少分钟后进入 AI 屏保。 */
+  idleMinutes: number
+  /** 进入屏保时自动启动一个 agent 任务。 */
+  autoTask: boolean
+  /** 自动任务提示词。 */
+  taskPrompt: string
+  /** 任务工作目录(空则使用 harness 默认)。 */
+  taskCwd: string | null
+  /** 退出屏保后保留任务继续在后台运行。 */
+  keepSessionAfterExit: boolean
+}
+
+export interface AppConfig {
+  harness: HarnessConfig
+  screensaver: ScreensaverConfig
+  window: { width: number; height: number }
+}
+
+const DEFAULTS: AppConfig = {
+  harness: {
+    mode: 'auto',
+    url: 'http://127.0.0.1:3080',
+    port: 3080,
+    command: 'npx --yes @deepseek-ai/dsh web --port {port}',
+    autoStart: true,
+    restartOnCrash: true,
+    stopOnQuit: true,
+    dshHome: null,
+  },
+  screensaver: {
+    enabled: false,
+    idleMinutes: 5,
+    autoTask: true,
+    taskPrompt:
+      '你是运行在 AI 屏保中的 DeepSeek Harness 智能体。请自主完成一项有价值的任务,例如:浏览今天的科技新闻并整理要点、构思一段创意文字、分析当前工作区代码给出改进建议。完成后用简洁的中文总结你做了什么。',
+    taskCwd: null,
+    keepSessionAfterExit: true,
+  },
+  window: { width: 1280, height: 800 },
+}
+
+export class ConfigStore {
+  private config: AppConfig
+  private readonly path: string
+
+  constructor() {
+    this.path = join(app.getPath('userData'), 'config.json')
+    this.config = this.load()
+  }
+
+  private load(): AppConfig {
+    try {
+      if (!existsSync(this.path)) return structuredClone(DEFAULTS)
+      const raw = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<AppConfig>
+      return this.merge(DEFAULTS, raw)
+    } catch {
+      return structuredClone(DEFAULTS)
+    }
+  }
+
+  private merge<T>(base: T, patch: Partial<T>): T {
+    const out: Record<string, unknown> = { ...(base as Record<string, unknown>) }
+    for (const [key, value] of Object.entries(patch as Record<string, unknown>)) {
+      if (value === undefined) continue
+      const baseValue = (base as Record<string, unknown>)[key]
+      if (baseValue !== null && typeof baseValue === 'object' && !Array.isArray(baseValue) &&
+          value !== null && typeof value === 'object' && !Array.isArray(value)) {
+        out[key] = this.merge(baseValue, value)
+      } else {
+        out[key] = value
+      }
+    }
+    return out as T
+  }
+
+  get(): AppConfig {
+    return this.config
+  }
+
+  /** 合并指定分区后持久化。 */
+  update<K extends keyof AppConfig>(section: K, patch: Partial<AppConfig[K]>): AppConfig[K] {
+    this.config[section] = this.merge(this.config[section], patch)
+    this.save()
+    return this.config[section]
+  }
+
+  private save(): void {
+    try {
+      mkdirSync(dirname(this.path), { recursive: true })
+      writeFileSync(this.path, JSON.stringify(this.config, null, 2), 'utf8')
+    } catch (error) {
+      console.error('[config] 保存失败:', error)
+    }
+  }
+}
