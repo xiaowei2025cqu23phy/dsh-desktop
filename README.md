@@ -56,6 +56,14 @@ npm start        # 构建并启动桌面端
 - **external**:仅连接外部地址(如局域网内的另一台机器)。
 - **managed**:始终由桌面端托管启动,可自定义启动命令(如指向本地仓库的 `pnpm dsh web --port {port}`)。
 
+### 外观 · 壁纸
+
+「设置 → 外观」可分别自定义:
+
+- **主窗口壁纸**:顶栏与设置抽屉呈现毛玻璃透出效果(不影响内嵌 Web UI 的显示区域)。
+- **屏保壁纸**:全屏背景图,带可调遮罩(0.1~0.9)保证文字可读。
+- 图片会复制到应用数据目录(`%APPDATA%/DeepSeek Harness Desktop/wallpapers`),原图移动/删除不影响;支持 png/jpg/jpeg/gif/webp/bmp。
+
 ## 开发
 
 ```sh

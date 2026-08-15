@@ -45,9 +45,19 @@ export interface ScreensaverConfig {
   systemScreensaverBackup: Record<string, string> | null
 }
 
+export interface AppearanceConfig {
+  /** 主窗口壁纸图片路径(null = 默认深色)。 */
+  windowWallpaper: string | null
+  /** 屏保壁纸图片路径(null = 默认深色)。 */
+  screensaverWallpaper: string | null
+  /** 壁纸遮罩强度 0~0.9(保证文字可读)。 */
+  mask: number
+}
+
 export interface AppConfig {
   harness: HarnessConfig
   screensaver: ScreensaverConfig
+  appearance: AppearanceConfig
   window: { width: number; height: number }
 }
 
@@ -73,6 +83,11 @@ const DEFAULTS: AppConfig = {
     keepSessionAfterExit: true,
     systemScreensaverBackup: null,
   },
+  appearance: {
+    windowWallpaper: null,
+    screensaverWallpaper: null,
+    mask: 0.55,
+  },
   window: { width: 1280, height: 800 },
 }
 
@@ -88,9 +103,12 @@ export class ConfigStore {
   private load(): AppConfig {
     try {
       if (!existsSync(this.path)) return structuredClone(DEFAULTS)
-      const raw = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<AppConfig>
+      // 剥离 UTF-8 BOM:PowerShell/部分编辑器保存的 JSON 可能带 BOM,JSON.parse 不接受。
+      const text = readFileSync(this.path, 'utf8').replace(/^\uFEFF/, '')
+      const raw = JSON.parse(text) as Partial<AppConfig>
       return this.merge(DEFAULTS, raw)
-    } catch {
+    } catch (error) {
+      console.error('[config] 配置文件解析失败,使用默认值:', String(error))
       return structuredClone(DEFAULTS)
     }
   }

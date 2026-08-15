@@ -44,6 +44,12 @@ const api = {
       return () => { ipcRenderer.removeListener('screensaver:event', listener) }
     },
   },
+  appearance: {
+    getConfig: () => ipcRenderer.invoke('appearance:getConfig'),
+    pickAndSet: (kind: 'window' | 'screensaver') => ipcRenderer.invoke('appearance:pickAndSet', kind),
+    clear: (kind: 'window' | 'screensaver') => ipcRenderer.invoke('appearance:clear', kind),
+    setMask: (mask: number) => ipcRenderer.invoke('appearance:setMask', mask),
+  },
   app: {
     openSettingsFolder: () => ipcRenderer.invoke('app:openSettingsFolder'),
     quit: () => ipcRenderer.invoke('app:quit'),

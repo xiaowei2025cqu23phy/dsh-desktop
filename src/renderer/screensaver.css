@@ -26,6 +26,28 @@ body {
   cursor: none;
 }
 
+/* 壁纸层:图片铺满 + 遮罩保证文字可读。 */
+body.has-wallpaper {
+  background-image: var(--wallpaper-image, none);
+  background-size: cover;
+  background-position: center;
+}
+body.has-wallpaper::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 6, 12, var(--wallpaper-mask, 0.55));
+  pointer-events: none;
+  z-index: 0;
+}
+body.has-wallpaper #ss-top,
+body.has-wallpaper #ss-bottom {
+  background: linear-gradient(180deg, rgba(4, 6, 11, 0.55), transparent);
+}
+body.has-wallpaper #ss-bottom {
+  background: linear-gradient(0deg, rgba(4, 6, 11, 0.55), transparent);
+}
+
 #root { display: flex; flex-direction: column; height: 100vh; }
 
 /* ---- 顶栏 ---- */

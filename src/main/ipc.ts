@@ -3,6 +3,7 @@
  */
 
 import { BrowserWindow, ipcMain, shell } from 'electron'
+import type { AppearanceManager } from './appearance'
 import type { ConfigStore } from './config'
 import type { HarnessManager } from './harness'
 import type { ModelManager } from './models'
@@ -13,6 +14,7 @@ export interface IpcDeps {
   harness: HarnessManager
   models: ModelManager
   screensaver: ScreensaverController
+  appearance: AppearanceManager
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -47,6 +49,18 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('models:removeProvider', (_event, id: string) => deps.models.removeProvider(id))
   ipcMain.handle('models:discover', (_event, baseURL: string, api: string, apiKey: string) =>
     deps.models.discoverModels(baseURL, api, apiKey))
+
+  // ---- 外观 ----
+  ipcMain.handle('appearance:getConfig', () => deps.appearance.getConfig())
+  ipcMain.handle('appearance:pickAndSet', async (_event, kind: string) => {
+    if (kind !== 'window' && kind !== 'screensaver') throw new Error('未知的壁纸类型')
+    return deps.appearance.pickAndSet(kind)
+  })
+  ipcMain.handle('appearance:clear', (_event, kind: string) => {
+    if (kind !== 'window' && kind !== 'screensaver') throw new Error('未知的壁纸类型')
+    return deps.appearance.clear(kind)
+  })
+  ipcMain.handle('appearance:setMask', (_event, mask: number) => deps.appearance.setMask(mask))
 
   // ---- 应用 ----
   ipcMain.handle('app:openSettingsFolder', async () => {

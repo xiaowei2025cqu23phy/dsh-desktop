@@ -132,7 +132,7 @@ async function applyModelSelection(): Promise<void> {
 async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
-  await Promise.all([loadHarnessConfig(), loadScreensaverConfig(), loadRegistered(), refreshLogs()])
+  await Promise.all([loadHarnessConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(), refreshLogs()])
   if (logsTimer === null) {
     logsTimer = setInterval(() => { if (drawerOpen) void refreshLogs() }, 3000)
   }
@@ -262,6 +262,58 @@ async function saveGatewayProvider(): Promise<void> {
   }
 }
 
+// ---- 外观:壁纸 ----
+
+function applyWindowWallpaper(config: {
+  windowWallpaper: string | null
+  screensaverWallpaper: string | null
+  mask: number
+}): void {
+  const body = document.body
+  if (config.windowWallpaper !== null) {
+    body.style.setProperty('--wallpaper-image', `url("file:///${config.windowWallpaper.replace(/\\/g, '/')}")`)
+    body.style.setProperty('--wallpaper-mask', String(config.mask))
+    body.classList.add('has-wallpaper')
+    $id('wall-window-name').textContent = config.windowWallpaper.split(/[\\/]/).pop() ?? ''
+  } else {
+    body.classList.remove('has-wallpaper')
+    body.style.removeProperty('--wallpaper-image')
+    $id('wall-window-name').textContent = '默认深色'
+  }
+  input('wall-mask').value = String(config.mask)
+  $id('wall-screensaver-name').textContent =
+    config.screensaverWallpaper === null ? '默认深色' : (config.screensaverWallpaper.split(/[\\/]/).pop() ?? '')
+}
+
+async function loadAppearance(): Promise<void> {
+  try {
+    applyWindowWallpaper(await API.appearance.getConfig())
+  } catch (error) {
+    S.toast(`读取外观配置失败:${String(error)}`, 'error')
+  }
+}
+
+async function pickWallpaper(kind: 'window' | 'screensaver'): Promise<void> {
+  try {
+    const result = await API.appearance.pickAndSet(kind)
+    if (result !== null) {
+      S.toast(kind === 'window' ? '主窗口壁纸已更新' : '屏保壁纸已更新', 'ok')
+      await loadAppearance()
+    }
+  } catch (error) {
+    S.toast(`设置壁纸失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+  }
+}
+
+async function clearWallpaper(kind: 'window' | 'screensaver'): Promise<void> {
+  try {
+    await API.appearance.clear(kind)
+    await loadAppearance()
+  } catch (error) {
+    S.toast(`清除壁纸失败:${String(error)}`, 'error')
+  }
+}
+
 // ---- 事件绑定 ----
 
 function bind(): void {
@@ -298,6 +350,20 @@ function bind(): void {
     })
   })
   $id('btn-open-webui').addEventListener('click', () => void API.harness.openWebUi())
+
+  // 外观
+  $id('btn-wall-window').addEventListener('click', () => void pickWallpaper('window'))
+  $id('btn-wall-window-clear').addEventListener('click', () => void clearWallpaper('window'))
+  $id('btn-wall-screensaver').addEventListener('click', () => void pickWallpaper('screensaver'))
+  $id('btn-wall-screensaver-clear').addEventListener('click', () => void clearWallpaper('screensaver'))
+  let maskTimer: ReturnType<typeof setTimeout> | null = null
+  input('wall-mask').addEventListener('input', () => {
+    document.body.style.setProperty('--wallpaper-mask', input('wall-mask').value)
+    if (maskTimer !== null) clearTimeout(maskTimer)
+    maskTimer = setTimeout(() => {
+      void API.appearance.setMask(Number(input('wall-mask').value)).catch(() => { /* 忽略 */ })
+    }, 400)
+  })
 
   // 屏保设置
   input('ss-enabled').addEventListener('change', () =>
@@ -356,6 +422,7 @@ function init(): void {
   void refreshStatus()
   setInterval(() => void refreshStatus(), 2000)
   void loadModels()
+  void loadAppearance()
 }
 
 init()

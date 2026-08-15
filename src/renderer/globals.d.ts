@@ -40,6 +40,12 @@ interface ServerRequestFrame {
   payload: unknown
 }
 
+interface AppearanceConfigView {
+  windowWallpaper: string | null
+  screensaverWallpaper: string | null
+  mask: number
+}
+
 interface DesktopApi {
   harness: {
     getStatus(): Promise<HarnessStatus>
@@ -72,6 +78,12 @@ interface DesktopApi {
     attach(): Promise<{ sessionId: string | null; lastSeq: number }>
     reportSessionId(sessionId: string): void
     onEvent(callback: (frame: ServerRequestFrame) => void): () => void
+  }
+  appearance: {
+    getConfig(): Promise<AppearanceConfigView>
+    pickAndSet(kind: 'window' | 'screensaver'): Promise<{ path: string } | null>
+    clear(kind: 'window' | 'screensaver'): Promise<AppearanceConfigView>
+    setMask(mask: number): Promise<AppearanceConfigView>
   }
   app: {
     openSettingsFolder(): Promise<{ opened: true }>

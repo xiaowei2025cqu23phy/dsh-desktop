@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; connect-src http://127.0.0.1:* http://localhost:*" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http: file:; connect-src http://127.0.0.1:* http://localhost:*" />
   <title>DeepSeek Harness Desktop</title>
   <link rel="stylesheet" href="./main.css" />
 </head>
@@ -73,6 +73,30 @@
           <button id="btn-restart" class="btn">重启服务</button>
           <button id="btn-open-settings" class="btn">打开 settings.yaml</button>
           <button id="btn-open-webui" class="btn">打开 Web UI</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>外观 · 壁纸</h3>
+        <div class="field">
+          <label>主窗口壁纸</label>
+          <div class="field-row">
+            <button id="btn-wall-window" class="btn">选择图片…</button>
+            <button id="btn-wall-window-clear" class="btn btn-ghost">清除</button>
+            <span id="wall-window-name" class="hint"></span>
+          </div>
+        </div>
+        <div class="field">
+          <label>屏保壁纸</label>
+          <div class="field-row">
+            <button id="btn-wall-screensaver" class="btn">选择图片…</button>
+            <button id="btn-wall-screensaver-clear" class="btn btn-ghost">清除</button>
+            <span id="wall-screensaver-name" class="hint"></span>
+          </div>
+        </div>
+        <div class="field">
+          <label for="wall-mask">壁纸遮罩(0.1~0.9,越大越暗、文字越清晰)</label>
+          <input id="wall-mask" type="range" min="0.1" max="0.9" step="0.05" />
         </div>
       </section>
 
