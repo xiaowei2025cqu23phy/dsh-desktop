@@ -32,7 +32,9 @@ if (!gotLock) {
   let quitting = false
 
   app.on('second-instance', (_event, argv) => {
+    console.log('[main] second-instance argv:', JSON.stringify(argv))
     const wantsScreensaver = argv.some((arg) => SCREENSAVER_ARGS.includes(arg.toLowerCase()))
+    console.log('[main] wantsScreensaver:', wantsScreensaver)
     if (wantsScreensaver) {
       void screensaver.activate().catch((error) => console.error('[screensaver] 激活失败:', error))
     } else if (mainWindow !== null && !mainWindow.isDestroyed()) {
@@ -114,21 +116,33 @@ if (!gotLock) {
 
     await harness.start()
 
-    app.on('before-quit', () => {
+    let quitCleanupDone = false
+    app.on('before-quit', (event) => {
+      console.log('[main] before-quit')
+      if (quitCleanupDone) return
+      event.preventDefault()
       quitting = true
-      if (config.get().harness.stopOnQuit) void harness.stop()
-      screensaver.dispose()
-      tray?.dispose()
-      if (stopMux !== null) stopMux()
+      void (async () => {
+        if (config.get().harness.stopOnQuit) await harness.stop()
+        screensaver.dispose()
+        tray?.dispose()
+        if (stopMux !== null) stopMux()
+        quitCleanupDone = true
+        app.quit()
+      })()
     })
 
     // 窗口全关时保持托盘常驻(除非正在退出)。
     app.on('window-all-closed', () => {
+      console.log('[main] window-all-closed (quitting=', quitting, ')')
       if (!quitting) {
         // 保持后台运行。
       } else {
         app.quit()
       }
+    })
+    app.on('will-quit', () => {
+      console.log('[main] will-quit')
     })
   })
 }

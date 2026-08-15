@@ -6,7 +6,7 @@
   "main": "dist/main/index.js",
   "private": true,
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && node scripts/copy-assets.mjs",
     "start": "npm run build && electron .",
     "smoke": "node scripts/smoke.mjs",
     "pack": "npm run build && electron-builder --win portable"
@@ -22,7 +22,8 @@
     "win": {
       "target": [
         "portable"
-      ]
+      ],
+      "icon": "assets/icon.png"
     }
   },
   "devDependencies": {

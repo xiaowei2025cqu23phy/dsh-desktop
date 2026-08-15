@@ -33,6 +33,8 @@ export class ScreensaverController {
   private idleTimer: ReturnType<typeof setInterval> | null = null
   /** 当前屏保会话最近事件序号,用于重连续传。 */
   private lastSeq = 0
+  /** 最近一次激活时间:进入宽限期内不因空闲检测退出(避免点击按钮后立刻被踢出)。 */
+  private activatedAt = 0
 
   constructor(
     private config: ConfigStore,
@@ -94,7 +96,7 @@ export class ScreensaverController {
     if (this.active) return
     // 确保 harness 可用(托管模式自动拉起,并等待就绪)。
     const status = this.harness.status()
-    if (status.state === 'idle' || status.state === 'stopped') {
+    if (status.state === 'idle' || status.state === 'stopped' || status.state === 'error') {
       if (this.config.get().harness.mode !== 'external') {
         await this.harness.restart()
       }
@@ -114,6 +116,7 @@ export class ScreensaverController {
     this.active = true
     this.sessionId = null
     this.lastSeq = 0
+    this.activatedAt = Date.now()
     const display = screen.getPrimaryDisplay()
     const win = new BrowserWindow({
       x: display.bounds.x,
@@ -141,12 +144,15 @@ export class ScreensaverController {
       this.active = false
     })
     win.on('leave-full-screen', () => this.deactivate())
-    await win.loadFile(join(__dirname, '..', 'renderer', 'screensaver.html'))
+    const debugKeep = process.argv.includes('--ss-debug')
+    await win.loadFile(join(__dirname, '..', 'renderer', 'screensaver.html'), debugKeep ? { query: { keep: '1' } } : undefined)
+    console.log('[screensaver] 窗口已加载,active=', this.active)
   }
 
   /** 退出 AI 屏保(任务默认保留在后台继续运行)。 */
-  deactivate(): void {
+  deactivate(reason = 'manual'): void {
     if (!this.active && this.window === null) return
+    console.log(`[screensaver] 退出(reason=${reason})`)
     this.active = false
     this.lastSessionId = this.sessionId
     this.sessionId = null
@@ -224,7 +230,7 @@ export class ScreensaverController {
     return `"${process.execPath}" "${app.getAppPath()}"`
   }
 
-  /** 注册为 Windows 系统屏保(HKCU,无需管理员)。非 Windows 返回不支持。 */
+  /** 注册为 Windows 系统屏保(HKCU,无需管理员)。非 Windows 返回不支持。注册前备份原设置,取消时恢复。 */
   async registerSystemScreensaver(): Promise<{ ok: boolean; message: string }> {
     if (process.platform !== 'win32') {
       return { ok: false, message: '仅 Windows 支持注册系统屏保' }
@@ -233,6 +239,9 @@ export class ScreensaverController {
     const command = this.systemScreensaverCommand()
     const timeout = Math.max(60, Math.round(cfg.idleMinutes * 60))
     try {
+      // 备份用户原有屏保设置,取消注册时恢复。
+      const backup = await queryDesktopRegistry()
+      this.config.update('screensaver', { systemScreensaverBackup: backup })
       await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'SCRNSAVE.EXE', '/t', 'REG_SZ', '/d', command, '/f'])
       await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'ScreenSaveActive', '/t', 'REG_SZ', '/d', '1', '/f'])
       await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'ScreenSaveTimeOut', '/t', 'REG_SZ', '/d', String(timeout), '/f'])
@@ -242,15 +251,23 @@ export class ScreensaverController {
     }
   }
 
-  /** 取消系统屏保注册。 */
+  /** 取消系统屏保注册(恢复注册前的原设置)。 */
   async unregisterSystemScreensaver(): Promise<{ ok: boolean; message: string }> {
     if (process.platform !== 'win32') {
       return { ok: false, message: '仅 Windows 支持系统屏保注册' }
     }
     try {
-      await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'SCRNSAVE.EXE', '/t', 'REG_SZ', '/d', '', '/f'])
-      await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'ScreenSaveActive', '/t', 'REG_SZ', '/d', '0', '/f'])
-      return { ok: true, message: '已取消系统屏保注册' }
+      const backup = this.config.get().screensaver.systemScreensaverBackup
+      if (backup !== null && Object.keys(backup).length > 0) {
+        for (const [name, value] of Object.entries(backup)) {
+          await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', name, '/t', 'REG_SZ', '/d', value, '/f'])
+        }
+      } else {
+        await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'SCRNSAVE.EXE', '/t', 'REG_SZ', '/d', '', '/f'])
+        await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'ScreenSaveActive', '/t', 'REG_SZ', '/d', '0', '/f'])
+      }
+      this.config.update('screensaver', { systemScreensaverBackup: null })
+      return { ok: true, message: '已取消系统屏保注册(已恢复原设置)' }
     } catch (error) {
       return { ok: false, message: `取消失败:${error instanceof Error ? error.message : String(error)}` }
     }
@@ -300,8 +317,18 @@ export class ScreensaverController {
   }
 
   private async onIdleTick(): Promise<void> {
+    // 屏保激活期间:检测到用户活动(空闲时间回落)立即退出 —— 渲染进程事件失效时的安全网。
+    // 进入宽限期(5 秒)内不退出,避免激活瞬间鼠标尚未移开就被关闭;--ss-debug 时禁用。
+    if (this.active) {
+      const debugKeep = process.argv.includes('--ss-debug')
+      if (!debugKeep && Date.now() - this.activatedAt > 5000 &&
+          powerMonitor.getSystemIdleTime() < ACTIVITY_GRACE_SECONDS) {
+        this.deactivate('idle-reset')
+      }
+      return
+    }
     const cfg = this.config.get().screensaver
-    if (!cfg.enabled || this.active || this.locked) return
+    if (!cfg.enabled || this.locked) return
     if (this.window !== null && !this.window.isDestroyed()) return
     const idleSeconds = powerMonitor.getSystemIdleTime()
     if (idleSeconds >= cfg.idleMinutes * 60) {
@@ -326,6 +353,26 @@ function runReg(action: 'add', args: string[]): Promise<void> {
       resolve()
     })
   })
+}
+
+/** 读取屏保相关注册表值(缺失的值为空字符串)。 */
+async function queryDesktopRegistry(): Promise<Record<string, string>> {
+  const names = ['SCRNSAVE.EXE', 'ScreenSaveActive', 'ScreenSaveTimeOut']
+  const values: Record<string, string> = {}
+  for (const name of names) {
+    values[name] = await new Promise<string>((resolve) => {
+      execFile('reg', ['query', 'HKCU\\Control Panel\\Desktop', '/v', name], { windowsHide: true },
+        (error, stdout) => {
+          if (error) {
+            resolve('')
+            return
+          }
+          const match = /REG_SZ\s+(.*)$/m.exec(stdout)
+          resolve(match === null ? '' : match[1].trim())
+        })
+    })
+  }
+  return values
 }
 
 function sleep(ms: number): Promise<void> {

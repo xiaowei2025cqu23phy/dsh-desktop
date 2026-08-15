@@ -39,6 +39,8 @@ export interface ScreensaverConfig {
   taskCwd: string | null
   /** 退出屏保后保留任务继续在后台运行。 */
   keepSessionAfterExit: boolean
+  /** 注册系统屏保前备份的原注册表值,取消注册时恢复。内部字段,不暴露给 UI。 */
+  systemScreensaverBackup: Record<string, string> | null
 }
 
 export interface AppConfig {
@@ -66,6 +68,7 @@ const DEFAULTS: AppConfig = {
       '你是运行在 AI 屏保中的 DeepSeek Harness 智能体。请自主完成一项有价值的任务,例如:浏览今天的科技新闻并整理要点、构思一段创意文字、分析当前工作区代码给出改进建议。完成后用简洁的中文总结你做了什么。',
     taskCwd: null,
     keepSessionAfterExit: true,
+    systemScreensaverBackup: null,
   },
   window: { width: 1280, height: 800 },
 }

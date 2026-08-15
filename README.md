@@ -60,6 +60,12 @@ npm run smoke    # 冒烟测试:验证 RPC 客户端与模型目录(需 harness 
 npm run pack     # 打包 Windows portable 单文件 exe(electron-builder)
 ```
 
+调试开关:
+
+- `--remote-debugging-port=9222` 启动时启用 CDP,可用 `node scripts/cdp-eval.mjs '<表达式>'` 检查页面状态。
+- `--ss-debug` 启动时,屏保窗口保持打开(禁用空闲退出),便于调试屏保画面。
+- `node scripts/mux-test.mjs <baseUrl>` 端到端管线测试:设置默认模型 → 建会话 → 发提示 → 订阅事件流(会消耗少量模型调用)。
+
 ### 结构
 
 ```
@@ -89,5 +95,6 @@ scripts/           冒烟与端到端测试脚本
 ## 已知限制
 
 - 屏保实时画面为「观看视图」:交互(输入、审批)请回到主窗口的 Web UI 完成;agent 遇到需要确认的问题会等待,会话在 Web UI 中可见。
-- 系统屏保注册仅支持 Windows(注册表方案);macOS/Linux 可用内置空闲检测模式。
+- 系统屏保注册仅支持 Windows(注册表方案,注册前自动备份原设置,取消时恢复);macOS/Linux 可用内置空闲检测模式。
+- 事件流传输自动协商:旧版 harness 只接受 WebSocket(HTTP 返回 426),新版额外支持 SSE;两者都兼容。
 - 屏保窗口内禁用了系统休眠时的自动唤醒逻辑(跟随系统屏保行为)。

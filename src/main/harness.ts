@@ -125,10 +125,17 @@ export class HarnessManager extends EventEmitter {
       this.emit('status', this.status())
       return
     }
-    // 端口被占用但不是 dsh:说明冲突,报错。
-    if (await this.portBusy()) {
+    // 端口被占用:看根页面是否带 dsh 标记,区分"其他程序占用"与"dsh 但 RPC 异常"。
+    const occupied = await this.portProbe()
+    if (occupied === 'other') {
       this.state = 'error'
       this.error = `端口 ${this.config.port} 已被其他程序占用,且不是 dsh 服务。请在设置中更换端口。`
+      this.emit('status', this.status())
+      return
+    }
+    if (occupied === 'dsh') {
+      this.state = 'error'
+      this.error = `端口 ${this.config.port} 上检测到 dsh 服务,但 RPC 探测失败,请查看服务日志。`
       this.emit('status', this.status())
       return
     }
@@ -140,15 +147,19 @@ export class HarnessManager extends EventEmitter {
     }
   }
 
-  private async portBusy(): Promise<boolean> {
+  /** 端口上有无服务,以及是否为 dsh 页面。返回 'none' | 'dsh' | 'other'。 */
+  private async portProbe(): Promise<'none' | 'dsh' | 'other'> {
     try {
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 1500)
+      const timer = setTimeout(() => controller.abort(), 3000)
       const response = await fetch(`http://127.0.0.1:${this.config.port}/`, { signal: controller.signal })
       clearTimeout(timer)
-      return response.ok || response.status !== 404
+      const text = await response.text().catch(() => '')
+      return text.includes('__DSH_BOOT__') || /deepseek|dsh/i.test(text.slice(0, 2000))
+        ? 'dsh'
+        : 'other'
     } catch {
-      return false
+      return 'none'
     }
   }
 

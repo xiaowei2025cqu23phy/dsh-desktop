@@ -313,6 +313,10 @@ function handleHistoryEntry(entry: unknown): void {
 // ---- 启动流程 ----
 
 async function boot(): Promise<void> {
+  // 调试钩子:--ss-debug 启动时通过 ?keep=1 保持窗口打开(验证用)。
+  if (new URLSearchParams(window.location.search).get('keep') === '1') {
+    ;(window as unknown as { __SS_KEEP_OPEN__?: boolean }).__SS_KEEP_OPEN__ = true
+  }
   bindExitEvents()
   setStatus('连接中…')
   setInterval(() => {
@@ -323,8 +327,16 @@ async function boot(): Promise<void> {
   }, 1000)
 
   // 实时事件流(主进程已按 sessionId 过滤,这里再做 seq 去重)。
-  API.screensaver.onEvent((frame) => {
+  // sessionId 确定前先缓冲:startTask 完成前的窗口期里,其他会话的事件不能串入画面。
+  const pendingFrames: ServerRequestFrame[] = []
+  let sessionKnown = false
+  const unsubscribe = API.screensaver.onEvent((frame) => {
     if (frame.method !== 'session/event') return
+    if (!sessionKnown) {
+      pendingFrames.push(frame)
+      if (pendingFrames.length > 500) pendingFrames.shift()
+      return
+    }
     const payload = S.isRecord(frame.payload) ? frame.payload : {}
     if (state.sessionId !== null && payload.sessionId !== state.sessionId) return
     handleSessionEvent(S.isRecord(payload.event) ? payload.event : {})
@@ -341,9 +353,11 @@ async function boot(): Promise<void> {
     S.toast(`任务启动失败:${error instanceof Error ? error.message : String(error)}`, 'error')
     return null
   })
+  sessionKnown = true
 
   if (task === null) {
-    // 纯环境屏保。
+    // 纯环境屏保:不渲染任何会话事件。
+    unsubscribe()
     setStatus('待机', 'idle')
     return
   }
@@ -363,6 +377,14 @@ async function boot(): Promise<void> {
   } else {
     setTitle('AI 任务进行中')
   }
+  // 回放缓冲中属于本会话的帧(按 seq 去重由 handleSessionEvent 负责)。
+  for (const frame of pendingFrames) {
+    const payload = S.isRecord(frame.payload) ? frame.payload : {}
+    if (payload.sessionId === state.sessionId) {
+      handleSessionEvent(S.isRecord(payload.event) ? payload.event : {})
+    }
+  }
+  pendingFrames.length = 0
   setStatus('运行中…', 'running')
 }
 
@@ -374,6 +396,9 @@ function bindExitEvents(): void {
   exitArmedAt = Date.now() + 1500
   const exit = (): void => {
     if (Date.now() < exitArmedAt) return
+    // 调试/演示钩子:window.__SS_KEEP_OPEN__ = true 时保持打开。
+    const keepOpen = (window as unknown as { __SS_KEEP_OPEN__?: boolean }).__SS_KEEP_OPEN__ === true
+    if (keepOpen) return
     void API.screensaver.deactivate()
   }
   window.addEventListener('keydown', exit, { passive: true })
