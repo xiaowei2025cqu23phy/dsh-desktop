@@ -8,6 +8,7 @@
 
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
+import { AppearanceManager } from './appearance'
 import { ConfigStore } from './config'
 import { HarnessManager } from './harness'
 import { ModelManager } from './models'
@@ -50,7 +51,8 @@ if (!gotLock) {
     harness = new HarnessManager(config.get().harness)
     const models = new ModelManager(() => harness.client())
     screensaver = new ScreensaverController(config, harness)
-    registerIpc({ config, harness, models, screensaver })
+    const appearance = new AppearanceManager(config)
+    registerIpc({ config, harness, models, screensaver, appearance })
 
     // mux 事件桥:harness 就绪后订阅会话事件,转发给屏保窗口。
     let stopMux: (() => void) | null = null

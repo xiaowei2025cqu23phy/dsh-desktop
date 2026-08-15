@@ -26,6 +26,27 @@ body {
   overflow: hidden;
 }
 
+/* 壁纸层:图片铺满 + 遮罩,顶栏/抽屉毛玻璃透出。 */
+body.has-wallpaper {
+  background: var(--bg);
+  background-image: var(--wallpaper-image);
+  background-size: cover;
+  background-position: center;
+}
+body.has-wallpaper::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 8, 15, var(--wallpaper-mask, 0.55));
+  pointer-events: none;
+  z-index: -1;
+}
+body.has-wallpaper #topbar,
+body.has-wallpaper .drawer {
+  background: rgba(13, 17, 26, 0.72);
+  backdrop-filter: blur(14px);
+}
+
 #app { display: flex; flex-direction: column; height: 100vh; }
 
 /* ---- 顶栏 ---- */

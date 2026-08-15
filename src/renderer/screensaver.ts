@@ -349,6 +349,21 @@ async function boot(): Promise<void> {
       `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
   }, 1000)
 
+  // 屏保壁纸:图片铺满 + 遮罩。
+  try {
+    const appearance = await API.appearance.getConfig()
+    if (appearance.screensaverWallpaper !== null) {
+      document.body.style.setProperty(
+        '--wallpaper-image',
+        `url("file:///${appearance.screensaverWallpaper.replace(/\\/g, '/')}")`,
+      )
+      document.body.style.setProperty('--wallpaper-mask', String(appearance.mask))
+      document.body.classList.add('has-wallpaper')
+    }
+  } catch {
+    // 壁纸读取失败不影响屏保功能。
+  }
+
   // 实时事件流(主进程已按 sessionId 过滤,这里再做 seq 去重)。
   // sessionId 确定前先缓冲:startTask 完成前的窗口期里,其他会话的事件不能串入画面。
   const pendingFrames: ServerRequestFrame[] = []
