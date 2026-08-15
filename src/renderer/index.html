@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; connect-src http://127.0.0.1:* http://localhost:*" />
+  <title>DeepSeek Harness Desktop</title>
+  <link rel="stylesheet" href="./main.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="brand">
+        <span class="logo-dot"></span>
+        <span class="brand-name">DeepSeek Harness Desktop</span>
+        <span id="status-pill" class="pill pill-idle">未启动</span>
+      </div>
+      <div class="topbar-center">
+        <label class="model-label" for="model-select">默认模型</label>
+        <select id="model-select" disabled>
+          <option value="">连接 harness 后可选</option>
+        </select>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-screensaver" class="btn" title="启动 AI 屏保(全屏显示 agent 实时工作画面)">▶ AI 屏保</button>
+        <button id="btn-drawer" class="btn btn-primary">设置</button>
+      </div>
+    </header>
+
+    <main id="content">
+      <webview id="harness-view" class="harness-view"></webview>
+      <div id="view-error" class="view-error hidden">
+        <div class="view-error-box">
+          <h2>harness 不可用</h2>
+          <p id="view-error-text"></p>
+          <button id="btn-retry" class="btn btn-primary">重试</button>
+        </div>
+      </div>
+    </main>
+
+    <aside id="drawer" class="drawer hidden">
+      <div class="drawer-head">
+        <h2>设置</h2>
+        <button id="btn-drawer-close" class="btn btn-ghost">✕</button>
+      </div>
+
+      <section class="panel">
+        <h3>Harness 服务</h3>
+        <div class="field">
+          <label for="cfg-mode">模式</label>
+          <select id="cfg-mode">
+            <option value="auto">自动(探测已运行,否则托管启动)</option>
+            <option value="external">仅连接外部服务</option>
+            <option value="managed">始终托管启动</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="cfg-url">外部地址(external 模式)</label>
+          <input id="cfg-url" type="text" placeholder="http://127.0.0.1:3080" />
+        </div>
+        <div class="field">
+          <label for="cfg-port">端口(托管模式)</label>
+          <input id="cfg-port" type="number" min="1" max="65535" />
+        </div>
+        <div class="field">
+          <label for="cfg-command">启动命令({port} 为端口占位)</label>
+          <input id="cfg-command" type="text" />
+        </div>
+        <div class="field">
+          <label for="cfg-dshhome">DSH_HOME(留空用默认)</label>
+          <input id="cfg-dshhome" type="text" placeholder="默认 $DSH_HOME 或 ~/.dsh" />
+        </div>
+        <div class="field-row">
+          <button id="btn-restart" class="btn">重启服务</button>
+          <button id="btn-open-settings" class="btn">打开 settings.yaml</button>
+          <button id="btn-open-webui" class="btn">打开 Web UI</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>AI 屏保</h3>
+        <label class="check-row">
+          <input id="ss-enabled" type="checkbox" />
+          启用空闲检测(空闲后自动进入全屏 AI 屏保)
+        </label>
+        <div class="field">
+          <label for="ss-idle">空闲几分钟后触发</label>
+          <input id="ss-idle" type="number" min="1" max="120" />
+        </div>
+        <label class="check-row">
+          <input id="ss-auto-task" type="checkbox" />
+          进入屏保时自动启动 agent 任务
+        </label>
+        <div class="field">
+          <label for="ss-prompt">任务提示词</label>
+          <textarea id="ss-prompt" rows="4"></textarea>
+        </div>
+        <div class="field">
+          <label for="ss-cwd">任务工作目录(可选)</label>
+          <input id="ss-cwd" type="text" placeholder="留空使用 harness 默认目录" />
+        </div>
+        <div class="field-row">
+          <button id="btn-ss-now" class="btn btn-primary">立即进入 AI 屏保</button>
+        </div>
+        <div class="field-row">
+          <button id="btn-ss-register" class="btn">注册为系统屏保</button>
+          <button id="btn-ss-unregister" class="btn">取消系统屏保</button>
+          <span id="ss-registered" class="hint"></span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>添加自定义 Provider(OpenAI 兼容网关)</h3>
+        <div class="field">
+          <label for="gw-preset">网关预设</label>
+          <select id="gw-preset"></select>
+        </div>
+        <div class="field">
+          <label for="gw-id">Provider ID(小写字母/数字/连字符)</label>
+          <input id="gw-id" type="text" placeholder="例如 my-gateway" />
+        </div>
+        <div class="field">
+          <label for="gw-name">显示名称</label>
+          <input id="gw-name" type="text" placeholder="例如 公司网关" />
+        </div>
+        <div class="field">
+          <label for="gw-url">Base URL</label>
+          <input id="gw-url" type="text" placeholder="https://gateway.example.com/v1" />
+        </div>
+        <div class="field">
+          <label for="gw-api">API 协议</label>
+          <input id="gw-api" type="text" placeholder="openai-completions" />
+        </div>
+        <div class="field">
+          <label for="gw-key">API Key(可选)</label>
+          <input id="gw-key" type="password" placeholder="密钥经 credentials.set 安全写入" />
+        </div>
+        <div class="field">
+          <label for="gw-models">模型 ID(逗号分隔)</label>
+          <input id="gw-models" type="text" placeholder="model-a, model-b" />
+        </div>
+        <div class="field-row">
+          <button id="btn-gw-discover" class="btn">从网关拉取模型</button>
+          <button id="btn-gw-save" class="btn btn-primary">保存 Provider</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>服务日志</h3>
+        <pre id="log-view" class="log-view"></pre>
+      </section>
+    </aside>
+  </div>
+  <div id="toast-host"></div>
+  <script src="./shared.js"></script>
+  <script src="./main.js"></script>
+</body>
+</html>

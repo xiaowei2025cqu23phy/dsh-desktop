@@ -1,0 +1,33 @@
+{
+  "name": "dsh-desktop",
+  "productName": "DeepSeek Harness Desktop",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 桌面端:内嵌 Web UI、AI 屏保模式(替换系统屏保)、全模型快捷切换。",
+  "main": "dist/main/index.js",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json",
+    "start": "npm run build && electron .",
+    "smoke": "node scripts/smoke.mjs",
+    "pack": "npm run build && electron-builder --win portable"
+  },
+  "build": {
+    "appId": "ai.deepseek.harness.desktop",
+    "productName": "DeepSeek Harness Desktop",
+    "files": [
+      "dist/**",
+      "assets/**",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.9.3"
+  }
+}
