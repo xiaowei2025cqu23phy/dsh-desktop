@@ -31,12 +31,14 @@ export interface ScreensaverConfig {
   enabled: boolean
   /** 空闲多少分钟后进入 AI 屏保。 */
   idleMinutes: number
-  /** 进入屏保时自动启动一个 agent 任务。 */
+  /** 进入屏保时自动启动一个 agent 任务(默认关闭:空闲只显示环境画面,不烧资源)。 */
   autoTask: boolean
   /** 自动任务提示词。 */
   taskPrompt: string
   /** 任务工作目录(空则使用 harness 默认)。 */
   taskCwd: string | null
+  /** 任务最长运行分钟数,超时自动停止(防止 agent 失控循环烧 CPU)。 */
+  taskMaxMinutes: number
   /** 退出屏保后保留任务继续在后台运行。 */
   keepSessionAfterExit: boolean
   /** 注册系统屏保前备份的原注册表值,取消注册时恢复。内部字段,不暴露给 UI。 */
@@ -63,10 +65,11 @@ const DEFAULTS: AppConfig = {
   screensaver: {
     enabled: false,
     idleMinutes: 5,
-    autoTask: true,
+    autoTask: false,
     taskPrompt:
       '你是运行在 AI 屏保中的 DeepSeek Harness 智能体。请自主完成一项有价值的任务,例如:浏览今天的科技新闻并整理要点、构思一段创意文字、分析当前工作区代码给出改进建议。完成后用简洁的中文总结你做了什么。',
     taskCwd: null,
+    taskMaxMinutes: 10,
     keepSessionAfterExit: true,
     systemScreensaverBackup: null,
   },

@@ -72,6 +72,7 @@ export class ScreensaverController {
   dispose(): void {
     if (this.idleTimer !== null) clearInterval(this.idleTimer)
     this.idleTimer = null
+    this.clearTaskTimer()
     this.deactivate()
   }
 
@@ -166,11 +167,14 @@ export class ScreensaverController {
    * - autoTask 关闭:返回 null(纯环境屏保)。
    * - keepSessionAfterExit 且存在上次会话:继续观看(可能仍在运行,也可能已完成)。
    * - 否则:取消上次会话(尽力),创建新会话并发送任务提示词。
+   *
+   * 新任务带超时护栏:超过 taskMaxMinutes 仍未结束自动停止,防止失控循环烧 CPU。
    */
   async startTask(): Promise<{ sessionId: string; resumed: boolean } | null> {
     const config = this.config.get().screensaver
     if (!config.autoTask || config.taskPrompt.trim() === '') return null
     const client = this.harness.client()
+    this.clearTaskTimer()
     if (config.keepSessionAfterExit && this.lastSessionId !== null) {
       this.sessionId = this.lastSessionId
       this.lastSeq = 0
@@ -192,12 +196,36 @@ export class ScreensaverController {
     this.sessionId = sessionId
     this.lastSessionId = sessionId
     this.lastSeq = 0
+    // 标题标记,便于在 Web UI 的会话列表中识别和清理。
+    try {
+      await client.rpc('session.rename', { sessionId, title: `AI 屏保任务 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` })
+    } catch {
+      // 标题失败不影响任务。
+    }
     await client.rpc('session.prompt', {
       sessionId,
       mode: 'queue',
       content: [{ type: 'text', text: config.taskPrompt.trim() }],
     })
+    if (config.taskMaxMinutes > 0) {
+      this.taskTimer = setTimeout(() => {
+        if (this.sessionId !== null) {
+          console.log(`[screensaver] 任务超过 ${config.taskMaxMinutes} 分钟未完成,自动停止`)
+          void this.cancelTask()
+        }
+      }, config.taskMaxMinutes * 60 * 1000)
+      this.taskTimer.unref?.()
+    }
     return { sessionId, resumed: false }
+  }
+
+  private taskTimer: ReturnType<typeof setTimeout> | null = null
+
+  private clearTaskTimer(): void {
+    if (this.taskTimer !== null) {
+      clearTimeout(this.taskTimer)
+      this.taskTimer = null
+    }
   }
 
   /** 读取会话历史(供"继续上次任务"时回放)。 */
@@ -209,8 +237,9 @@ export class ScreensaverController {
     return result.events ?? []
   }
 
-  /** 取消屏保任务(用户主动点击"停止")。 */
+  /** 取消屏保任务(用户主动点击"停止"或超时护栏触发)。 */
   async cancelTask(): Promise<void> {
+    this.clearTaskTimer()
     if (this.sessionId === null) return
     const id = this.sessionId
     this.sessionId = null
@@ -318,10 +347,10 @@ export class ScreensaverController {
 
   private async onIdleTick(): Promise<void> {
     // 屏保激活期间:检测到用户活动(空闲时间回落)立即退出 —— 渲染进程事件失效时的安全网。
-    // 进入宽限期(5 秒)内不退出,避免激活瞬间鼠标尚未移开就被关闭;--ss-debug 时禁用。
+    // 进入宽限期(3 秒)内不退出,避免激活瞬间鼠标尚未移开就被关闭;--ss-debug 时禁用。
     if (this.active) {
       const debugKeep = process.argv.includes('--ss-debug')
-      if (!debugKeep && Date.now() - this.activatedAt > 5000 &&
+      if (!debugKeep && Date.now() - this.activatedAt > 3000 &&
           powerMonitor.getSystemIdleTime() < ACTIVITY_GRACE_SECONDS) {
         this.deactivate('idle-reset')
       }

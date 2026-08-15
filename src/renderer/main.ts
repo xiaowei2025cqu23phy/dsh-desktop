@@ -180,6 +180,7 @@ async function loadScreensaverConfig(): Promise<void> {
     input('ss-auto-task').checked = config.autoTask
     input('ss-prompt').value = config.taskPrompt
     input('ss-cwd').value = config.taskCwd ?? ''
+    input('ss-max').value = String(config.taskMaxMinutes ?? 10)
   } catch (error) {
     S.toast(`读取屏保配置失败:${String(error)}`, 'error')
   }
@@ -309,6 +310,8 @@ function bind(): void {
     void saveScreensaverConfig({ taskPrompt: input('ss-prompt').value }))
   input('ss-cwd').addEventListener('change', () =>
     void saveScreensaverConfig({ taskCwd: input('ss-cwd').value.trim() || null }))
+  input('ss-max').addEventListener('change', () =>
+    void saveScreensaverConfig({ taskMaxMinutes: Math.max(1, Math.min(120, Number(input('ss-max').value) || 10)) }))
   $id('btn-ss-now').addEventListener('click', () => {
     void API.screensaver.activate().then(() => {
       S.toast('AI 屏保已启动,移动鼠标或按键退出', 'ok')
