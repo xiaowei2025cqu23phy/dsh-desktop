@@ -49,10 +49,10 @@ export type MuxFrameHandler = (frame: ServerRequest) => boolean | void
 export class HarnessClient {
   constructor(readonly baseUrl: string) {}
 
-  /** 探测目标地址是否为可用的 dsh harness。 */
-  async probe(timeoutMs = 3000): Promise<boolean> {
+  /** 探测目标地址是否为可用的 dsh harness(用轻量的 host.describe,避免会话列表冷启动慢)。 */
+  async probe(timeoutMs = 8000): Promise<boolean> {
     try {
-      const result = await this.rpc('session.list', {}, timeoutMs)
+      const result = await this.rpc<{ version?: string }>('host.describe', {}, timeoutMs)
       return result !== null
     } catch {
       return false
@@ -106,7 +106,7 @@ export class HarnessClient {
     const run = async (): Promise<void> => {
       let delayMs = 500
       while (!stopped && !aborted) {
-        const useWs = transport === 'ws' || (transport === null && await wsSupported(wsUrl, abort.signal))
+        const useWs = transport === 'ws' || (transport === null && await wsSupported(muxUrl, abort.signal))
         try {
           onStatus?.(true)
           if (useWs) {
