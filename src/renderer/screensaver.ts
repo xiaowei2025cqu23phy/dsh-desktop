@@ -416,7 +416,8 @@ async function boot(): Promise<void> {
 let exitArmedAt = 0
 
 function bindExitEvents(): void {
-  exitArmedAt = Date.now() + 800
+  // 宽限 1 秒:窗口打开瞬间的合成输入事件不触发退出。
+  exitArmedAt = Date.now() + 1000
   const exit = (): void => {
     if (Date.now() < exitArmedAt) return
     // 调试/演示钩子:window.__SS_KEEP_OPEN__ = true 时保持打开。
@@ -424,10 +425,14 @@ function bindExitEvents(): void {
     if (keepOpen) return
     void API.screensaver.deactivate()
   }
-  window.addEventListener('keydown', exit, { passive: true })
-  window.addEventListener('mousemove', exit, { passive: true })
-  window.addEventListener('mousedown', exit, { passive: true })
-  window.addEventListener('wheel', exit, { passive: true })
+  // 注意:mousemove 不绑定 —— 鼠标微小抖动/合成移动会误触发退出,导致屏保闪退。
+  // 退出只依赖明确输入:按键、点击、滚轮、触摸。
+  window.addEventListener('keydown', () => exit(), { passive: true })
+  window.addEventListener('mousedown', () => exit(), { passive: true })
+  window.addEventListener('pointerdown', () => exit(), { passive: true })
+  window.addEventListener('click', () => exit(), { passive: true })
+  window.addEventListener('wheel', () => exit(), { passive: true })
+  window.addEventListener('touchstart', () => exit(), { passive: true })
 }
 boot()
 
