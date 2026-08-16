@@ -184,22 +184,43 @@ export class QQBotAdapter {
 
   // ---- 内部 ----
 
-  /** 主动推送(审批带内联键盘按钮;超窗或失败静默降级,回复提醒兜底)。 */
-  async sendToUser(userId: string, text: string, meta?: { kind: 'approval'; sessionId: string; approvalId: string }): Promise<void> {
+  /** 主动推送(审批带内联键盘按钮;超窗或失败静默降级,回复提醒兜底)。
+   *  target 提供时直接推送到该目标(群=群,私聊=用户);否则按 userId 回退。 */
+  async sendToUser(
+    userId: string,
+    text: string,
+    meta?: { kind: 'approval'; sessionId: string; approvalId: string },
+    target?: { scope: string; targetId: string },
+  ): Promise<void> {
     const bot = this.bot
+    if (bot === null || text === '') return
+    if (target !== undefined) {
+      // 群/私聊目标明确(来自最近一条消息的 replyTarget):直接推送。
+      await this.pushText(bot, target, text, meta)
+      return
+    }
     const entry = this.userTargets.get(userId)
-    if (bot === null || entry === undefined || text === '') return
+    if (entry === undefined) return
     const fresh = Date.now() - entry.ts <= PUSH_WINDOW_MS
     if (!fresh) {
       this.userTargets.delete(userId)
       return
     }
+    await this.pushText(bot, entry.target, text, meta)
+  }
+
+  private async pushText(
+    bot: QQBotLike,
+    target: PushTarget,
+    text: string,
+    meta?: { kind: 'approval'; sessionId: string; approvalId: string },
+  ): Promise<void> {
     try {
       if (meta !== undefined && meta.kind === 'approval') {
-        await bot.sendTextWithKeyboard(entry.target, text, buildApprovalKeyboard(meta.sessionId, meta.approvalId))
+        await bot.sendTextWithKeyboard(target, text, buildApprovalKeyboard(meta.sessionId, meta.approvalId))
       } else {
         for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
-          await bot.sendText(entry.target, text.slice(index, index + MAX_MESSAGE_LENGTH))
+          await bot.sendText(target, text.slice(index, index + MAX_MESSAGE_LENGTH))
         }
       }
     } catch (error) {
@@ -243,8 +264,16 @@ export class QQBotAdapter {
     if (content === '') return
     const userId = this.senderId(record)
     this.registerPushTarget(userId, record.replyTarget)
-    const reply = await this.processor.handleText('qq', userId, content)
+    const reply = await this.processor.handleText('qq', userId, content, this.pushTargetOf(record.replyTarget))
     await this.reply(bot, record.replyTarget, reply)
+  }
+
+  /** 从 replyTarget 提取主动推送目标(群=群 id,私聊=用户 openid;去掉 msgId)。 */
+  private pushTargetOf(replyTarget: unknown): { scope: string; targetId: string } | undefined {
+    if (replyTarget === null || typeof replyTarget !== 'object') return undefined
+    const target = replyTarget as { scope?: unknown; targetId?: unknown }
+    if (typeof target.scope !== 'string' || typeof target.targetId !== 'string') return undefined
+    return { scope: target.scope, targetId: target.targetId }
   }
 
   /** 登记主动推送目标(去掉 msgId;群消息按群登记,私聊按 openid 登记)。 */
