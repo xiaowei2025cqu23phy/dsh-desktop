@@ -147,6 +147,8 @@ interface DesktopApi {
   updater: {
     getInfo(): Promise<{ current: string; latest: string | null; url: string | null; checkedAt: number }>
     check(): Promise<{ current: string; latest: string | null; url: string | null; checkedAt: number }>
+    getConfig(): Promise<{ autoCheck: boolean }>
+    setConfig(patch: { autoCheck?: boolean }): Promise<{ autoCheck: boolean }>
     openRelease(): Promise<void>
   }
 }

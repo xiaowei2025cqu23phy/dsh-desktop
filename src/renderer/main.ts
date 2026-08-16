@@ -907,6 +907,8 @@ async function loadUpdateInfo(): Promise<void> {
       ? `当前 v${info.current} → 发现新版本 v${info.latest}`
       : `当前版本 v${info.current}${info.checkedAt > 0 ? ' · 已是最新' : ''}`
     $id('btn-open-release').classList.toggle('hidden', !hasUpdate)
+    const updaterConfig = await API.updater.getConfig()
+    input('upd-autocheck').checked = updaterConfig.autoCheck === true
   } catch {
     // 忽略
   }
@@ -1019,6 +1021,10 @@ function bind(): void {
     }
   })
   $id('btn-open-release').addEventListener('click', () => void API.updater.openRelease())
+  input('upd-autocheck').addEventListener('change', async () => {
+    await API.updater.setConfig({ autoCheck: input('upd-autocheck').checked })
+    S.toast(input('upd-autocheck').checked ? '已开启:启动后自动检查更新' : '已关闭自动检查', 'ok')
+  })
 
   // 外观
   $id('btn-wall-window').addEventListener('click', () => void pickWallpaper('window'))

@@ -134,6 +134,11 @@ export function registerIpc(deps: IpcDeps): void {
     const updater = deps.updater
     ipcMain.handle('updater:getInfo', () => updater.getInfo())
     ipcMain.handle('updater:check', () => updater.check())
+    ipcMain.handle('updater:getConfig', () => deps.config.get().updater)
+    ipcMain.handle('updater:setConfig', (_event, patch: { autoCheck?: boolean }) => {
+      deps.config.update('updater', patch)
+      return deps.config.get().updater
+    })
     ipcMain.handle('updater:openRelease', async () => {
       const info = updater.getInfo()
       if (info.url !== null) await shell.openExternal(info.url)
