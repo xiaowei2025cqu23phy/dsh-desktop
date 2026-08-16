@@ -13,7 +13,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
 import { readFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
-import { extname, join, resolve, sep } from 'node:path'
+import { extname, join, resolve, sep, basename } from 'node:path'
 import { app, nativeImage } from 'electron'
 import type { ConfigStore } from './config'
 import type { EventHub } from './event-hub'
@@ -493,7 +493,7 @@ export class RemoteGateway {
     }
   }
 
-  /** 可用的手机壁纸列表(内置包 + 用户本地包;带缩略图,供 PWA 选择)。 */
+  /** 可用的手机壁纸列表(内置包 + 用户本地包 + 自定义壁纸;带缩略图,供 PWA 选择)。 */
   private serveWallpaperList(url: URL, req: IncomingMessage, res: ServerResponse): void {
     if (!this.authorized(url, req)) {
       this.json(res, 401, { error: 'unauthorized' })
@@ -501,6 +501,9 @@ export class RemoteGateway {
     }
     const entries = this.wallpaperEntries()
     const current = this.config.get().appearance.phone.path
+    const currentBase = current !== null ? basename(current) : ''
+    // 桌面端「应用壁纸包」会把副本存为 pack-<id>-phone.png,与列表项路径不同,按包名匹配高亮。
+    const appliedPack = /^pack-(.+)-(?:phone|window)\.[^.]+$/.exec(currentBase)
     const items = entries.map((entry) => {
       let thumb = ''
       try {
@@ -509,12 +512,17 @@ export class RemoteGateway {
       } catch {
         // 缩略图生成失败:忽略该项的 thumb,前端仍可展示名称。
       }
-      return { id: entry.id, name: entry.name, path: entry.path, thumb, active: entry.path === current }
+      const active = entry.path === current ||
+        (appliedPack !== null && entry.id === appliedPack[1])
+      return { id: entry.id, name: entry.name, path: entry.path, thumb, active }
     })
     this.json(res, 200, { ok: true, items })
   }
 
-  /** 扫描壁纸包目录:内置包(assets/wallpapers)+ 用户本地包(userData/wallpapers 下 pack-*)。 */
+  /**
+   * 扫描壁纸:内置包(assets/wallpapers)+ 用户本地包(userData/wallpapers 下 pack-* 子目录)
+   * + 自定义壁纸(userData/wallpapers 根目录的 phone-、window- 前缀图片,桌面端保存的成品)。
+   */
   private wallpaperEntries(): Array<{ id: string; name: string; path: string }> {
     const entries: Array<{ id: string; name: string; path: string }> = []
     const collect = (root: string, isUserPack: boolean): void => {
@@ -535,11 +543,27 @@ export class RemoteGateway {
     }
     collect(join(app.getAppPath(), 'assets', 'wallpapers'), false)
     collect(join(app.getPath('userData'), 'wallpapers'), true)
+    // 自定义壁纸(桌面端「外观」保存的成品,位于 wallpapers 根目录)。
+    const userRoot = join(app.getPath('userData'), 'wallpapers')
+    if (existsSync(userRoot)) {
+      for (const name of readdirSync(userRoot)) {
+        const file = join(userRoot, name)
+        try {
+          if (!statSync(file).isFile()) continue
+        } catch {
+          continue
+        }
+        if (/^(phone|window)-.+\.(png|jpg|jpeg|webp|gif|bmp)$/i.test(name)) {
+          entries.push({ id: `custom-${name}`, name: `自定义·${name}`, path: file })
+        }
+      }
+    }
     return entries
   }
 
   /** 手机 PWA 背景壁纸:与桌面端主窗口壁纸保持一致。 */
-  private serveWallpaper(res: ServerResponse): void {    const appearance = this.config.get().appearance
+  private serveWallpaper(res: ServerResponse): void {
+    const appearance = this.config.get().appearance
     const file = appearance.phone.path ?? appearance.window.path
     if (file === null || !existsSync(file)) {
       this.json(res, 404, { error: 'no wallpaper' })
