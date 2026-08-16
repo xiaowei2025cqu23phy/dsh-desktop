@@ -10,6 +10,7 @@ export type QQCommand =
   | { kind: 'models' }
   | { kind: 'cancel'; sessionId: string }
   | { kind: 'open'; sessionId: string }
+  | { kind: 'progress'; sessionId: string }
   | { kind: 'run'; description: string }
   | { kind: 'unknown'; text: string }
 
@@ -28,6 +29,9 @@ export function parseCommand(content: string): QQCommand {
   }
   if (parts[0] === '打开' || parts[0] === 'open') {
     return { kind: 'open', sessionId: parts[1] ?? '' }
+  }
+  if (parts[0] === '进展' || parts[0] === 'progress' || parts[0] === '进度') {
+    return { kind: 'progress', sessionId: parts[1] ?? '' }
   }
   if (parts[0] === '任务' || parts[0] === 'run' || parts[0] === '执行') {
     return { kind: 'run', description: content.trim().slice(parts[0].length).trim() }
