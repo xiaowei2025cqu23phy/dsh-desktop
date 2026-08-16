@@ -809,8 +809,10 @@ async function loadRemoteConfig(): Promise<void> {
   try {
     const config = await API.remote.getConfig()
     input('remote-enabled').checked = config.enabled
-    input('remote-port').value = String(config.port)
-    input('remote-token').value = config.token
+    input('remote-port').value = '' + config.port
+    input('remote-token').value = '' + config.token
+    const presetRootsEl = $id('remote-preset-roots') as HTMLTextAreaElement
+    presetRootsEl.value = (config.presetWorkspaceRoots ?? []).join('\n')
     await renderQr()
   } catch (error) {
     S.toast(`读取远程配置失败:${String(error)}`, 'error')
@@ -858,6 +860,7 @@ async function loadQQConfig(): Promise<void> {
     input('qq-secret').value = config.appSecret
     input('qq-target').value = config.defaultTarget ?? ''
     input('qq-autochat').checked = config.autoChat === true
+    input('qq-report').checked = config.report === true
     const started = await API.qq.status()
     $id('qq-status').textContent = started ? '✓ 已连接 QQ' : (config.enabled && config.appId ? '连接中/失败,查看日志' : '')
   } catch {
@@ -874,6 +877,7 @@ async function loadTelegramConfig(): Promise<void> {
     input('tg-token').value = config.token
     input('tg-users').value = config.allowedUserIds ?? ''
     input('tg-autochat').checked = config.autoChat === true
+    input('tg-report').checked = config.report === true
     const started = await API.telegram.status()
     $id('tg-status').textContent = started ? '✓ 已启动' : (config.enabled && config.token ? '启动中/失败,查看日志' : '')
   } catch {
@@ -968,6 +972,12 @@ function bind(): void {
     await loadRemoteConfig()
     S.toast('令牌已重新生成', 'ok')
   })
+  $id('remote-preset-roots').addEventListener('change', async () => {
+    const roots = ($id('remote-preset-roots') as HTMLTextAreaElement).value
+      .split('\n').map((s) => s.trim()).filter((s) => s !== '')
+    await API.remote.setConfig({ presetWorkspaceRoots: roots })
+    S.toast('预设工作区根目录已保存', 'ok')
+  })
 
   // QQ 机器人
   input('qq-enabled').addEventListener('change', async () => {
@@ -986,6 +996,68 @@ function bind(): void {
   input('qq-autochat').addEventListener('change', async () => {
     await API.qq.setConfig({ autoChat: input('qq-autochat').checked })
   })
+  input('qq-report').addEventListener('change', async () => {
+    await API.qq.setConfig({ report: input('qq-report').checked })
+    S.toast(input('qq-report').checked ? '已开启主动汇报(完成/失败/审批/提问)' : '已关闭主动汇报', 'ok')
+  })
+
+  // QQ 扫码登录
+  let onboardTimer: number | null = null
+  const clearOnboardTimer = () => {
+    if (onboardTimer !== null) { window.clearInterval(onboardTimer); onboardTimer = null }
+  }
+  const showOnboard = (visible: boolean) => {
+    $id('qq-onboard-area').classList.toggle('hidden', !visible)
+    $id('btn-qq-onboard-cancel').classList.toggle('hidden', !visible)
+    input('btn-qq-onboard').disabled = visible
+  }
+  const pollOnboard = () => {
+    void API.qq.onboardStatus().then((progress) => {
+      if (progress === null) return
+      const statusEl = $id('qq-onboard-status')
+      if (progress.status === 'pending') {
+        statusEl.textContent = '请用手机 QQ 扫描二维码,并在手机端确认绑定'
+      } else if (progress.status === 'completed') {
+        clearOnboardTimer()
+        showOnboard(false)
+        statusEl.textContent = `✓ 绑定成功(扫码者 ${progress.userOpenid ?? '?'}),凭据已自动填入并重启机器人`
+        void loadQQConfig()
+      } else if (progress.status === 'expired') {
+        clearOnboardTimer()
+        showOnboard(false)
+        statusEl.textContent = '二维码已过期,可重新扫码'
+      } else {
+        clearOnboardTimer()
+        showOnboard(false)
+        statusEl.textContent = '扫码失败:' + (progress.error ?? '未知错误')
+      }
+    }).catch(() => {})
+  }
+  $id('btn-qq-onboard').addEventListener('click', async () => {
+    showOnboard(true)
+    const qrImg = $id('qq-onboard-qr') as HTMLImageElement
+    qrImg.src = ''
+    $id('qq-onboard-status').textContent = '正在生成二维码…'
+    try {
+      const progress = await API.qq.onboardStart()
+      if (progress.qrDataUrl !== null) qrImg.src = progress.qrDataUrl
+      if (progress.status !== 'pending') {
+        pollOnboard()
+      } else {
+        clearOnboardTimer()
+        onboardTimer = window.setInterval(pollOnboard, 2000)
+        pollOnboard()
+      }
+    } catch (error) {
+      showOnboard(false)
+      $id('qq-onboard-status').textContent = '启动扫码失败:' + String(error)
+    }
+  })
+  $id('btn-qq-onboard-cancel').addEventListener('click', () => {
+    void API.qq.onboardCancel()
+    clearOnboardTimer()
+    showOnboard(false)
+  })
 
   // Telegram 机器人
   input('tg-enabled').addEventListener('change', async () => {
@@ -1001,6 +1073,10 @@ function bind(): void {
   })
   input('tg-autochat').addEventListener('change', async () => {
     await API.telegram.setConfig({ autoChat: input('tg-autochat').checked })
+  })
+  input('tg-report').addEventListener('change', async () => {
+    await API.telegram.setConfig({ report: input('tg-report').checked })
+    S.toast(input('tg-report').checked ? '已开启主动汇报(完成/失败/审批/提问)' : '已关闭主动汇报', 'ok')
   })
 
   // 更新

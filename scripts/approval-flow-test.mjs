@@ -182,5 +182,43 @@ function makeHarness(log) {
   check('autoChat-退出后可重新进入', after.includes('已进入对话模式'), true)
 }
 
+// ---- 主动汇报(任务完成/失败) ----
+{
+  const pushes = []
+  const processor = new RemoteCommandProcessor(makeHarness([]))
+  processor.setPush((channel, userId, text) => pushes.push([channel, userId, text]))
+  await processor.handleText('telegram', '42', '进入 ws1')
+  pushes.length = 0
+  // 未开启汇报:不推送
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-t1', method: 'session/event',
+    payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'ok' } } } },
+  })
+  check('汇报-默认关闭不推送', pushes.length, 0)
+  processor.setReport('telegram', true)
+  // 完成
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-t2', method: 'session/event',
+    payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'ok' } } } },
+  })
+  check('汇报-完成推送', pushes.length, 1)
+  check('汇报-完成文本', pushes[0][2].includes('任务完成'), true)
+  // 失败
+  pushes.length = 0
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-t3', method: 'session/event',
+    payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'error', error: { message: '磁盘满了' } } } } },
+  })
+  check('汇报-失败推送', pushes.length, 1)
+  check('汇报-失败文本', pushes[0][2].includes('任务失败') && pushes[0][2].includes('磁盘满了'), true)
+  // 非 turn/end 不推送
+  pushes.length = 0
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-t4', method: 'session/event',
+    payload: { sessionId: 'session-test-1', event: { type: 'assistant/message', data: {} } },
+  })
+  check('汇报-其他事件不推送', pushes.length, 0)
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

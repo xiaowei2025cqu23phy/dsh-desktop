@@ -79,6 +79,26 @@
       </nav>
     </aside>
 
+    <!-- 新建工作区弹层(仅限预设根目录下) -->
+    <div id="view-newws" class="sheet hidden">
+      <header class="sheet-head">
+        <h2>新建工作区</h2>
+        <button id="btn-newws-close" class="btn btn-ghost">✕</button>
+      </header>
+      <div class="task-form">
+        <p class="conn-status" id="newws-status"></p>
+        <div id="newws-roots"></div>
+        <div class="field">
+          <label>新建文件夹(在预设根目录下)</label>
+          <div class="field-row">
+            <select id="newws-root"></select>
+            <input id="newws-name" type="text" placeholder="新文件夹名" />
+          </div>
+          <button id="btn-newws-create" class="btn btn-primary btn-block">创建并作为工作区</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 任务弹层 -->
     <div id="view-task" class="sheet hidden">
       <header class="sheet-head">

@@ -12,8 +12,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
-import { readFileSync, existsSync } from 'node:fs'
-import { extname, join } from 'node:path'
+import { readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { extname, join, resolve, sep } from 'node:path'
 import type { ConfigStore } from './config'
 import type { EventHub } from './event-hub'
 import type { HarnessManager } from './harness'
@@ -23,12 +23,14 @@ export interface RemoteConfig {
   enabled: boolean
   port: number
   token: string
+  presetWorkspaceRoots: string[]
 }
 
 export const REMOTE_DEFAULTS: RemoteConfig = {
   enabled: false,
   port: 3082,
   token: '',
+  presetWorkspaceRoots: [],
 }
 
 /** 手机端允许调用的 RPC 白名单(纵深防御:token 之外的访问边界)。 */
@@ -386,7 +388,94 @@ export class RemoteGateway {
       this.json(res, 200, { ok: true })
       return
     }
+    if (body.action === 'workspace.subdirs') {
+      this.json(res, 200, { ok: true, roots: this.listPresetSubdirs() })
+      return
+    }
+    if (body.action === 'workspace.createNew') {
+      await this.createPresetWorkspace(res, body as { action?: string; root?: unknown; name?: unknown })
+      return
+    }
     this.json(res, 403, { error: `action not allowed: ${String(body.action)}` })
+  }
+
+  /** 预设根目录及其直接子目录(手机端"新建工作区"的可选路径)。 */
+  private listPresetSubdirs(): Array<{ root: string; dirs: Array<{ path: string; name: string }> }> {
+    const roots = this.presetRoots()
+    const result: Array<{ root: string; dirs: Array<{ path: string; name: string }> }> = []
+    for (const root of roots) {
+      const dirs: Array<{ path: string; name: string }> = []
+      try {
+        for (const entry of readdirSync(root, { withFileTypes: true })) {
+          if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+          dirs.push({ path: join(root, entry.name), name: entry.name })
+        }
+      } catch {
+        // 根目录不存在/不可读:忽略该根。
+      }
+      result.push({ root, dirs })
+    }
+    return result
+  }
+
+  /** 规范化后的预设根目录列表。 */
+  private presetRoots(): string[] {
+    const list = this.config.get().remote.presetWorkspaceRoots ?? []
+    const seen = new Set<string>()
+    const roots: string[] = []
+    for (const raw of list) {
+      const normalized = resolve(raw.trim())
+      if (normalized === '' || seen.has(normalized)) continue
+      seen.add(normalized)
+      roots.push(normalized)
+    }
+    return roots
+  }
+
+  /**
+   * 在预设根目录下新建文件夹工作区(远程端仅允许此路径;防越权校验):
+   * root 必须是预设根目录之一,name 不能含路径分隔符/.. /以点开头。
+   */
+  private async createPresetWorkspace(
+    res: ServerResponse,
+    body: { action?: string; root?: unknown; name?: unknown },
+  ): Promise<void> {
+    const root = typeof body.root === 'string' ? body.root.trim() : ''
+    const name = typeof body.name === 'string' ? body.name.trim() : ''
+    if (root === '' || name === '') {
+      this.json(res, 400, { error: 'root and name required' })
+      return
+    }
+    const normalizedRoot = resolve(root)
+    if (!this.presetRoots().includes(normalizedRoot)) {
+      this.json(res, 403, { error: 'root is not in preset workspace roots' })
+      return
+    }
+    if (name.includes('/') || name.includes('\\') || name === '.' || name === '..' || name.startsWith('.')) {
+      this.json(res, 400, { error: 'invalid folder name' })
+      return
+    }
+    const target = resolve(join(normalizedRoot, name))
+    // 双重校验:解析后的目标必须仍在预设根目录之下。
+    if (target !== normalizedRoot && !target.startsWith(normalizedRoot + sep)) {
+      this.json(res, 403, { error: 'path escapes preset root' })
+      return
+    }
+    try {
+      mkdirSync(target, { recursive: true })
+    } catch (error) {
+      this.json(res, 500, { error: `mkdir failed: ${error instanceof Error ? error.message : String(error)}` })
+      return
+    }
+    const client = this.harness.client()
+    try {
+      const created = await client.rpc<{ workspaceId: string }>('workspace.create', { path: target }, 30000)
+      this.json(res, 200, { ok: true, workspaceId: created.workspaceId, path: target })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // 目录已建但注册失败:保留目录,报错由前端提示。
+      this.json(res, 502, { error: `workspace.create failed: ${message}` })
+    }
   }
 
   /** 手机 PWA 背景壁纸:与桌面端主窗口壁纸保持一致。 */

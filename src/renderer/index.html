@@ -111,6 +111,10 @@
           <div class="qr-wrap" id="remote-qr"></div>
           <div id="remote-addresses" class="hint"></div>
         </div>
+        <div class="field">
+          <label for="remote-preset-roots">预设工作区根目录(每行一个;手机端只能在这些目录下新建文件夹工作区并发布任务)</label>
+          <textarea id="remote-preset-roots" rows="3" placeholder="例如:D:\work&#10;C:\projects"></textarea>
+        </div>
       </section>
 
       <section class="panel">
@@ -127,6 +131,14 @@
           <label for="qq-secret">AppSecret</label>
           <input id="qq-secret" type="password" placeholder="机器人密钥" />
         </div>
+        <div class="field-row">
+          <button id="btn-qq-onboard" class="btn">扫码登录(自动获取凭据)</button>
+          <button id="btn-qq-onboard-cancel" class="btn hidden">取消</button>
+        </div>
+        <div id="qq-onboard-area" class="hidden">
+          <img id="qq-onboard-qr" alt="QQ 扫码" style="width:200px;height:200px;border-radius:10px;background:#fff;padding:6px;" />
+          <p id="qq-onboard-status" class="hint">请用手机 QQ 扫描二维码,并在手机端确认绑定</p>
+        </div>
         <div class="field">
           <label for="qq-target">默认工作区/目录(任务未指定时使用)</label>
           <input id="qq-target" type="text" placeholder="例如 qqbot 或 D:\work\qqbot" />
@@ -134,6 +146,10 @@
         <label class="check-row">
           <input id="qq-autochat" type="checkbox" />
           默认对话模式(非指令消息直接进入纯对话,无需先发「进入」)
+        </label>
+        <label class="check-row">
+          <input id="qq-report" type="checkbox" />
+          主动汇报(任务完成/失败、审批、提问时主动推送;审批带「允许/拒绝」按钮)
         </label>
         <p class="hint">启用后可在 QQ 私聊机器人发送指令:帮助 / 状态 / 会话 / 任务 &lt;描述&gt; / 停止 / 模型</p>
         <div id="qq-status" class="hint"></div>
@@ -156,6 +172,10 @@
         <label class="check-row">
           <input id="tg-autochat" type="checkbox" />
           默认对话模式(非指令消息直接进入纯对话,无需先发「进入」)
+        </label>
+        <label class="check-row">
+          <input id="tg-report" type="checkbox" />
+          主动汇报(任务完成/失败、审批、提问时主动推送)
         </label>
         <p class="hint">与 QQ 机器人共用同一套指令集与对话模式;支持主动推送(审批/提问通知即时送达)。</p>
         <div id="tg-status" class="hint"></div>

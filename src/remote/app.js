@@ -87,6 +87,20 @@
     })
   }
 
+  /** 控制动作(白名单,桌面端执行;用于预设工作区目录等)。 */
+  function apiAction(action, extra) {
+    return fetch(state.server + '/api/action', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token },
+      body: JSON.stringify(Object.assign({ action: action }, extra || {})),
+    }).then(function (res) {
+      return res.json()
+    }).then(function (data) {
+      if (!data.ok) throw new Error(data.error || 'action failed')
+      return data
+    })
+  }
+
   // ---- 本机临时会话缓存 ----
   function cacheKey(sid) { return 'dsh-cache-' + sid }
 
@@ -702,6 +716,118 @@
     })
   }
 
+  // ---- 新建工作区(仅限预设根目录) ----
+  function openNewWsSheet() {
+    var statusEl = $('newws-status')
+    statusEl.textContent = '加载预设目录…'
+    openSheet($('view-newws'))
+    apiAction('workspace.subdirs').then(function (data) {
+      var roots = data.roots || []
+      if (roots.length === 0) {
+        statusEl.textContent = '尚未配置预设工作区根目录:请在电脑端「设置 → 远程访问 → 预设工作区根目录」中添加'
+      } else {
+        statusEl.textContent = ''
+      }
+      renderPresetRoots(roots)
+      var select = $('newws-root')
+      select.innerHTML = ''
+      roots.forEach(function (item) {
+        var opt = document.createElement('option')
+        opt.value = item.root
+        opt.textContent = item.root
+        select.appendChild(opt)
+      })
+    }).catch(function (err) {
+      statusEl.textContent = '加载失败:' + err.message
+    })
+  }
+
+  function renderPresetRoots(roots) {
+    var host = $('newws-roots')
+    host.innerHTML = ''
+    roots.forEach(function (item) {
+      var group = document.createElement('div')
+      group.className = 'ws-group'
+      var head = document.createElement('div')
+      head.className = 'ws-item'
+      var title = document.createElement('span')
+      title.className = 'ws-name'
+      title.textContent = item.root
+      head.appendChild(title)
+      var body = document.createElement('div')
+      body.className = 'ws-body open'
+      if (item.dirs.length === 0) {
+        var empty = document.createElement('p')
+        empty.className = 'empty'
+        empty.textContent = '该目录下还没有子文件夹'
+        body.appendChild(empty)
+      } else {
+        item.dirs.forEach(function (dir) {
+          var row = document.createElement('div')
+          row.className = 'session-row'
+          var t = document.createElement('span')
+          t.className = 'session-title'
+          t.textContent = dir.name
+          var b = document.createElement('span')
+          b.className = 'session-badge'
+          b.textContent = '使用'
+          row.appendChild(t)
+          row.appendChild(b)
+          row.addEventListener('click', function () { useWorkspacePath(dir.path, dir.name) })
+          body.appendChild(row)
+        })
+      }
+      head.addEventListener('click', function () {
+        var open = head.classList.toggle('open')
+        body.classList.toggle('open', open)
+      })
+      group.appendChild(head)
+      group.appendChild(body)
+      host.appendChild(group)
+    })
+  }
+
+  /** 把已有子目录注册为工作区(预设根目录下,远程端允许)。 */
+  function useWorkspacePath(path, name) {
+    var statusEl = $('newws-status')
+    statusEl.textContent = '正在注册「' + name + '」…'
+    apiRpc('workspace.create', { path: path }).then(function () {
+      S.toast('工作区已就绪:' + name, 'ok')
+      statusEl.textContent = ''
+      closeSheet($('view-newws'))
+      loadSidebar()
+      fillWorkspaceSelect()
+    }).catch(function (err) {
+      statusEl.textContent = '注册失败:' + err.message
+    })
+  }
+
+  /** 在预设根目录下新建文件夹并注册为工作区。 */
+  function createNewWorkspace() {
+    var root = $('newws-root').value
+    var name = $('newws-name').value.trim()
+    if (root === '') {
+      S.toast('请先选择预设根目录', 'error')
+      return
+    }
+    if (name === '' || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || name.indexOf('..') >= 0) {
+      S.toast('请输入合法的文件夹名(不含路径分隔符)', 'error')
+      return
+    }
+    var statusEl = $('newws-status')
+    statusEl.textContent = '正在创建「' + name + '」…'
+    apiAction('workspace.createNew', { root: root, name: name }).then(function () {
+      S.toast('工作区已创建:' + name, 'ok')
+      statusEl.textContent = ''
+      $('newws-name').value = ''
+      closeSheet($('view-newws'))
+      loadSidebar()
+      fillWorkspaceSelect()
+    }).catch(function (err) {
+      statusEl.textContent = '创建失败:' + err.message
+    })
+  }
+
   // ---- 任务 ----
   function fillWorkspaceSelect(selectedId) {
     return apiRpc('workspace.list', {}).then(function (data) {
@@ -889,15 +1015,13 @@
     $('btn-sidebar-close').addEventListener('click', closeSidebar)
     $('sidebar-backdrop').addEventListener('click', closeSidebar)
     $('btn-new-workspace').addEventListener('click', function () {
-      var path = prompt('请输入工作区目录的完整路径:')
-      if (path && path.trim() !== '') {
-        apiRpc('workspace.create', { path: path.trim() }).then(function () {
-          S.toast('工作区已创建', 'ok')
-          loadSidebar()
-          fillWorkspaceSelect()
-        }).catch(function (err) { S.toast('创建失败:' + err.message, 'error') })
-      }
+      closeSidebar()
+      openNewWsSheet()
     })
+
+    // 新建工作区弹层
+    $('btn-newws-close').addEventListener('click', function () { closeSheet($('view-newws')) })
+    $('btn-newws-create').addEventListener('click', createNewWorkspace)
 
     // 聊天
     $('btn-chat-send').addEventListener('click', sendMessage)

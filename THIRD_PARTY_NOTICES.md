@@ -6,6 +6,8 @@
 |---|---|---|
 | deepseek-ai/deepseek-harness | MIT | Copyright (c) 2025-2026 DeepSeek AI |
 | @tencent-connect/qqbot-nodejs | MIT | Copyright (c) Tencent |
+| tencent-connect/qqbot-agent-sdk(协议参考,未分发) | MIT | Copyright (c) Tencent |
+| tencent-connect/dsh-qqbot(协议参考,未分发) | MIT | Copyright (c) Tencent |
 | qrcode | MIT | Copyright (c) 2011 Ryan Day |
 | Electron | MIT | Copyright (c) Electron contributors |
 | electron-builder | MIT | Copyright (c) electron-builder contributors |
