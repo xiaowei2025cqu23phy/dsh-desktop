@@ -46,6 +46,10 @@ export class EventHub {
       }
     }, (ok) => {
       this.connected = ok
+      if (!ok) {
+        // 事件流断开:外部 harness 可能已被关闭,触发桌面端自动接管。
+        this.harness.recheck()
+      }
     })
   }
 

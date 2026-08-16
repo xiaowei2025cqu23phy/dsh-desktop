@@ -100,6 +100,39 @@ export class HarnessManager extends EventEmitter {
     this.state = 'stopped'
   }
 
+  private recheckTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * 事件流断线时调用:重新探测 harness。外部实例已死时按 autoStart 托管拉起,
+   * 让桌面端在用户关闭自己的 harness 终端后自动接管。带节流,避免频繁重试。
+   */
+  recheck(): void {
+    if (this.recheckTimer !== null) return
+    this.recheckTimer = setTimeout(() => {
+      this.recheckTimer = null
+      if (this.stopRequested || this.state === 'stopped' || this.state === 'starting' || this.state === 'probing') return
+      if (this.child !== null) return // 托管进程还活着,mux 重连即可。
+      void (async () => {
+        const ok = await this.client().probe(5000)
+        if (this.stopRequested) return
+        if (ok) return // 外部实例仍在(短暂断线),mux 会自动重连。
+        console.log('[harness] 外部 harness 不可达,尝试托管接管…')
+        if (this.config.mode === 'external') {
+          this.state = 'error'
+          this.error = `无法连接到 ${this.baseUrl()},请确认 harness 已启动`
+          this.emit('status', this.status())
+          return
+        }
+        if (this.config.autoStart) {
+          this.spawnManaged()
+        } else {
+          this.state = 'idle'
+          this.emit('status', this.status())
+        }
+      })()
+    }, 1500)
+  }
+
   private clearTimers(): void {
     if (this.probeTimer !== null) { clearTimeout(this.probeTimer); this.probeTimer = null }
     if (this.restartTimer !== null) { clearTimeout(this.restartTimer); this.restartTimer = null }
