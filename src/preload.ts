@@ -58,9 +58,13 @@ const api = {
   },
   appearance: {
     getConfig: () => ipcRenderer.invoke('appearance:getConfig'),
-    pickAndSet: (kind: 'window' | 'screensaver') => ipcRenderer.invoke('appearance:pickAndSet', kind),
-    clear: (kind: 'window' | 'screensaver') => ipcRenderer.invoke('appearance:clear', kind),
+    pickSource: (kind: 'window' | 'phone' | 'screensaver') => ipcRenderer.invoke('appearance:pickSource', kind),
+    saveWallpaper: (kind: 'window' | 'phone' | 'screensaver', dataUrl: string, position: { x: number; y: number }) =>
+      ipcRenderer.invoke('appearance:saveWallpaper', kind, dataUrl, position),
+    clear: (kind: 'window' | 'phone' | 'screensaver') => ipcRenderer.invoke('appearance:clear', kind),
     setMask: (mask: number) => ipcRenderer.invoke('appearance:setMask', mask),
+    wallpaperData: (kind: 'window' | 'phone' | 'screensaver') =>
+      ipcRenderer.invoke('appearance:wallpaperData', kind),
   },
   app: {
     openSettingsFolder: () => ipcRenderer.invoke('app:openSettingsFolder'),

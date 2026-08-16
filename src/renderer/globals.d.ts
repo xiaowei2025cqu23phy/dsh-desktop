@@ -40,9 +40,15 @@ interface ServerRequestFrame {
   payload: unknown
 }
 
+interface WallpaperSpecView {
+  path: string | null
+  position: { x: number; y: number }
+}
+
 interface AppearanceConfigView {
-  windowWallpaper: string | null
-  screensaverWallpaper: string | null
+  window: WallpaperSpecView
+  phone: WallpaperSpecView
+  screensaver: WallpaperSpecView
   mask: number
 }
 
@@ -105,9 +111,18 @@ interface DesktopApi {
   }
   appearance: {
     getConfig(): Promise<AppearanceConfigView>
-    pickAndSet(kind: 'window' | 'screensaver'): Promise<{ path: string } | null>
-    clear(kind: 'window' | 'screensaver'): Promise<AppearanceConfigView>
+    pickSource(kind: 'window' | 'phone' | 'screensaver'): Promise<{ path: string } | null>
+    saveWallpaper(
+      kind: 'window' | 'phone' | 'screensaver',
+      dataUrl: string,
+      position: { x: number; y: number },
+    ): Promise<WallpaperSpecView>
+    clear(kind: 'window' | 'phone' | 'screensaver'): Promise<WallpaperSpecView>
     setMask(mask: number): Promise<AppearanceConfigView>
+    wallpaperData(kind: 'window' | 'phone' | 'screensaver'): Promise<{
+      dataUrl: string | null
+      position: { x: number; y: number }
+    }>
   }
   app: {
     openSettingsFolder(): Promise<{ opened: true }>
@@ -128,6 +143,8 @@ interface SharedHelpers {
 interface WebviewElement extends HTMLElement {
   src: string
   reload(): void
+  insertCSS(css: string): Promise<string>
+  removeInsertedCSS(key: string): Promise<void>
   addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void
   removeEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions): void
 }

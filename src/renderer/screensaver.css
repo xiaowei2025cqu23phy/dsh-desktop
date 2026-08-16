@@ -30,7 +30,7 @@ body {
 body.has-wallpaper {
   background-image: var(--wallpaper-image, none);
   background-size: cover;
-  background-position: center;
+  background-position: var(--wallpaper-position, center);
 }
 body.has-wallpaper::before {
   content: "";

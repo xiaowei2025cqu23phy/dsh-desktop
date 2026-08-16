@@ -352,10 +352,14 @@ async function boot(): Promise<void> {
   // 屏保壁纸:图片铺满 + 遮罩。
   try {
     const appearance = await API.appearance.getConfig()
-    if (appearance.screensaverWallpaper !== null) {
+    if (appearance.screensaver.path !== null) {
       document.body.style.setProperty(
         '--wallpaper-image',
-        `url("file:///${appearance.screensaverWallpaper.replace(/\\/g, '/')}")`,
+        `url("file:///${appearance.screensaver.path.replace(/\\/g, '/')}")`,
+      )
+      document.body.style.setProperty(
+        '--wallpaper-position',
+        `${appearance.screensaver.position.x * 100}% ${appearance.screensaver.position.y * 100}%`,
       )
       document.body.style.setProperty('--wallpaper-mask', String(appearance.mask))
       document.body.classList.add('has-wallpaper')
