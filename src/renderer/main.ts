@@ -781,6 +781,7 @@ async function loadQQConfig(): Promise<void> {
     input('qq-enabled').checked = config.enabled
     input('qq-appid').value = config.appId
     input('qq-secret').value = config.appSecret
+    input('qq-target').value = config.defaultTarget ?? ''
     const started = await API.qq.status()
     $id('qq-status').textContent = started ? '✓ 已连接 QQ' : (config.enabled && config.appId ? '连接中/失败,查看日志' : '')
   } catch {
@@ -853,6 +854,9 @@ function bind(): void {
   })
   input('qq-secret').addEventListener('change', async () => {
     await API.qq.setConfig({ appSecret: input('qq-secret').value.trim() })
+  })
+  input('qq-target').addEventListener('change', async () => {
+    await API.qq.setConfig({ defaultTarget: input('qq-target').value.trim() })
   })
 
   // 外观

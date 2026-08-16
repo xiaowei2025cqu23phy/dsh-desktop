@@ -126,17 +126,17 @@ npm start        # 构建并启动桌面端
 
 ### QQ 机器人远程控制(可选)
 
-「设置 → QQ 机器人」填入在 [QQ 开放平台](https://q.qq.com) 注册机器人得到的 AppID/AppSecret 即启用(留空自动禁用)。在 QQ 私聊机器人发送指令:
+「设置 → QQ 机器人」填入在 [QQ 开放平台](https://q.qq.com) 注册机器人得到的 AppID/AppSecret 即启用(留空自动禁用),也可设置**默认工作区/目录**(任务命令未指定时自动使用)。在 QQ 私聊机器人发送指令:
 
 | 指令 | 说明 |
 |---|---|
 | `帮助` | 指令列表 |
 | `状态` | harness 状态、会话数、运行中任务 |
 | `会话` / `工作区` / `模型` | 最近会话 / 工作区列表 / 可用模型 |
-| `任务 <描述>` | 执行任务,支持 `@工作区名` 或 `目录:<路径>` 指定工作区 |
+| `任务 <描述>` | 执行任务,支持 `@工作区名` 或 `目录:<路径>` 指定工作区;未指定时使用「默认工作区/目录」 |
 | `停止 <会话id>` / `打开 <会话id>` | 停止会话 / 查看会话进展 |
 
-基于 [@tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs)(WebSocket 长连接)。QQ 官方机器人为**被动回复**模式:只能在你发消息后回复,不能主动推送;长回复自动分段。
+基于 [@tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs)(WebSocket 长连接),协议参考 [QQ 开放平台 API v2 文档](https://bot.q.qq.com/wiki/develop/api-v2/)(消息收发/消息类型/事件订阅)与 [Agent QQBot 接入指南](https://bot.q.qq.com/wiki/agent-qqbot/)。QQ 官方机器人为**被动回复**模式:只能在你发消息后回复,不能主动推送;长回复自动分段。
 
 ## 开发
 

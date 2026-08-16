@@ -265,6 +265,23 @@ export class QQBotAdapter {
     if (taskText === '') return '任务描述不能为空'
     try {
       let workspaceId: string | null = null
+      let cwd = parsed.cwd
+      // 任务未指定工作区/目录时,回退到配置的默认工作区/目录。
+      if (workspaceId === null && cwd === null) {
+        const fallback = this.getConfig().defaultTarget.trim()
+        if (fallback !== '') {
+          if (/[\\/]/.test(fallback)) {
+            cwd = fallback
+          } else {
+            const workspaces = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string }> }>('workspace.list')
+            const found = (workspaces.items ?? []).find((w) => w.title === fallback || w.workspaceId === fallback || w.path === fallback)
+            if (found === undefined) {
+              return `默认工作区「${fallback}」不存在,发送「工作区」查看列表,或在设置中修改 QQ 默认工作区`
+            }
+            workspaceId = found.workspaceId
+          }
+        }
+      }
       if (parsed.workspaceName !== null) {
         const workspaces = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string }> }>('workspace.list')
         const found = (workspaces.items ?? []).find((w) => w.title === parsed.workspaceName || w.path === parsed.workspaceName)
@@ -275,7 +292,7 @@ export class QQBotAdapter {
       }
       const payload: Record<string, unknown> = {}
       if (workspaceId !== null) payload.workspaceId = workspaceId
-      else if (parsed.cwd !== null) payload.cwd = parsed.cwd
+      else if (cwd !== null) payload.cwd = cwd
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
       await client.rpc('session.prompt', {
         sessionId: created.sessionId,

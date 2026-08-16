@@ -62,6 +62,7 @@ interface QQConfigView {
   enabled: boolean
   appId: string
   appSecret: string
+  defaultTarget: string
 }
 
 interface DesktopApi {
