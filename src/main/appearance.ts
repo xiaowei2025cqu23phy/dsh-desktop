@@ -103,7 +103,7 @@ export class AppearanceManager {
     return join(app.getAppPath(), 'assets', 'wallpapers')
   }
 
-  /** 列出壁纸包:内置包(assets/wallpapers)+ 用户本地包(userData/wallpapers 下 pack-*)。 */
+  /** 列出壁纸包:内置包(assets/wallpapers)+ 用户本地包(userData/wallpapers 下 pack-*)+ 自定义壁纸。 */
   listPacks(): Array<{ id: string; files: Record<string, string> }> {
     const packs: Array<{ id: string; files: Record<string, string> }> = []
     const collect = (root: string, isUserPack: boolean): void => {
@@ -121,7 +121,20 @@ export class AppearanceManager {
       }
     }
     collect(this.packsRoot(), false)
-    collect(join(app.getPath('userData'), 'wallpapers'), true)
+    const userRoot = join(app.getPath('userData'), 'wallpapers')
+    collect(userRoot, true)
+    // 自定义壁纸(桌面端「外观」保存的成品,位于 wallpapers 根目录):作为单端包收纳,
+    // 换过的壁纸随时可一键换回。
+    if (existsSync(userRoot)) {
+      for (const name of readdirSync(userRoot)) {
+        const file = join(userRoot, name)
+        if (!statSync(file).isFile()) continue
+        const match = /^(phone|window|screensaver)-.+\.(png|jpg|jpeg|webp|gif|bmp)$/i.exec(name)
+        if (match === null) continue
+        const surface = match[1] as 'window' | 'phone' | 'screensaver'
+        packs.push({ id: name, files: { [surface]: file } })
+      }
+    }
     return packs
   }
 

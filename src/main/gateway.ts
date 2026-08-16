@@ -411,6 +411,11 @@ export class RemoteGateway {
       this.json(res, 200, { ok: true })
       return
     }
+    if (body.action === 'appearance.clearPhoneWallpaper') {
+      this.config.update('appearance', { phone: { path: null, position: { x: 0.5, y: 0.5 } } })
+      this.json(res, 200, { ok: true })
+      return
+    }
     this.json(res, 403, { error: `action not allowed: ${String(body.action)}` })
   }
 
@@ -504,18 +509,21 @@ export class RemoteGateway {
     const currentBase = current !== null ? basename(current) : ''
     // 桌面端「应用壁纸包」会把副本存为 pack-<id>-phone.png,与列表项路径不同,按包名匹配高亮。
     const appliedPack = /^pack-(.+)-(?:phone|window)\.[^.]+$/.exec(currentBase)
-    const items = entries.map((entry) => {
-      let thumb = ''
-      try {
-        const image = nativeImage.createFromPath(entry.path)
-        if (!image.isEmpty()) thumb = image.resize({ width: 240 }).toDataURL()
-      } catch {
-        // 缩略图生成失败:忽略该项的 thumb,前端仍可展示名称。
-      }
-      const active = entry.path === current ||
-        (appliedPack !== null && entry.id === appliedPack[1])
-      return { id: entry.id, name: entry.name, path: entry.path, thumb, active }
-    })
+    const items = [
+      { id: 'default', name: '默认壁纸', path: '', thumb: '', active: current === null },
+      ...entries.map((entry) => {
+        let thumb = ''
+        try {
+          const image = nativeImage.createFromPath(entry.path)
+          if (!image.isEmpty()) thumb = image.resize({ width: 240 }).toDataURL()
+        } catch {
+          // 缩略图生成失败:忽略该项的 thumb,前端仍可展示名称。
+        }
+        const active = entry.path === current ||
+          (appliedPack !== null && entry.id === appliedPack[1])
+        return { id: entry.id, name: entry.name, path: entry.path, thumb, active }
+      }),
+    ]
     this.json(res, 200, { ok: true, items })
   }
 

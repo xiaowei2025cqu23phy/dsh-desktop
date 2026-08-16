@@ -169,6 +169,10 @@ textarea { resize: vertical; }
   cursor: pointer; background: var(--bg-2); transition: border-color 0.15s ease;
 }
 .wallpaper-cell img { width: 100%; height: 64px; object-fit: cover; display: block; }
+.wallpaper-cell-ph {
+  width: 100%; height: 64px; display: flex; align-items: center; justify-content: center;
+  font-size: 24px; background: var(--bg-2);
+}
 .wallpaper-cell span {
   display: block; font-size: 11px; color: var(--text-dim);
   padding: 4px 4px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
