@@ -6,11 +6,15 @@
  */
 
 import { app, dialog } from 'electron'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import type { AppearanceConfig, ConfigStore, WallpaperSpec } from './config'
 
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']
+
+/** 参与哈希去重的图片扩展名(避免对目录里非图片文件反复读盘)。 */
+const HASHABLE_EXTENSIONS = new Set(IMAGE_EXTENSIONS)
 
 export type WallpaperKind = 'window' | 'phone' | 'screensaver'
 
@@ -24,6 +28,31 @@ const KIND_LABEL: Record<WallpaperKind, string> = {
   window: '主窗口',
   phone: '手机端',
   screensaver: '屏保',
+}
+
+/**
+ * 在目录里找内容相同(哈希一致)的已有图片;找到则返回其路径,避免每次调换
+ * 壁纸都产生重复文件,壁纸包越来越臃肿。
+ */
+function findDuplicateImage(dir: string, buf: Buffer): string | null {
+  if (!existsSync(dir)) return null
+  const hash = createHash('sha256').update(buf).digest('hex')
+  for (const name of readdirSync(dir)) {
+    const file = join(dir, name)
+    try {
+      if (!statSync(file).isFile()) continue
+    } catch {
+      continue
+    }
+    if (!HASHABLE_EXTENSIONS.has(extname(name).toLowerCase())) continue
+    try {
+      const existing = readFileSync(file)
+      if (createHash('sha256').update(existing).digest('hex') === hash) return file
+    } catch {
+      // 读失败的文件跳过。
+    }
+  }
+  return null
 }
 
 export class AppearanceManager {
@@ -51,8 +80,10 @@ export class AppearanceManager {
     }
     const dir = join(app.getPath('userData'), 'wallpapers')
     mkdirSync(dir, { recursive: true })
-    const target = join(dir, `source-${kind}-${Date.now()}${ext}`)
-    copyFileSync(source, target)
+    const buf = readFileSync(source)
+    const duplicate = findDuplicateImage(dir, buf)
+    const target = duplicate ?? join(dir, `source-${kind}-${Date.now()}${ext}`)
+    if (duplicate === null) copyFileSync(source, target)
     return { path: target }
   }
 
@@ -68,10 +99,13 @@ export class AppearanceManager {
     }
     const ext = extMap[mime] ?? '.png'
     const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+    const buf = Buffer.from(base64, 'base64')
     const dir = join(app.getPath('userData'), 'wallpapers')
     mkdirSync(dir, { recursive: true })
-    const target = join(dir, `${kind}-${Date.now()}${ext}`)
-    writeFileSync(target, Buffer.from(base64, 'base64'))
+    // 内容相同(如"换回原壁纸")直接复用已有文件,不产生重复副本。
+    const duplicate = findDuplicateImage(dir, buf)
+    const target = duplicate ?? join(dir, `${kind}-${Date.now()}${ext}`)
+    if (duplicate === null) writeFileSync(target, buf)
     const spec: WallpaperSpec = { path: target, position: { x: clamp01(position.x), y: clamp01(position.y) } }
     this.config.update('appearance', { [KIND_FIELD[kind]]: spec })
     return spec

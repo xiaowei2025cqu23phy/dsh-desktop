@@ -18,6 +18,7 @@
     workspaces: [],       // [{ workspaceId, path, title, sessions: [] }]
     currentWsId: null,
     currentWsPath: null,
+    running: false,
     tempCache: localStorage.getItem('dsh-temp-cache') === '1',
     approvals: {},        // sessionId -> [{ rpcId, sessionId, approvalId, toolName, reason }]
     approvalCards: {},    // `${sessionId}:${approvalId}` -> DOM 元素
@@ -236,6 +237,13 @@
     var el = $('chat-status')
     el.textContent = text
     el.className = 'chat-status' + (cls === 'running' ? ' running' : '')
+    state.running = cls === 'running'
+    updateSteerButton()
+  }
+
+  /** 运行中显示「插入」按钮:可打断当前等待,插入新指令。 */
+  function updateSteerButton() {
+    $('btn-chat-steer').classList.toggle('hidden', !(state.running && state.sessionId !== null))
   }
 
   function setConnDot(on) {
@@ -558,7 +566,7 @@
     })
   }
 
-  function sendMessage() {
+  function sendMessage(mode) {
     var input = $('chat-input')
     var text = input.value.trim()
     if (text === '' || state.sessionId === null) {
@@ -568,10 +576,11 @@
     input.value = ''
     apiRpc('session.prompt', {
       sessionId: state.sessionId,
-      mode: 'queue',
+      mode: mode === 'steer' ? 'steer' : 'queue',
       content: [{ type: 'text', text: text }],
     }).then(function () {
-      setChatStatus('运行中…', 'running')
+      setChatStatus(mode === 'steer' ? '已插入(打断当前等待)…' : '运行中…', 'running')
+      if (mode === 'steer') appendMessage('user', text)
     }).catch(function (err) {
       S.toast('发送失败:' + err.message, 'error')
       input.value = text
@@ -672,6 +681,17 @@
     head.appendChild(title)
     head.appendChild(count)
     head.appendChild(arrow)
+    if (ws) {
+      var del = document.createElement('button')
+      del.className = 'row-act'
+      del.textContent = '🗑'
+      del.title = '删除工作区(仅移除注册,不删文件)'
+      del.addEventListener('click', function (event) {
+        event.stopPropagation()
+        deleteWorkspace(ws)
+      })
+      head.appendChild(del)
+    }
 
     var body = document.createElement('div')
     body.className = 'ws-body' + (openDefault ? ' open' : '')
@@ -695,6 +715,15 @@
           b.textContent = '运行中'
           row.appendChild(b)
         }
+        var archive = document.createElement('button')
+        archive.className = 'row-act'
+        archive.textContent = '🗄'
+        archive.title = '归档会话'
+        archive.addEventListener('click', function (event) {
+          event.stopPropagation()
+          archiveSession(s.sessionId)
+        })
+        row.appendChild(archive)
         row.addEventListener('click', function () { openSession(s.sessionId, s.cwd) })
         body.appendChild(row)
       })
@@ -825,6 +854,34 @@
       fillWorkspaceSelect()
     }).catch(function (err) {
       statusEl.textContent = '创建失败:' + err.message
+    })
+  }
+
+  /** 归档会话(隐藏出列表;日志保留,可随时从会话历史找回)。 */
+  function archiveSession(sessionId) {
+    if (!window.confirm('归档会话 ' + sessionId + '?\n(归档后从列表隐藏,日志保留)')) return
+    apiRpc('workspace.archiveSession', { sessionId: sessionId }).then(function () {
+      S.toast('会话已归档', 'ok')
+      if (state.sessionId === sessionId) {
+        state.sessionId = null
+        clearChat()
+        setChatStatus('空闲', '')
+      }
+      loadSidebar()
+    }).catch(function (err) {
+      S.toast('归档失败:' + err.message, 'error')
+    })
+  }
+
+  /** 删除工作区(仅移除注册,不删除磁盘文件;会话退回"最近"分组)。 */
+  function deleteWorkspace(ws) {
+    if (!window.confirm('删除工作区「' + (ws.title || ws.path) + '」?\n(仅移除注册,不删除磁盘文件)')) return
+    apiRpc('workspace.delete', { workspaceId: ws.workspaceId }).then(function () {
+      S.toast('工作区已删除', 'ok')
+      loadSidebar()
+      fillWorkspaceSelect()
+    }).catch(function (err) {
+      S.toast('删除失败:' + err.message, 'error')
     })
   }
 
@@ -1081,11 +1138,12 @@
     $('btn-newws-create').addEventListener('click', createNewWorkspace)
 
     // 聊天
-    $('btn-chat-send').addEventListener('click', sendMessage)
+    $('btn-chat-send').addEventListener('click', function () { sendMessage('queue') })
+    $('btn-chat-steer').addEventListener('click', function () { sendMessage('steer') })
     $('chat-input').addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
-        sendMessage()
+        sendMessage('queue')
       }
     })
     $('btn-chat-stop').addEventListener('click', function () {
