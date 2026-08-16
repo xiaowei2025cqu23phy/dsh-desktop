@@ -185,7 +185,8 @@ export class QQBotAdapter {
   // ---- 内部 ----
 
   /** 主动推送(审批带内联键盘按钮;超窗或失败静默降级,回复提醒兜底)。
-   *  target 提供时直接推送到该目标(群=群,私聊=用户);否则按 userId 回退。 */
+   *  target 提供时直接推送到该目标(私聊=用户);QQ 群不支持主动消息,
+   *  群场景改推发起者私聊(有 c2c 登记时),否则靠回复提醒兜底。 */
   async sendToUser(
     userId: string,
     text: string,
@@ -195,8 +196,16 @@ export class QQBotAdapter {
     const bot = this.bot
     if (bot === null || text === '') return
     if (target !== undefined) {
-      // 群/私聊目标明确(来自最近一条消息的 replyTarget):直接推送。
-      await this.pushText(bot, target, text, meta)
+      if (target.scope === 'group') {
+        // QQ 平台限制:群消息必须被动回复(主动群消息 API 拒绝)。
+        // 改推发起者私聊(需其曾私聊过机器人),审批按钮在私聊可点。
+        const entry = this.userTargets.get(userId)
+        if (entry !== undefined && entry.target.scope === 'c2c') {
+          await this.pushText(bot, entry.target, text, meta)
+        }
+      } else {
+        await this.pushText(bot, target, text, meta)
+      }
       return
     }
     const entry = this.userTargets.get(userId)
