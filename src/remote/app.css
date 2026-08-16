@@ -42,7 +42,7 @@ body.has-wallpaper::after {
   position: fixed;
   inset: 0;
   z-index: -1;
-  background: rgba(5, 8, 15, 0.1);
+  background: rgba(5, 8, 15, 0.05);
   pointer-events: none;
 }
 
@@ -58,7 +58,7 @@ body.has-wallpaper::after {
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 28px 22px;
-  backdrop-filter: blur(10px);
+  
 }
 .logo {
   font-size: 44px; text-align: center;
@@ -96,8 +96,8 @@ textarea { resize: vertical; }
   height: var(--topbar-h); flex: 0 0 var(--topbar-h);
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 10px; border-bottom: 1px solid rgba(232, 179, 57, 0.18);
-  background: rgba(18, 22, 31, 0.15);
-  backdrop-filter: blur(10px);
+  background: rgba(18, 22, 31, 0.08);
+  
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); }
 .logo-dot { width: 10px; height: 10px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
@@ -127,17 +127,17 @@ textarea { resize: vertical; }
 /* 消息/工具调用:透明淡黄画框,壁纸透出,白字带阴影 */
 .msg-assistant {
   align-self: flex-start; color: #fff;
-  background: rgba(232, 179, 57, 0.04);
-  border: 1px solid rgba(232, 179, 57, 0.15); border-bottom-left-radius: 4px;
+  background: rgba(232, 179, 57, 0.02);
+  border: 1px solid rgba(232, 179, 57, 0.1); border-bottom-left-radius: 4px;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  
 }
 .msg-tool {
   align-self: flex-start; color: #fff;
-  background: rgba(232, 179, 57, 0.04);
-  border: 1px solid rgba(232, 179, 57, 0.15); font-size: 12px; max-width: 94%;
+  background: rgba(232, 179, 57, 0.02);
+  border: 1px solid rgba(232, 179, 57, 0.1); font-size: 12px; max-width: 94%;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  
 }
 .msg-tool .tool-name { color: var(--warn); font-weight: 600; }
 .msg-tool .tool-state { margin-left: 6px; font-size: 11px; }
@@ -153,9 +153,9 @@ textarea { resize: vertical; }
 .interaction-card {
   align-self: stretch; border-radius: 14px; padding: 12px 13px;
   font-size: 13px; line-height: 1.6; color: #fff;
-  background: rgba(232, 179, 57, 0.04); border: 1px solid rgba(232, 179, 57, 0.15);
+  background: rgba(232, 179, 57, 0.02); border: 1px solid rgba(232, 179, 57, 0.1);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  
   animation: card-in 0.22s ease;
 }
 @keyframes card-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -199,13 +199,13 @@ textarea { resize: vertical; }
 .composer {
   flex: 0 0 auto; display: flex; gap: 8px; padding: 10px 10px;
   border-top: 1px solid rgba(232, 179, 57, 0.18);
-  background: rgba(18, 22, 31, 0.15);
-  backdrop-filter: blur(10px);
+  background: rgba(18, 22, 31, 0.08);
+  
 }
 .composer textarea {
   flex: 1; max-height: 100px;
-  background: rgba(18, 22, 31, 0.2); color: #fff;
-  border: 1px solid rgba(232, 179, 57, 0.15);
+  background: rgba(18, 22, 31, 0.12); color: #fff;
+  border: 1px solid rgba(232, 179, 57, 0.1);
 }
 .composer textarea::placeholder { color: rgba(235, 240, 248, 0.75); }
 .composer .btn { background: rgba(24, 29, 41, 0.45); color: #fff; border-color: rgba(232, 179, 57, 0.18); }
