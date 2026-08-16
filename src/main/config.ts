@@ -86,12 +86,22 @@ export interface QQBotConfig {
   defaultTarget: string
 }
 
+export interface TelegramConfig {
+  /** Telegram 机器人开关(需向 @BotFather 申请 token)。 */
+  enabled: boolean
+  /** BotFather 颁发的机器人 token。 */
+  token: string
+  /** 允许使用的用户 ID(逗号分隔;空 = 允许所有)。 */
+  allowedUserIds: string
+}
+
 export interface AppConfig {
   harness: HarnessConfig
   screensaver: ScreensaverConfig
   appearance: AppearanceConfig
   remote: RemoteConfig
   qq: QQBotConfig
+  telegram: TelegramConfig
   window: { width: number; height: number }
 }
 
@@ -133,6 +143,11 @@ const DEFAULTS: AppConfig = {
     appId: '',
     appSecret: '',
     defaultTarget: '',
+  },
+  telegram: {
+    enabled: false,
+    token: '',
+    allowedUserIds: '',
   },
   window: { width: 1280, height: 800 },
 }

@@ -12,6 +12,7 @@ import type { HarnessManager } from './harness'
 import type { ModelManager } from './models'
 import type { QQBotAdapter } from './qq-bot'
 import type { ScreensaverController } from './screensaver'
+import type { TelegramBotAdapter } from './telegram-bot'
 
 export interface IpcDeps {
   config: ConfigStore
@@ -21,6 +22,7 @@ export interface IpcDeps {
   appearance: AppearanceManager
   gateway?: RemoteGateway
   qqBot?: QQBotAdapter
+  telegramBot?: TelegramBotAdapter
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -76,6 +78,14 @@ export function registerIpc(deps: IpcDeps): void {
     ipcMain.handle('qq:getConfig', () => qqBot.getConfig())
     ipcMain.handle('qq:setConfig', (_event, patch: object) => qqBot.setConfig(patch))
     ipcMain.handle('qq:status', () => qqBot.isStarted())
+  }
+
+  // ---- Telegram 机器人 ----
+  if (deps.telegramBot !== undefined) {
+    const telegramBot = deps.telegramBot
+    ipcMain.handle('telegram:getConfig', () => telegramBot.getConfig())
+    ipcMain.handle('telegram:setConfig', (_event, patch: object) => telegramBot.setConfig(patch))
+    ipcMain.handle('telegram:status', () => telegramBot.isStarted())
   }
 
   // ---- 外观 ----

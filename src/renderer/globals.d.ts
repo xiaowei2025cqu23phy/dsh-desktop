@@ -65,6 +65,12 @@ interface QQConfigView {
   defaultTarget: string
 }
 
+interface TelegramConfigView {
+  enabled: boolean
+  token: string
+  allowedUserIds: string
+}
+
 interface DesktopApi {
   harness: {
     getStatus(): Promise<HarnessStatus>
@@ -108,6 +114,11 @@ interface DesktopApi {
   qq: {
     getConfig(): Promise<QQConfigView>
     setConfig(patch: object): Promise<QQConfigView>
+    status(): Promise<boolean>
+  }
+  telegram: {
+    getConfig(): Promise<TelegramConfigView>
+    setConfig(patch: object): Promise<TelegramConfigView>
     status(): Promise<boolean>
   }
   appearance: {

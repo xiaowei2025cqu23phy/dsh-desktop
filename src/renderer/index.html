@@ -123,6 +123,34 @@
       </section>
 
       <section class="panel">
+        <h3>Telegram 机器人(可选)</h3>
+        <label class="check-row">
+          <input id="tg-enabled" type="checkbox" />
+          启用 Telegram 机器人远程控制
+        </label>
+        <div class="field">
+          <label for="tg-token">Bot Token(@BotFather 获取)</label>
+          <input id="tg-token" type="password" placeholder="123456:ABC-DEF..." />
+        </div>
+        <div class="field">
+          <label for="tg-users">允许的用户 ID(逗号分隔,留空=允许所有)</label>
+          <input id="tg-users" type="text" placeholder="例如 123456789, 987654321" />
+        </div>
+        <p class="hint">与 QQ 机器人共用同一套指令集与对话模式;Telegram 支持主动推送(后续可推送任务完成通知)。</p>
+        <div id="tg-status" class="hint"></div>
+      </section>
+
+      <section class="panel">
+        <h3>Webhook 命令端点(可选)</h3>
+        <p class="hint">启用「远程访问」后,任意 HTTP 客户端可 POST 指令执行远程命令(脚本、钉钉/飞书群机器人、Home Assistant 等):</p>
+        <div class="field">
+          <label>端点地址(与远程访问共用端口与令牌)</label>
+          <div id="webhook-endpoint" class="value-text"></div>
+        </div>
+        <p class="hint">调用示例:<br />POST /api/command<br />Header: Authorization: Bearer &lt;令牌&gt;<br />Body: {"text":"状态"}</p>
+      </section>
+
+      <section class="panel">
         <h3>外观 · 壁纸</h3>
         <div class="field">
           <label>主窗口壁纸</label>

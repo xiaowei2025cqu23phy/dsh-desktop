@@ -56,6 +56,11 @@ const api = {
     setConfig: (patch: object) => ipcRenderer.invoke('qq:setConfig', patch),
     status: () => ipcRenderer.invoke('qq:status'),
   },
+  telegram: {
+    getConfig: () => ipcRenderer.invoke('telegram:getConfig'),
+    setConfig: (patch: object) => ipcRenderer.invoke('telegram:setConfig', patch),
+    status: () => ipcRenderer.invoke('telegram:status'),
+  },
   appearance: {
     getConfig: () => ipcRenderer.invoke('appearance:getConfig'),
     pickSource: (kind: 'window' | 'phone' | 'screensaver') => ipcRenderer.invoke('appearance:pickSource', kind),

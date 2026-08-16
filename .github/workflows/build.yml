@@ -1,0 +1,48 @@
+name: build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run command parser tests
+        run: node scripts/qq-commands-test.mjs
+
+      - name: Package (installer + zip)
+        run: npx electron-builder --win nsis zip
+
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" "dist/DeepSeek-Harness-Desktop-Setup-0.1.0.exe" "dist/DeepSeek Harness Desktop-0.1.0-win.zip" --clobber
+
+      - name: Upload artifacts (untagged builds)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            dist/DeepSeek-Harness-Desktop-Setup-*.exe
+            dist/DeepSeek Harness Desktop-*.zip
