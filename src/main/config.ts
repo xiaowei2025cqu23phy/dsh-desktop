@@ -70,6 +70,11 @@ export interface RemoteConfig {
   port: number
   /** Bearer 令牌(首次启用时自动生成)。 */
   token: string
+  /**
+   * 预设工作区根目录:手机端只能在这些目录下新建文件夹工作区并发布任务;
+   * 已有工作区(含电脑端创建的)不受限,均可选择。
+   */
+  presetWorkspaceRoots: string[]
 }
 
 export interface QQBotConfig {
@@ -86,6 +91,8 @@ export interface QQBotConfig {
   defaultTarget: string
   /** 默认对话模式:非指令消息自动进入纯对话(无需先发「进入」)。 */
   autoChat: boolean
+  /** 主动汇报:机器人发起的任务完成/失败时主动推送通知。 */
+  report: boolean
 }
 
 export interface TelegramConfig {
@@ -97,6 +104,8 @@ export interface TelegramConfig {
   allowedUserIds: string
   /** 默认对话模式:非指令消息自动进入纯对话(无需先发「进入」)。 */
   autoChat: boolean
+  /** 主动汇报:机器人发起的任务完成/失败时主动推送通知。 */
+  report: boolean
 }
 
 export interface UpdaterConfig {
@@ -147,6 +156,7 @@ const DEFAULTS: AppConfig = {
     enabled: false,
     port: 3082,
     token: '',
+    presetWorkspaceRoots: [],
   },
   qq: {
     enabled: false,
@@ -154,12 +164,14 @@ const DEFAULTS: AppConfig = {
     appSecret: '',
     defaultTarget: '',
     autoChat: false,
+    report: false,
   },
   telegram: {
     enabled: false,
     token: '',
     allowedUserIds: '',
     autoChat: false,
+    report: false,
   },
   updater: {
     autoCheck: true,

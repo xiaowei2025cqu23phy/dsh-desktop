@@ -80,6 +80,9 @@ export function registerIpc(deps: IpcDeps): void {
     ipcMain.handle('qq:getConfig', () => qqBot.getConfig())
     ipcMain.handle('qq:setConfig', (_event, patch: object) => qqBot.setConfig(patch))
     ipcMain.handle('qq:status', () => qqBot.isStarted())
+    ipcMain.handle('qq:onboardStart', () => qqBot.onboardStart())
+    ipcMain.handle('qq:onboardStatus', () => qqBot.onboardStatus())
+    ipcMain.handle('qq:onboardCancel', () => qqBot.onboardCancel())
   }
 
   // ---- Telegram 机器人 ----

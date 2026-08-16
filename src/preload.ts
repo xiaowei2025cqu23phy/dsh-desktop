@@ -55,6 +55,9 @@ const api = {
     getConfig: () => ipcRenderer.invoke('qq:getConfig'),
     setConfig: (patch: object) => ipcRenderer.invoke('qq:setConfig', patch),
     status: () => ipcRenderer.invoke('qq:status'),
+    onboardStart: () => ipcRenderer.invoke('qq:onboardStart'),
+    onboardStatus: () => ipcRenderer.invoke('qq:onboardStatus'),
+    onboardCancel: () => ipcRenderer.invoke('qq:onboardCancel'),
   },
   telegram: {
     getConfig: () => ipcRenderer.invoke('telegram:getConfig'),

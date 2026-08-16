@@ -12,6 +12,7 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { ConfigStore, QQBotConfig } from './config'
 import { APPROVE_BUTTON_PREFIX, findEventUserId, parseApprovalButtonData } from './qq-commands'
+import { startOnboard, type OnboardProgress } from './qq-onboard'
 import type { RemoteCommandProcessor } from './remote-commands'
 
 /** 单条 QQ 消息长度上限(保守取平台限制以下)。 */
@@ -41,6 +42,9 @@ export class QQBotAdapter {
   private started = false
   /** userId(openid)→ 主动推送目标(登记自最近一次交互)。 */
   private userTargets = new Map<string, { target: PushTarget; ts: number }>()
+  /** 扫码登录流程状态。 */
+  private onboardAbort: AbortController | null = null
+  private onboardProgress: OnboardProgress | null = null
 
   constructor(
     private config: ConfigStore,
@@ -55,12 +59,61 @@ export class QQBotAdapter {
     const next = this.config.update('qq', patch)
     this.processor.defaultTarget = next.defaultTarget ?? ''
     this.processor.setAutoChat('qq', next.autoChat === true)
+    this.processor.setReport('qq', next.report === true)
     void this.restart()
     return next
   }
 
   isStarted(): boolean {
     return this.started
+  }
+
+  // ---- 扫码登录(onboard) ----
+
+  /** 开始扫码绑定:返回二维码就绪后的进度(渲染层展示二维码并轮询状态)。 */
+  async onboardStart(): Promise<OnboardProgress> {
+    this.onboardAbort?.abort()
+    this.onboardAbort = new AbortController()
+    const signal = this.onboardAbort.signal
+    this.onboardProgress = null
+    void startOnboard(
+      (qrDataUrl) => {
+        this.onboardProgress = { status: 'pending', qrDataUrl }
+      },
+      (progress) => {
+        this.onboardProgress = progress
+        // 绑定成功:自动填入 AppID/AppSecret 并重启机器人。
+        if (progress.status === 'completed' && progress.appId !== undefined && progress.appSecret !== undefined) {
+          try {
+            this.setConfig({ appId: progress.appId, appSecret: progress.appSecret })
+          } catch (error) {
+            console.error('[qq-bot] 应用扫码凭据失败:', error)
+          }
+        }
+      },
+      signal,
+    ).catch((error) => {
+      console.error('[qq-bot] 扫码流程异常:', error)
+      this.onboardProgress = { status: 'error', qrDataUrl: null, error: error instanceof Error ? error.message : String(error) }
+    })
+    // 等待二维码就绪(最多 15 秒)。
+    const deadline = Date.now() + 15000
+    while (this.onboardProgress === null && Date.now() < deadline) {
+      await sleep(200)
+    }
+    return this.onboardProgress ?? { status: 'error', qrDataUrl: null, error: '二维码生成超时' }
+  }
+
+  /** 当前扫码进度(渲染层轮询)。 */
+  onboardStatus(): OnboardProgress | null {
+    return this.onboardProgress
+  }
+
+  /** 取消扫码流程。 */
+  onboardCancel(): void {
+    this.onboardAbort?.abort()
+    this.onboardAbort = null
+    this.onboardProgress = null
   }
 
   async restart(): Promise<void> {
@@ -73,6 +126,7 @@ export class QQBotAdapter {
     const config = this.getConfig()
     this.processor.defaultTarget = config.defaultTarget ?? ''
     this.processor.setAutoChat('qq', config.autoChat === true)
+    this.processor.setReport('qq', config.report === true)
     if (!config.enabled || config.appId.trim() === '' || config.appSecret.trim() === '') {
       console.log('[qq-bot] 未配置或未启用,跳过')
       return
@@ -260,4 +314,8 @@ function buildApprovalKeyboard(sessionId: string, approvalId: string): unknown {
       }],
     },
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

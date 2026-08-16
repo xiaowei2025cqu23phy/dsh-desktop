@@ -117,7 +117,7 @@ This guide walks you through the desktop client end to end: installation, config
 4. 功能:
    - **会话**:列表 → 打开 → 历史与实时流式收发消息、停止任务;
    - **任务**:填描述 → 选工作区 → 选模型 → 运行并实时查看;
-   - **工作区**:列表、新建(输入完整路径)。
+   - **工作区**:列表、新建(在电脑端配置的**预设根目录**下新建文件夹;不能指定任意路径)。
 5. 安全:令牌认证 + RPC 白名单,仅局域网可达;令牌在设置面板可重新生成(旧令牌立即失效)。
 
 **English**
@@ -128,7 +128,7 @@ This guide walks you through the desktop client end to end: installation, config
 4. Features:
    - **Sessions**: list → open → history + real-time streaming chat, stop tasks;
    - **Tasks**: describe → choose workspace → choose model → run and watch live;
-   - **Workspaces**: list, create (enter a full path).
+   - **Workspaces**: list, create (new folders under the **preset roots** configured on the PC; arbitrary paths are not allowed).
 5. Security: token auth + RPC allowlist, LAN only; regenerate the token in the settings panel anytime (the old one stops working immediately).
 
 ---
@@ -137,7 +137,7 @@ This guide walks you through the desktop client end to end: installation, config
 
 **中文**
 
-**准备**:在 [QQ 开放平台](https://q.qq.com) 注册机器人,获取 AppID / AppSecret(需实名)。
+**准备**:在 [QQ 开放平台](https://q.qq.com) 注册机器人,获取 AppID / AppSecret(需实名)。也可以直接点设置面板的「**扫码登录**」:用手机 QQ 扫二维码,绑定成功后 AppID/AppSecret 自动填入。
 
 **配置**:「设置 → QQ 机器人」→ 勾选「启用」→ 填入 AppID / AppSecret → 可填「默认工作区/目录」(任务未指定时使用)、勾选「**默认对话模式**」(非指令消息直接进入纯对话,无需先发「进入」)→ 状态显示「✓ 已连接 QQ」即就绪。
 
@@ -158,7 +158,7 @@ This guide walks you through the desktop client end to end: installation, config
 
 **典型流程**:`工作区` 看列表 → `进入 qqbot` → 连续对话(修改代码、查资料……)→ `退出`。
 
-**说明**:QQ 官方机器人以**被动回复**为主,但与机器人交互后 48 小时内支持**主动推送**(审批/提问即时通知;**审批通知带「允许/拒绝」内联按钮**,点一下即可应答,也可回复文字);长回复自动分段;推送失败时待办仍会附加在下次回复末尾提醒。
+**说明**:QQ 官方机器人以**被动回复**为主,但与机器人交互后 48 小时内支持**主动推送**(任务完成/失败汇报、审批/提问即时通知;**审批通知带「允许/拒绝」内联按钮**,点一下即可应答,也可回复文字);长回复自动分段;推送失败时待办仍会附加在下次回复末尾提醒。
 
 **English**
 
@@ -183,7 +183,7 @@ This guide walks you through the desktop client end to end: installation, config
 
 **Typical flow**: `工作区` to list → `进入 qqbot` → chat continuously (fix code, look things up…) → `退出`.
 
-**Notes**: QQ official bots are mainly **passive-reply**, but within 48h of a user interaction they support **proactive push** (instant approval/question notifications; **approval messages carry inline Allow/Deny buttons** — tap to answer, or reply with text); long replies are split automatically; if a push fails, pending items are still appended to the next reply as a reminder.
+**Notes**: QQ official bots are mainly **passive-reply**, but within 48h of a user interaction they support **proactive push** (task done/failed reports, instant approval/question notifications; **approval messages carry inline Allow/Deny buttons** — tap to answer, or reply with text); long replies are split automatically; if a push fails, pending items are still appended to the next reply as a reminder.
 
 ---
 

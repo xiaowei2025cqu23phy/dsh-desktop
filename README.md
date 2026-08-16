@@ -211,3 +211,20 @@ scripts/           冒烟与端到端测试脚本
 - 系统屏保注册仅支持 Windows(注册表方案,注册前自动备份原设置,取消时恢复);macOS/Linux 可用内置空闲检测模式。
 - 事件流传输自动协商:旧版 harness 只接受 WebSocket(HTTP 返回 426),新版额外支持 SSE;两者都兼容。
 - 屏保窗口内禁用了系统休眠时的自动唤醒逻辑(跟随系统屏保行为)。
+
+## 致谢 / Acknowledgements
+
+本项目站在众多优秀开源项目的肩膀上,衷心感谢以下项目及其维护者:
+
+| 项目 | 贡献 |
+|---|---|
+| [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) | 核心 Agent 引擎与 HTTP RPC / 事件流协议,桌面端、手机 PWA 与机器人通道都建立在它之上 |
+| [tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs) | QQ 开放平台机器人 Node SDK:WebSocket 网关、消息收发、主动推送(48h 窗口)与内联键盘审批按钮 |
+| [tencent-connect/qqbot-agent-sdk](https://github.com/tencent-connect/qqbot-agent-sdk) | 扫码登录(onboard:create_bind_task / AES-GCM 凭据解密)与审批内联键盘的协议参考实现 |
+| [tencent-connect/dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot) | 官方 QQ×DSH 插件:指令集、会话映射与事件展示的设计参考 |
+| [electron](https://github.com/electron/electron) 与 [electron-builder](https://github.com/electron-userland/electron-builder) | 桌面壳与打包分发 |
+| [node-qrcode](https://github.com/soldair/node-qrcode) | 手机扫码配对与 QQ 扫码登录的二维码生成 |
+
+QQ 机器人通道的协议细节参考了 [QQ 开放平台 API v2 文档](https://bot.q.qq.com/wiki/develop/api-v2/) 与 [Agent QQBot 接入指南](https://bot.q.qq.com/wiki/agent-qqbot/)。
+
+如果你也是这些项目的维护者——谢谢你们的工作,让这个项目成为可能 🙏

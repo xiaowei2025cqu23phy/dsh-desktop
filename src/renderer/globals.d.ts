@@ -56,6 +56,7 @@ interface RemoteConfigView {
   enabled: boolean
   port: number
   token: string
+  presetWorkspaceRoots: string[]
 }
 
 interface QQConfigView {
@@ -64,6 +65,16 @@ interface QQConfigView {
   appSecret: string
   defaultTarget: string
   autoChat: boolean
+  report: boolean
+}
+
+interface OnboardProgressView {
+  status: 'pending' | 'completed' | 'expired' | 'error'
+  qrDataUrl: string | null
+  appId?: string
+  appSecret?: string
+  userOpenid?: string
+  error?: string
 }
 
 interface TelegramConfigView {
@@ -71,6 +82,7 @@ interface TelegramConfigView {
   token: string
   allowedUserIds: string
   autoChat: boolean
+  report: boolean
 }
 
 interface DesktopApi {
@@ -117,6 +129,9 @@ interface DesktopApi {
     getConfig(): Promise<QQConfigView>
     setConfig(patch: object): Promise<QQConfigView>
     status(): Promise<boolean>
+    onboardStart(): Promise<OnboardProgressView>
+    onboardStatus(): Promise<OnboardProgressView | null>
+    onboardCancel(): Promise<void>
   }
   telegram: {
     getConfig(): Promise<TelegramConfigView>

@@ -17,6 +17,10 @@ import { parseCommand, parseTaskOptions, type QQCommand } from './qq-commands'
 /** 单条回复长度上限(超长由通道分段)。 */
 export const MAX_REPLY_LENGTH = 1500
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
 /** 对话模式上下文。 */
 interface ChatContext {
   sessionId: string
@@ -72,6 +76,8 @@ export class RemoteCommandProcessor {
   private push: PushFn | null = null
   /** 开启「默认对话模式」的通道:非指令消息自动进入纯对话(无需先发「进入」)。 */
   private autoChatChannels = new Set<string>()
+  /** 开启「主动汇报」的通道:机器人发起的任务完成/失败时主动推送。 */
+  private reportChannels = new Set<string>()
 
   constructor(private harness: HarnessManager) {}
 
@@ -84,6 +90,12 @@ export class RemoteCommandProcessor {
   setAutoChat(channel: string, enabled: boolean): void {
     if (enabled) this.autoChatChannels.add(channel)
     else this.autoChatChannels.delete(channel)
+  }
+
+  /** 开关某通道的主动汇报(任务完成/失败时推送)。 */
+  setReport(channel: string, enabled: boolean): void {
+    if (enabled) this.reportChannels.add(channel)
+    else this.reportChannels.delete(channel)
   }
 
   /**
@@ -563,9 +575,35 @@ export class RemoteCommandProcessor {
         if (sessionId !== '') this.pendingQuestions.delete(sessionId)
         break
       }
+      case 'session/event': {
+        // 主动汇报:机器人发起的任务完成/失败时推送通知(通道需开启汇报开关)。
+        this.handleSessionEvent(payload)
+        break
+      }
       default:
         break
     }
+  }
+
+  /** 会话事件汇报:turn/end 时向发起者推送完成/失败通知。 */
+  private handleSessionEvent(payload: Record<string, unknown>): void {
+    const sessionId = String(payload.sessionId ?? '')
+    const owner = this.sessionOwners.get(sessionId)
+    if (owner === undefined || !this.reportChannels.has(owner.channel)) return
+    if (!isRecord(payload.event)) return
+    if (payload.event.type !== 'turn/end') return
+    const data = isRecord(payload.event.data) ? payload.event.data : {}
+    const reason = isRecord(data.reason) ? data.reason : {}
+    const detail = reason.error ?? reason.failure
+    const message = typeof detail === 'object' && detail !== null && typeof (detail as { message?: unknown }).message === 'string'
+      ? (detail as { message: string }).message
+      : typeof reason.message === 'string'
+        ? reason.message
+        : ''
+    const text = reason.kind === 'error'
+      ? `❌ 任务失败(会话 ${sessionId})${message !== '' ? `\n${message.slice(0, 200)}` : ''}\n发送「打开 ${sessionId}」查看详情`
+      : `✅ 任务完成(会话 ${sessionId})\n发送「打开 ${sessionId}」查看结果`
+    if (this.push !== null) this.push(owner.channel, owner.userId, text)
   }
 
   /** 允许/拒绝审批(指令入口):outcome 为 'allowed-once' | 'rejected'。 */

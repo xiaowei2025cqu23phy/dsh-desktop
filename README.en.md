@@ -162,6 +162,23 @@ Protocol details may evolve with the harness; the methods used come from the cur
 
 Thanks to the DeepSeek Harness community and everyone who provided feedback during testing.
 
+### Acknowledgements
+
+This project stands on the shoulders of many excellent open-source projects. Special thanks to:
+
+| Project | Contribution |
+|---|---|
+| [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) | The core agent engine and the HTTP RPC / event-stream protocol that the desktop app, phone PWA and bot channels are all built on |
+| [tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs) | QQ Open Platform bot Node SDK: WebSocket gateway, messaging, proactive push (48h window) and inline-keyboard approval buttons |
+| [tencent-connect/qqbot-agent-sdk](https://github.com/tencent-connect/qqbot-agent-sdk) | Reference implementation of scan-to-configure onboarding (`create_bind_task` / AES-GCM credential decryption) and approval inline keyboards |
+| [tencent-connect/dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot) | The official QQ×DSH plugin: design reference for command sets, session mapping and event presentation |
+| [Electron](https://github.com/electron/electron) & [electron-builder](https://github.com/electron-userland/electron-builder) | Desktop shell and packaging |
+| [node-qrcode](https://github.com/soldair/node-qrcode) | QR generation for phone pairing and QQ scan login |
+
+QQ bot protocol details follow the [QQ Open Platform API v2](https://bot.q.qq.com/wiki/develop/api-v2/) and the [Agent QQBot guide](https://bot.q.qq.com/wiki/agent-qqbot/).
+
+If you maintain any of these projects — thank you for making this possible 🙏
+
 ## Known Limitations
 
 - The screensaver is a **viewing mode**: interactions (input, approvals) happen back in the main Web UI; a session that needs confirmation waits and stays visible in the Web UI.

@@ -16,6 +16,8 @@ export interface TelegramConfig {
   allowedUserIds: string
   /** 默认对话模式:非指令消息自动进入纯对话(无需先发「进入」)。 */
   autoChat: boolean
+  /** 主动汇报:机器人发起的任务完成/失败时主动推送通知。 */
+  report: boolean
 }
 
 export class TelegramBotAdapter {
@@ -36,6 +38,7 @@ export class TelegramBotAdapter {
   setConfig(patch: Partial<TelegramConfig>): TelegramConfig {
     const next = this.config.update('telegram', patch)
     this.processor.setAutoChat('telegram', next.autoChat === true)
+    this.processor.setReport('telegram', next.report === true)
     void this.restart()
     return next
   }
@@ -53,6 +56,7 @@ export class TelegramBotAdapter {
     if (this.started) return
     const config = this.getConfig()
     this.processor.setAutoChat('telegram', config.autoChat === true)
+    this.processor.setReport('telegram', config.report === true)
     if (!config.enabled || config.token.trim() === '') {
       console.log('[telegram] 未配置或未启用,跳过')
       return
