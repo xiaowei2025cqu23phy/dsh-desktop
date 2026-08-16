@@ -12,6 +12,8 @@ export type QQCommand =
   | { kind: 'open'; sessionId: string }
   | { kind: 'progress'; sessionId: string }
   | { kind: 'run'; description: string }
+  | { kind: 'enter'; target: string }
+  | { kind: 'exit' }
   | { kind: 'unknown'; text: string }
 
 export function parseCommand(content: string): QQCommand {
@@ -23,6 +25,9 @@ export function parseCommand(content: string): QQCommand {
   if (lower === '会话' || lower === 'sessions') return { kind: 'sessions' }
   if (lower === '工作区' || lower === 'workspaces') return { kind: 'workspaces' }
   if (lower === '模型' || lower === 'models') return { kind: 'models' }
+  if (lower === '退出' || lower === '结束' || lower === 'exit' || lower === '退出对话') {
+    return { kind: 'exit' }
+  }
   const parts = content.trim().split(/\s+/)
   if (parts[0] === '停止' || parts[0] === 'cancel') {
     return { kind: 'cancel', sessionId: parts[1] ?? '' }
@@ -32,6 +37,9 @@ export function parseCommand(content: string): QQCommand {
   }
   if (parts[0] === '进展' || parts[0] === 'progress' || parts[0] === '进度') {
     return { kind: 'progress', sessionId: parts[1] ?? '' }
+  }
+  if (parts[0] === '进入' || parts[0] === 'enter' || parts[0] === '进入工作区') {
+    return { kind: 'enter', target: content.trim().slice(parts[0].length).trim() }
   }
   if (parts[0] === '任务' || parts[0] === 'run' || parts[0] === '执行') {
     return { kind: 'run', description: content.trim().slice(parts[0].length).trim() }
