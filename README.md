@@ -34,7 +34,7 @@
 > 系统要求:Windows x64、Node.js 18+(仅在桌面端需要托管拉起 harness 时使用)。
 > 提示:先运行 `npx @deepseek-ai/dsh web` 并配置好模型密钥,再打开桌面端,体验最佳。
 
-> 📖 完整安装、配置、手机端与 QQ 机器人使用步骤见 [实操指南(汉英双语)](docs/USAGE.md)。
+> 📖 完整安装、配置、手机端与 QQ 机器人使用步骤见 [实操指南(汉英双语)](docs/USAGE.md),接入钉钉/飞书/Home Assistant/iOS 捷径等更多方式见 [接入指南](docs/INTEGRATIONS.md)。
 
 ## 参考与致谢
 

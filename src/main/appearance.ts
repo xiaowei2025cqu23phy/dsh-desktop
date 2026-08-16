@@ -6,7 +6,7 @@
  */
 
 import { app, dialog } from 'electron'
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import type { AppearanceConfig, ConfigStore, WallpaperSpec } from './config'
 
@@ -94,6 +94,59 @@ export class AppearanceManager {
     if (path === null) return null
     if (existsSync(path)) return path
     return null
+  }
+
+  // ---- 内置壁纸包 ----
+
+  /** 内置壁纸包根目录(开发 = 项目 assets;打包 = app.asar 内,asar 支持读目录)。 */
+  private packsRoot(): string {
+    return join(app.getAppPath(), 'assets', 'wallpapers')
+  }
+
+  /** 列出壁纸包:内置包(assets/wallpapers)+ 用户本地包(userData/wallpapers 下 pack-*)。 */
+  listPacks(): Array<{ id: string; files: Record<string, string> }> {
+    const packs: Array<{ id: string; files: Record<string, string> }> = []
+    const collect = (root: string, isUserPack: boolean): void => {
+      if (!existsSync(root)) return
+      for (const name of readdirSync(root)) {
+        const dir = join(root, name)
+        if (!statSync(dir).isDirectory()) continue
+        if (isUserPack && !name.startsWith('pack-')) continue
+        const files: Record<string, string> = {}
+        for (const surface of ['window', 'phone', 'screensaver'] as const) {
+          const file = join(dir, `${surface}.png`)
+          if (existsSync(file)) files[surface] = file
+        }
+        if (Object.keys(files).length > 0) packs.push({ id: name, files })
+      }
+    }
+    collect(this.packsRoot(), false)
+    collect(join(app.getPath('userData'), 'wallpapers'), true)
+    return packs
+  }
+
+  /**
+   * 应用壁纸包到三端:源文件在 asar 内时复制到用户数据目录(asar 内文件无法
+   * 被渲染进程 file:// 加载);已在用户目录的包直接引用。
+   */
+  applyPack(id: string): AppearanceConfig {
+    const pack = this.listPacks().find((p) => p.id === id)
+    if (pack === undefined) throw new Error(`壁纸包不存在:${id}`)
+    const dir = join(app.getPath('userData'), 'wallpapers')
+    mkdirSync(dir, { recursive: true })
+    const userDataRoot = dir
+    const spec: Partial<AppearanceConfig> = { mask: 0.55 }
+    for (const surface of ['window', 'phone', 'screensaver'] as const) {
+      const source = pack.files[surface]
+      if (source === undefined) continue
+      let target = source
+      if (!source.startsWith(userDataRoot)) {
+        target = join(dir, `pack-${id}-${surface}.png`)
+        copyFileSync(source, target)
+      }
+      spec[surface] = { path: target, position: { x: 0.5, y: 0.5 } }
+    }
+    return this.config.update('appearance', spec as Partial<AppearanceConfig>)
   }
 }
 

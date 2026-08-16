@@ -70,10 +70,17 @@ const api = {
     setMask: (mask: number) => ipcRenderer.invoke('appearance:setMask', mask),
     wallpaperData: (kind: 'window' | 'phone' | 'screensaver') =>
       ipcRenderer.invoke('appearance:wallpaperData', kind),
+    listPacks: () => ipcRenderer.invoke('appearance:listPacks'),
+    applyPack: (id: string) => ipcRenderer.invoke('appearance:applyPack', id),
   },
   app: {
     openSettingsFolder: () => ipcRenderer.invoke('app:openSettingsFolder'),
     quit: () => ipcRenderer.invoke('app:quit'),
+  },
+  updater: {
+    getInfo: () => ipcRenderer.invoke('updater:getInfo'),
+    check: () => ipcRenderer.invoke('updater:check'),
+    openRelease: () => ipcRenderer.invoke('updater:openRelease'),
   },
 }
 

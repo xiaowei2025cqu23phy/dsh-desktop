@@ -13,6 +13,7 @@ import type { ModelManager } from './models'
 import type { QQBotAdapter } from './qq-bot'
 import type { ScreensaverController } from './screensaver'
 import type { TelegramBotAdapter } from './telegram-bot'
+import type { UpdateChecker } from './updater'
 
 export interface IpcDeps {
   config: ConfigStore
@@ -23,6 +24,7 @@ export interface IpcDeps {
   gateway?: RemoteGateway
   qqBot?: QQBotAdapter
   telegramBot?: TelegramBotAdapter
+  updater?: UpdateChecker
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -103,6 +105,8 @@ export function registerIpc(deps: IpcDeps): void {
     return deps.appearance.clear(kind)
   })
   ipcMain.handle('appearance:setMask', (_event, mask: number) => deps.appearance.setMask(mask))
+  ipcMain.handle('appearance:listPacks', () => deps.appearance.listPacks())
+  ipcMain.handle('appearance:applyPack', (_event, id: string) => deps.appearance.applyPack(id))
   // 指定端壁纸的 data URL + 布设偏移:供内嵌 harness Web UI 作为背景注入。
   ipcMain.handle('appearance:wallpaperData', (_event, kind: string) => {
     if (!isWallpaperKind(kind)) return { dataUrl: null, position: { x: 0.5, y: 0.5 } }
@@ -124,6 +128,17 @@ export function registerIpc(deps: IpcDeps): void {
     if (buffer.byteLength > 20 * 1024 * 1024) return { dataUrl: null }
     return { dataUrl: `data:${mime};base64,${buffer.toString('base64')}`, position: spec.position }
   })
+
+  // ---- 更新 ----
+  if (deps.updater !== undefined) {
+    const updater = deps.updater
+    ipcMain.handle('updater:getInfo', () => updater.getInfo())
+    ipcMain.handle('updater:check', () => updater.check())
+    ipcMain.handle('updater:openRelease', async () => {
+      const info = updater.getInfo()
+      if (info.url !== null) await shell.openExternal(info.url)
+    })
+  }
 
   // ---- 应用 ----
   ipcMain.handle('app:openSettingsFolder', async () => {

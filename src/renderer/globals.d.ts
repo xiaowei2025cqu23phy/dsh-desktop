@@ -135,10 +135,17 @@ interface DesktopApi {
       dataUrl: string | null
       position: { x: number; y: number }
     }>
+    listPacks(): Promise<Array<{ id: string; files: Record<string, string> }>>
+    applyPack(id: string): Promise<AppearanceConfigView>
   }
   app: {
     openSettingsFolder(): Promise<{ opened: true }>
     quit(): Promise<void>
+  }
+  updater: {
+    getInfo(): Promise<{ current: string; latest: string | null; url: string | null; checkedAt: number }>
+    check(): Promise<{ current: string; latest: string | null; url: string | null; checkedAt: number }>
+    openRelease(): Promise<void>
   }
 }
 

@@ -35,7 +35,7 @@ Uninstalling keeps user config and wallpapers (does not delete `%APPDATA%`); for
 > Requirements: Windows x64, Node.js 18+ (only needed when the desktop app manages/hosts the harness).
 > Tip: Run `npx @deepseek-ai/dsh web` and configure a model API key first for the best experience.
 
-> 📖 Step-by-step installation, configuration, phone and QQ-bot usage: [Hands-on Guide (bilingual)](docs/USAGE.md).
+> 📖 Step-by-step installation, configuration, phone and QQ-bot usage: [Hands-on Guide (bilingual)](docs/USAGE.md). Hook up DingTalk / Feishu / Home Assistant / iOS Shortcuts and more: [Integration Guide](docs/INTEGRATIONS.md).
 
 ## Features
 
