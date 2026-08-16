@@ -9,8 +9,9 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && node scripts/copy-assets.mjs",
     "start": "npm run build && electron .",
     "smoke": "node scripts/smoke.mjs",
-    "pack": "npm run build && electron-builder --win zip",
-    "pack:portable": "npm run build && electron-builder --win portable"
+    "pack": "npm run build && electron-builder --win nsis zip",
+    "pack:portable": "npm run build && electron-builder --win portable",
+    "pack:zip": "npm run build && electron-builder --win zip"
   },
   "build": {
     "appId": "ai.deepseek.harness.desktop",
@@ -29,9 +30,20 @@
     ],
     "win": {
       "target": [
+        "nsis",
         "zip"
       ],
       "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DeepSeek Harness Desktop",
+      "artifactName": "DeepSeek-Harness-Desktop-Setup-${version}.exe",
+      "deleteAppDataOnUninstall": false
     }
   },
   "devDependencies": {

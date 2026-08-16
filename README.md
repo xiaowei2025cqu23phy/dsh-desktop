@@ -13,9 +13,25 @@
 
 ## 隐私说明
 
-- 发布包(安装包/zip)只包含应用代码与运行库,**不包含**任何本地配置、壁纸、访问令牌、API 密钥、会话数据或日志。
+- 发布包(安装包 exe / zip)只包含应用代码与运行库,**不包含**任何本地配置、壁纸、访问令牌、API 密钥、会话数据或日志。
 - 用户的壁纸、令牌与配置保存在系统用户目录(`%APPDATA%/DeepSeek Harness Desktop`),永远不会进入安装包或提交到仓库。
+- 安装程序**不会删除**用户数据:卸载时保留 `%APPDATA%` 下的配置与壁纸(`deleteAppDataOnUninstall = false`)。
 - 若从源码自行构建,构建产物同样不涉及上述用户数据。
+
+## 下载与安装
+
+从 [GitHub Releases](https://github.com/xiaowei2025cqu23phy/dsh-desktop/releases) 下载,三种形态任选:
+
+| 形态 | 文件 | 说明 |
+|---|---|---|
+| **安装版(推荐)** | `DeepSeek-Harness-Desktop-Setup-*.exe` | NSIS 安装程序,双击安装,自动创建开始菜单与桌面快捷方式,可选安装目录 |
+| 便携版 | `DeepSeek.Harness.Desktop-*.win.zip` | 解压即用,免安装,适合 U 盘携带 |
+| 源码版 | 克隆仓库 `npm install && npm start` | 自行构建 |
+
+安装版卸载时保留用户配置与壁纸(不会删除 `%APPDATA%` 数据);如需彻底清理请手动删除 `%APPDATA%/DeepSeek Harness Desktop`。
+
+> 系统要求:Windows x64、Node.js 18+(仅在桌面端需要托管拉起 harness 时使用)。
+> 提示:先运行 `npx @deepseek-ai/dsh web` 并配置好模型密钥,再打开桌面端,体验最佳。
 
 ## 参考与致谢
 
