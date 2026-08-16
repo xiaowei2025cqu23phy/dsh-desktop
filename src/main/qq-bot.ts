@@ -15,6 +15,9 @@
  * 只能在用户发消息后回复(无法主动推送)。
  */
 
+import { app } from 'electron'
+import { createRequire } from 'node:module'
+import { join } from 'node:path'
 import type { ConfigStore, QQBotConfig } from './config'
 import type { HarnessManager } from './harness'
 import { parseCommand, parseTaskOptions } from './qq-commands'
@@ -59,8 +62,14 @@ export class QQBotAdapter {
       return
     }
     try {
-      // SDK 为纯 ESM,CJS 主进程用动态 import。
-      const sdk = await import('@tencent-connect/qqbot-nodejs') as { QQBot: new (options: unknown) => {
+      // SDK 为纯 ESM 且 exports 只声明 import 条件(CJS 包名解析报 ERR_PACKAGE_PATH_NOT_EXPORTED,
+      // Electron CJS 主进程的动态 import 也会被转成 require)。因此绕过包名解析:
+      // createRequire 直接加载 SDK 入口文件路径 —— Node 22 的 require(esm) 支持 ESM 文件,
+      // 且对具体文件路径不查 exports。
+      const sdkEntry = app.isPackaged
+        ? join(process.resourcesPath, 'app.asar.unpacked', 'node_modules', '@tencent-connect', 'qqbot-nodejs', 'dist', 'index.js')
+        : join(app.getAppPath(), 'node_modules', '@tencent-connect', 'qqbot-nodejs', 'dist', 'index.js')
+      const sdk = createRequire(__filename)(sdkEntry) as { QQBot: new (options: unknown) => {
         on: (event: string, listener: (...args: unknown[]) => void) => void
         start: () => Promise<void>
         stop: () => void
@@ -72,17 +81,21 @@ export class QQBotAdapter {
         logger: console,
       })
       this.bot = bot
+      // 上线以 SDK ready 事件为准(start() 可能等待更长握手,不阻塞应用启动)。
+      bot.on('ready', () => {
+        this.started = true
+        console.log('[qq-bot] QQ 机器人已连接')
+      })
       bot.on('message', (_ctx, msg) => {
         void this.handleMessage(msg).catch((error) => {
           console.error('[qq-bot] 消息处理失败:', error)
         })
       })
       await bot.start()
-      this.started = true
-      console.log('[qq-bot] QQ 机器人已连接')
     } catch (error) {
       console.error('[qq-bot] 启动失败:', error)
       this.bot = null
+      this.started = false
     }
   }
 
