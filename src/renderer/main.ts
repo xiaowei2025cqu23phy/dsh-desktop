@@ -202,7 +202,7 @@ async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
   await Promise.all([loadHarnessConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(),
-    loadRemoteConfig(), loadQQConfig(), refreshLogs()])
+    loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), refreshWebhookEndpoint(), refreshLogs()])
   if (logsTimer === null) {
     logsTimer = setInterval(() => { if (drawerOpen) void refreshLogs() }, 3000)
   }
@@ -789,6 +789,36 @@ async function loadQQConfig(): Promise<void> {
   }
 }
 
+// ---- Telegram 机器人 ----
+
+async function loadTelegramConfig(): Promise<void> {
+  try {
+    const config = await API.telegram.getConfig()
+    input('tg-enabled').checked = config.enabled
+    input('tg-token').value = config.token
+    input('tg-users').value = config.allowedUserIds ?? ''
+    const started = await API.telegram.status()
+    $id('tg-status').textContent = started ? '✓ 已启动' : (config.enabled && config.token ? '启动中/失败,查看日志' : '')
+  } catch {
+    // 忽略
+  }
+}
+
+async function refreshWebhookEndpoint(): Promise<void> {
+  try {
+    const remote = await API.remote.getConfig()
+    const addresses = await API.remote.lanAddresses()
+    if (!remote.enabled) {
+      $id('webhook-endpoint').textContent = '请先启用「远程访问」'
+      return
+    }
+    const host = addresses[0] ?? '127.0.0.1'
+    $id('webhook-endpoint').textContent = `http://${host}:${remote.port}/api/command`
+  } catch {
+    // 忽略
+  }
+}
+
 // ---- 事件绑定 ----
 
 function bind(): void {
@@ -857,6 +887,19 @@ function bind(): void {
   })
   input('qq-target').addEventListener('change', async () => {
     await API.qq.setConfig({ defaultTarget: input('qq-target').value.trim() })
+  })
+
+  // Telegram 机器人
+  input('tg-enabled').addEventListener('change', async () => {
+    await API.telegram.setConfig({ enabled: input('tg-enabled').checked })
+    await loadTelegramConfig()
+  })
+  input('tg-token').addEventListener('change', async () => {
+    await API.telegram.setConfig({ token: input('tg-token').value.trim() })
+    await loadTelegramConfig()
+  })
+  input('tg-users').addEventListener('change', async () => {
+    await API.telegram.setConfig({ allowedUserIds: input('tg-users').value.trim() })
   })
 
   // 外观

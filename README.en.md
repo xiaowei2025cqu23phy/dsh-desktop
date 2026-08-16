@@ -48,6 +48,22 @@ Uninstalling keeps user config and wallpapers (does not delete `%APPDATA%`); for
 - **QQ bot channel (optional)**: control the computer from anywhere via QQ — run tasks, check progress, and even enter a continuous chat mode inside a workspace.
 - **System tray**: auto-start on boot, one-click screensaver, quick Web UI access.
 
+## Demos
+
+**Main window with wallpaper pass-through** (the main-window wallpaper shows through the embedded chat pages):
+
+![Main window demo](assets/demo-main.gif)
+
+**Phone PWA remote control** (scan to connect → pick workspace & model → run a task → watch it live):
+
+![Phone remote control demo](assets/demo-remote.gif)
+
+**AI screensaver** (fullscreen live agent view when idle; wallpaper fully customizable):
+
+![AI screensaver demo](assets/demo-screensaver.gif)
+
+> Recorded with the built-in "whale ocean" sample wallpaper — no personal wallpapers or session content involved.
+
 ## Quick Start
 
 ```sh

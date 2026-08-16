@@ -3,6 +3,8 @@
  *
  * - Bearer token 认证(首次生成,设置面板显示 + 二维码配对)。
  * - POST /api/rpc:白名单 RPC 转发到本机 harness。
+ * - POST /api/command:Webhook 命令端点 —— 任意 HTTP 客户端(脚本/钉钉群机器人/
+ *   Home Assistant 等)POST { text: "指令" } 即可执行远程命令并返回结果。
  * - GET /api/events:SSE 事件流(共享 EventHub 广播,断线重连)。
  * - GET /:伺服手机 PWA 静态页面。
  */
@@ -15,6 +17,7 @@ import { extname, join } from 'node:path'
 import type { ConfigStore } from './config'
 import type { EventHub } from './event-hub'
 import type { HarnessManager } from './harness'
+import type { RemoteCommandProcessor } from './remote-commands'
 
 export interface RemoteConfig {
   enabled: boolean
@@ -64,6 +67,7 @@ export class RemoteGateway {
     private config: ConfigStore,
     private harness: HarnessManager,
     private events: EventHub,
+    private commands?: RemoteCommandProcessor,
   ) {
     this.remoteDir = join(__dirname, '..', 'remote')
   }
@@ -174,6 +178,10 @@ export class RemoteGateway {
         await this.handleRpc(url, req, res)
         return
       }
+      if (req.method === 'POST' && path === '/api/command' && this.commands !== undefined) {
+        await this.handleCommand(url, req, res)
+        return
+      }
       if (req.method === 'POST' && path === '/api/action') {
         await this.handleAction(url, req, res)
         return
@@ -262,6 +270,46 @@ export class RemoteGateway {
     try {
       const value = await this.harness.client().rpc(body.method, body.payload, timeoutMs)
       this.json(res, 200, { ok: true, value })
+    } catch (error) {
+      this.json(res, 200, {
+        ok: false,
+        error: { code: (error as { code?: string }).code ?? 'internal', message: error instanceof Error ? error.message : String(error) },
+      })
+    }
+  }
+
+  /** Webhook 命令端点:POST { text } → 统一命令处理器 → 返回 { reply }。 */
+  private async handleCommand(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.authorized(url, req)) {
+      this.json(res, 401, { error: 'unauthorized' })
+      return
+    }
+    const chunks: Buffer[] = []
+    for await (const chunk of req) {
+      chunks.push(chunk as Buffer)
+      if (Buffer.concat(chunks).byteLength > 256 * 1024) {
+        this.json(res, 413, { error: 'payload too large' })
+        return
+      }
+    }
+    let body: { text?: unknown }
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { text?: unknown }
+    } catch {
+      this.json(res, 400, { error: 'invalid json' })
+      return
+    }
+    if (typeof body.text !== 'string' || body.text.trim() === '') {
+      this.json(res, 400, { error: 'text required (JSON body: {"text": "状态"})' })
+      return
+    }
+    if (this.commands === undefined) {
+      this.json(res, 500, { error: 'command processor unavailable' })
+      return
+    }
+    try {
+      const reply = await this.commands.handleText('webhook', 'client', body.text)
+      this.json(res, 200, { ok: true, reply })
     } catch (error) {
       this.json(res, 200, {
         ok: false,

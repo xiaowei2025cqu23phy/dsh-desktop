@@ -15,7 +15,9 @@ import { RemoteGateway } from './gateway'
 import { HarnessManager } from './harness'
 import { ModelManager } from './models'
 import { QQBotAdapter } from './qq-bot'
+import { RemoteCommandProcessor } from './remote-commands'
 import { ScreensaverController } from './screensaver'
+import { TelegramBotAdapter } from './telegram-bot'
 import { AppTray } from './tray'
 import { registerIpc } from './ipc'
 import { createMainWindow } from './windows'
@@ -57,9 +59,12 @@ if (!gotLock) {
     // mux 事件中枢:由 EventHub 管理,订阅者包括屏保窗口与远程客户端。
     const events = new EventHub(harness)
     events.subscribe((frame) => screensaver.forwardFrame(frame))
-    const gateway = new RemoteGateway(config, harness, events)
-    const qqBot = new QQBotAdapter(config, harness)
-    registerIpc({ config, harness, models, screensaver, appearance, gateway, qqBot })
+    // 统一远程命令核心(QQ / Telegram / Webhook 共用)。
+    const commands = new RemoteCommandProcessor(harness)
+    const gateway = new RemoteGateway(config, harness, events, commands)
+    const qqBot = new QQBotAdapter(config, commands)
+    const telegramBot = new TelegramBotAdapter(config, commands)
+    registerIpc({ config, harness, models, screensaver, appearance, gateway, qqBot, telegramBot })
 
     if (isScreensaverLaunch()) {
       // 系统屏保模式:只启动屏保窗口,不创建主窗口与托盘。
@@ -78,9 +83,10 @@ if (!gotLock) {
       return
     }
 
-    // 正常模式:主窗口 + 托盘 + 空闲检测 + 远程网关 + QQ 机器人。
+    // 正常模式:主窗口 + 托盘 + 空闲检测 + 远程网关 + QQ/Telegram 机器人。
     gateway.start()
     void qqBot.start()
+    void telegramBot.start()
     mainWindow = createMainWindow(join(__dirname, '..', 'preload.js'))
     mainWindow.on('closed', () => { mainWindow = null })
 
@@ -126,6 +132,7 @@ if (!gotLock) {
         events.dispose()
         gateway.stop()
         await qqBot.stop()
+        telegramBot.stop()
         quitCleanupDone = true
         app.quit()
       })()

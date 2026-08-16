@@ -1,13 +1,17 @@
 /**
- * CDP 检查器:连接 Electron 的 --remote-debugging-port,对页面执行表达式。
- * 用法:node scripts/cdp-eval.mjs '<表达式>' [targetType=page]
+ * CDP 截图:对指定 target 截图保存 PNG,可选模拟手机视口。
+ * 用法:node scripts/cdp-shot.mjs <输出路径> [targetType] [width] [height]
  */
 
 import { get } from 'node:http'
+import { writeFileSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
 
-const expression = process.argv[2]
+const outPath = process.argv[2]
 const targetType = process.argv[3] ?? 'page'
-const titleKeyword = process.argv[4] ?? ''
+const width = Number(process.argv[4] ?? 0)
+const height = Number(process.argv[5] ?? 0)
+const titleKeyword = process.argv[6] ?? ''
 const port = process.env.CDP_PORT ?? '9222'
 
 get(`http://127.0.0.1:${port}/json`, (res) => {
@@ -21,7 +25,7 @@ get(`http://127.0.0.1:${port}/json`, (res) => {
           ? t.url.includes(titleKeyword.slice(4))
           : t.title.includes(titleKeyword))))
     if (target === undefined) {
-      console.error(`no ${targetType} target found`)
+      console.error(`no ${targetType}${titleKeyword !== '' ? ` titled *${titleKeyword}*` : ''} target found`)
       process.exit(1)
     }
     const ws = new WebSocket(target.webSocketDebuggerUrl)
@@ -30,10 +34,7 @@ get(`http://127.0.0.1:${port}/json`, (res) => {
     ws.onmessage = (event) => {
       const message = JSON.parse(String(event.data))
       const resolve = pending.get(message.id)
-      if (resolve !== undefined) {
-        pending.delete(message.id)
-        resolve(message)
-      }
+      if (resolve !== undefined) { pending.delete(message.id); resolve(message) }
     }
     const call = (method, params = {}) => new Promise((resolve) => {
       const msgId = ++id
@@ -42,13 +43,17 @@ get(`http://127.0.0.1:${port}/json`, (res) => {
     })
     ws.onopen = async () => {
       try {
-        await call('Runtime.enable')
-        const result = await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
-        if (result.result?.exceptionDetails !== undefined) {
-          console.error('EXCEPTION:', JSON.stringify(result.result.exceptionDetails, null, 2))
+        if (width > 0 && height > 0) {
+          await call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: true })
+        }
+        const result = await call('Page.captureScreenshot', { format: 'png' })
+        if (result.result?.data === undefined) {
+          console.error('capture failed:', JSON.stringify(result).slice(0, 200))
           process.exit(1)
         }
-        console.log(JSON.stringify(result.result?.result?.value, null, 2))
+        mkdirSync(dirname(outPath), { recursive: true })
+        writeFileSync(outPath, Buffer.from(result.result.data, 'base64'))
+        console.log('saved', outPath)
       } finally {
         ws.close()
         process.exit(0)
