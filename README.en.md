@@ -92,7 +92,7 @@ In **Settings → QQ Bot**, fill in the AppID/AppSecret from the [QQ Open Platfo
 | `任务 <description>` | Run a task in the default workspace | `任务 分析这个仓库的架构` |
 | `任务 @<workspace> <description>` | Run in a specific workspace | `任务 @qqbot 修复登录 bug` |
 | `任务 目录:<path> <description>` | Run in a specific directory | `任务 目录:D:/work 写一个脚本` |
-| `进入 <workspace/dir>` | **Enter chat mode** | `进入 qqbot` |
+| `进入 <workspace/dir>` | **Enter chat mode** (no argument = pure chat, no workspace bound) | `进入 qqbot`、`进入` |
 | *(chat mode)* | Send messages directly to chat continuously in that workspace; `退出` ends it | `帮我看看项目里的 TODO` → … → `退出` |
 | `进展 <sessionId>` | Live task progress (status / tool stats / latest output) | `进展 session-xxxxxxxx` |
 | `停止 <sessionId>` / `打开 <sessionId>` | Stop a task / view session content | `停止 session-xxxxxxxx` |

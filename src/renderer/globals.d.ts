@@ -63,12 +63,14 @@ interface QQConfigView {
   appId: string
   appSecret: string
   defaultTarget: string
+  autoChat: boolean
 }
 
 interface TelegramConfigView {
   enabled: boolean
   token: string
   allowedUserIds: string
+  autoChat: boolean
 }
 
 interface DesktopApi {

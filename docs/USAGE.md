@@ -139,7 +139,7 @@ This guide walks you through the desktop client end to end: installation, config
 
 **准备**:在 [QQ 开放平台](https://q.qq.com) 注册机器人,获取 AppID / AppSecret(需实名)。
 
-**配置**:「设置 → QQ 机器人」→ 勾选「启用」→ 填入 AppID / AppSecret → 可填「默认工作区/目录」(任务未指定时使用)→ 状态显示「✓ 已连接 QQ」即就绪。
+**配置**:「设置 → QQ 机器人」→ 勾选「启用」→ 填入 AppID / AppSecret → 可填「默认工作区/目录」(任务未指定时使用)、勾选「**默认对话模式**」(非指令消息直接进入纯对话,无需先发「进入」)→ 状态显示「✓ 已连接 QQ」即就绪。
 
 **指令**(私聊机器人;发送无法识别的消息会自动回复完整指令集与示例):
 
@@ -149,7 +149,7 @@ This guide walks you through the desktop client end to end: installation, config
 | `任务 <描述>` | 默认工作区执行 | `任务 分析这个仓库的架构` |
 | `任务 @<工作区名> <描述>` | 指定工作区执行 | `任务 @qqbot 修复登录 bug` |
 | `任务 目录:<路径> <描述>` | 指定目录执行 | `任务 目录:D:/work 写一个脚本` |
-| `进入 <工作区/目录>` | **进入对话模式** | `进入 qqbot` |
+| `进入 <工作区/目录>` | **进入对话模式**(不带参数 = 纯对话,不绑定工作区) | `进入 qqbot` / `进入` |
 | *(对话模式)* | 直接发消息连续对话,无需前缀;`退出` 结束 | `帮我看看项目里的 TODO` |
 | `进展 <会话id>` | 实时进展(状态/工具统计/最新输出) | `进展 session-xxxxxxxx` |
 | `停止 <会话id>` / `打开 <会话id>` | 停止任务 / 查看内容 | `停止 session-xxxxxxxx` |
@@ -164,7 +164,7 @@ This guide walks you through the desktop client end to end: installation, config
 
 **Preparation**: register a bot on the [QQ Open Platform](https://q.qq.com) to get AppID / AppSecret (real-name required).
 
-**Configuration**: **Settings → QQ Bot** → enable → fill AppID / AppSecret → optionally set a **default workspace/directory** (used when a task command specifies none) → status shows "✓ Connected" when ready.
+**Configuration**: **Settings → QQ Bot** → enable → fill AppID / AppSecret → optionally set a **default workspace/directory** (used when a task command specifies none) and enable **default chat mode** (non-command messages enter pure chat directly, no `进入` needed) → status shows "✓ Connected" when ready.
 
 **Commands** (private-chat the bot; sending anything unrecognized replies with the full command set and examples):
 
@@ -174,7 +174,7 @@ This guide walks you through the desktop client end to end: installation, config
 | `任务 <description>` | Run in the default workspace | `任务 分析这个仓库的架构` |
 | `任务 @<workspace> <description>` | Run in a specific workspace | `任务 @qqbot 修复登录 bug` |
 | `任务 目录:<path> <description>` | Run in a specific directory | `任务 目录:D:/work 写一个脚本` |
-| `进入 <workspace/dir>` | **Enter chat mode** | `进入 qqbot` |
+| `进入 <workspace/dir>` | **Enter chat mode** (no argument = pure chat, no workspace bound) | `进入 qqbot` / `进入` |
 | *(chat mode)* | Chat freely without prefixes; `退出` ends it | `帮我看看项目里的 TODO` |
 | `进展 <sessionId>` | Live progress (status / tool stats / latest output) | `进展 session-xxxxxxxx` |
 | `停止 <sessionId>` / `打开 <sessionId>` | Stop a task / view content | `停止 session-xxxxxxxx` |

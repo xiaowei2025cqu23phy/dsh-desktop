@@ -151,5 +151,36 @@ function makeHarness(log) {
   })
 }
 
+// ---- 纯对话(无工作区) ----
+{
+  const log = []
+  const processor = new RemoteCommandProcessor(makeHarness(log))
+  const entered = await processor.handleText('telegram', '7', '进入')
+  check('裸进入-纯对话', entered.startsWith('已进入对话模式 ✓(纯对话'), true)
+  check('裸进入-无工作区参数', log.some(([kind, method, payload]) => kind === 'rpc' && method === 'session.create' && JSON.stringify(payload) === '{}'), true)
+  const reply = await processor.handleText('telegram', '7', '你好')
+  check('纯对话发消息', reply.startsWith('✓ 已发送'), true)
+}
+
+// ---- 默认对话模式(autoChat) ----
+{
+  const log = []
+  const processor = new RemoteCommandProcessor(makeHarness(log))
+  processor.setAutoChat('telegram', true)
+  const first = await processor.handleText('telegram', '8', '你好呀')
+  check('autoChat-自动进入纯对话', first.includes('已进入对话模式'), true)
+  check('autoChat-消息已发送', first.includes('✓ 已发送'), true)
+  const second = await processor.handleText('telegram', '8', '再聊一句')
+  check('autoChat-复用会话不重复进入', second.includes('已进入对话模式'), false)
+  check('autoChat-第二句直接发送', second.startsWith('✓ 已发送'), true)
+  // 指令仍优先于对话
+  const cmd = await processor.handleText('telegram', '8', '状态')
+  check('autoChat-指令优先', cmd.includes('harness:'), true)
+  // 退出后再次发消息会新建对话
+  await processor.handleText('telegram', '8', '退出')
+  const after = await processor.handleText('telegram', '8', '又来了')
+  check('autoChat-退出后可重新进入', after.includes('已进入对话模式'), true)
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

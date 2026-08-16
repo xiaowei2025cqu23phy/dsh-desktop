@@ -857,6 +857,7 @@ async function loadQQConfig(): Promise<void> {
     input('qq-appid').value = config.appId
     input('qq-secret').value = config.appSecret
     input('qq-target').value = config.defaultTarget ?? ''
+    input('qq-autochat').checked = config.autoChat === true
     const started = await API.qq.status()
     $id('qq-status').textContent = started ? '✓ 已连接 QQ' : (config.enabled && config.appId ? '连接中/失败,查看日志' : '')
   } catch {
@@ -872,6 +873,7 @@ async function loadTelegramConfig(): Promise<void> {
     input('tg-enabled').checked = config.enabled
     input('tg-token').value = config.token
     input('tg-users').value = config.allowedUserIds ?? ''
+    input('tg-autochat').checked = config.autoChat === true
     const started = await API.telegram.status()
     $id('tg-status').textContent = started ? '✓ 已启动' : (config.enabled && config.token ? '启动中/失败,查看日志' : '')
   } catch {
@@ -979,6 +981,9 @@ function bind(): void {
   input('qq-target').addEventListener('change', async () => {
     await API.qq.setConfig({ defaultTarget: input('qq-target').value.trim() })
   })
+  input('qq-autochat').addEventListener('change', async () => {
+    await API.qq.setConfig({ autoChat: input('qq-autochat').checked })
+  })
 
   // Telegram 机器人
   input('tg-enabled').addEventListener('change', async () => {
@@ -991,6 +996,9 @@ function bind(): void {
   })
   input('tg-users').addEventListener('change', async () => {
     await API.telegram.setConfig({ allowedUserIds: input('tg-users').value.trim() })
+  })
+  input('tg-autochat').addEventListener('change', async () => {
+    await API.telegram.setConfig({ autoChat: input('tg-autochat').checked })
   })
 
   // 更新

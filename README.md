@@ -153,7 +153,7 @@ npm start        # 构建并启动桌面端
 | `任务 <描述>` | 默认工作区执行任务 | `任务 分析这个仓库的架构` |
 | `任务 @<工作区名> <描述>` | 指定工作区执行 | `任务 @qqbot 修复登录 bug` |
 | `任务 目录:<路径> <描述>` | 指定目录执行 | `任务 目录:D:/work 写一个脚本` |
-| `进入 <工作区名/目录>` | **进入对话模式** | `进入 qqbot` |
+| `进入 <工作区名/目录>` | **进入对话模式**(不带参数 = 纯对话,不绑定工作区) | `进入 qqbot`、`进入` |
 | *(对话模式)* | 进入后直接发消息即可连续对话,自动发往该工作区会话,无需指令前缀;`退出` 结束 | `帮我看看项目里的 TODO` → … → `退出` |
 | `进展 <会话id>` | 任务实时进展(状态/工具统计/最新输出) | `进展 session-xxxxxxxx` |
 | `停止 <会话id>` / `打开 <会话id>` | 停止任务 / 查看会话内容 | `停止 session-xxxxxxxx` |
@@ -162,7 +162,7 @@ npm start        # 构建并启动桌面端
 
 典型流程:`工作区` 查看列表 → `进入 qqbot` → 连续对话 → `退出`。
 
-基于 [@tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs)(WebSocket 长连接),协议参考 [QQ 开放平台 API v2 文档](https://bot.q.qq.com/wiki/develop/api-v2/)(消息收发/消息类型/事件订阅)与 [Agent QQBot 接入指南](https://bot.q.qq.com/wiki/agent-qqbot/)。QQ 官方机器人以**被动回复**为主,但与机器人交互后 48 小时内支持**主动推送**;长回复自动分段。**agent 需要审批/提问时会主动推送通知**(QQ 交互窗口内与 Telegram 均可即时送达;QQ 审批通知带「允许/拒绝」内联按钮,点一下即可应答),推送失败时待办仍会附加在下次消息的回复末尾提醒。手机端同样支持审批:会话中出现审批/提问卡片,一键允许/拒绝或作答。
+基于 [@tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs)(WebSocket 长连接),协议参考 [QQ 开放平台 API v2 文档](https://bot.q.qq.com/wiki/develop/api-v2/)(消息收发/消息类型/事件订阅)与 [Agent QQBot 接入指南](https://bot.q.qq.com/wiki/agent-qqbot/)。QQ 官方机器人以**被动回复**为主,但与机器人交互后 48 小时内支持**主动推送**;长回复自动分段。**agent 需要审批/提问时会主动推送通知**(QQ 交互窗口内与 Telegram 均可即时送达;QQ 审批通知带「允许/拒绝」内联按钮,点一下即可应答),推送失败时待办仍会附加在下次消息的回复末尾提醒。手机端同样支持审批:会话中出现审批/提问卡片,一键允许/拒绝或作答。QQ/Telegram 均可开启**默认对话模式**:非指令消息直接进入纯对话(不绑定工作区),无需先发「进入」。
 
 ## 开发
 

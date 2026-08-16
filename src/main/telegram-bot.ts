@@ -14,6 +14,8 @@ export interface TelegramConfig {
   token: string
   /** 允许使用的用户 ID(逗号分隔;空 = 允许所有)。 */
   allowedUserIds: string
+  /** 默认对话模式:非指令消息自动进入纯对话(无需先发「进入」)。 */
+  autoChat: boolean
 }
 
 export class TelegramBotAdapter {
@@ -33,6 +35,7 @@ export class TelegramBotAdapter {
 
   setConfig(patch: Partial<TelegramConfig>): TelegramConfig {
     const next = this.config.update('telegram', patch)
+    this.processor.setAutoChat('telegram', next.autoChat === true)
     void this.restart()
     return next
   }
@@ -49,6 +52,7 @@ export class TelegramBotAdapter {
   async start(): Promise<void> {
     if (this.started) return
     const config = this.getConfig()
+    this.processor.setAutoChat('telegram', config.autoChat === true)
     if (!config.enabled || config.token.trim() === '') {
       console.log('[telegram] 未配置或未启用,跳过')
       return
