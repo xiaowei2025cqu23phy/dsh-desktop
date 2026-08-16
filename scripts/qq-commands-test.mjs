@@ -6,7 +6,7 @@
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { parseCommand, parseTaskOptions } = require('../dist/main/qq-commands.js')
+const { parseCommand, parseTaskOptions, parseApprovalButtonData, findEventUserId } = require('../dist/main/qq-commands.js')
 
 let failures = 0
 function check(name, actual, expected) {
@@ -87,6 +87,23 @@ check('任务选项-无', parseTaskOptions('分析代码'), {
   cwd: null,
   workspaceName: null,
 })
+
+// 审批按钮 data 解析(INTERACTION_CREATE 回传)
+check('按钮-标准', parseApprovalButtonData('dsh-approve|session-abc|ap-1|allowed-once'), {
+  sessionId: 'session-abc', approvalId: 'ap-1', decision: 'allowed-once',
+})
+check('按钮-拒绝', parseApprovalButtonData('dsh-approve|session-abc|ap-1|rejected'), {
+  sessionId: 'session-abc', approvalId: 'ap-1', decision: 'rejected',
+})
+check('按钮-嵌套 resolved', parseApprovalButtonData({ resolved: { button_data: 'dsh-approve|s1|a2|allowed-once' } }), {
+  sessionId: 's1', approvalId: 'a2', decision: 'allowed-once',
+})
+check('按钮-非法决策', parseApprovalButtonData('dsh-approve|s1|a2|maybe'), null)
+check('按钮-非审批前缀', parseApprovalButtonData('other|s1|a2|allowed-once'), null)
+check('按钮-非对象', parseApprovalButtonData(42), null)
+check('点击者 openid', findEventUserId({ resolved: { user_id: 'OPENID_1', button_data: 'x' } }), 'OPENID_1')
+check('点击者 缺失', findEventUserId({ resolved: { button_data: 'x' } }), '')
+check('点击者 非对象', findEventUserId('str'), '')
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

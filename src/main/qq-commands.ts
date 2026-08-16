@@ -81,3 +81,57 @@ export function parseTaskOptions(description: string): { description: string; cw
   }
   return { description: text, cwd, workspaceName }
 }
+
+/** 审批按钮 data 前缀(键盘按钮点击后随 INTERACTION_CREATE 回传)。 */
+export const APPROVE_BUTTON_PREFIX = 'dsh-approve|'
+
+/** 审批键盘按钮点击的解析结果。 */
+export interface ApprovalButtonData {
+  sessionId: string
+  approvalId: string
+  decision: 'allowed-once' | 'rejected'
+}
+
+/**
+ * 在 INTERACTION_CREATE 的 data 里递归查找审批按钮 data 并解析。
+ * 常见路径为 data.resolved.button_data;未知结构返回 null。
+ */
+export function parseApprovalButtonData(data: unknown): ApprovalButtonData | null {
+  if (typeof data === 'string') {
+    if (!data.startsWith(APPROVE_BUTTON_PREFIX)) return null
+    const parts = data.split('|')
+    if (parts.length !== 4 || parts[0] !== 'dsh-approve') return null
+    const decision = parts[3]
+    if (decision !== 'allowed-once' && decision !== 'rejected') return null
+    return { sessionId: parts[1], approvalId: parts[2], decision }
+  }
+  if (data === null || typeof data !== 'object') return null
+  const record = data as Record<string, unknown>
+  if (record.resolved !== null && typeof record.resolved === 'object') {
+    const resolved = record.resolved as Record<string, unknown>
+    if (typeof resolved.button_data === 'string') {
+      const parsed = parseApprovalButtonData(resolved.button_data)
+      if (parsed !== null) return parsed
+    }
+  }
+  for (const value of Object.values(record)) {
+    const found = parseApprovalButtonData(value)
+    if (found !== null) return found
+  }
+  return null
+}
+
+/** 在 INTERACTION_CREATE 的 data 里递归查找点击者 openid(data.resolved.user_id)。 */
+export function findEventUserId(data: unknown): string {
+  if (data === null || typeof data !== 'object') return ''
+  const record = data as Record<string, unknown>
+  if (record.resolved !== null && typeof record.resolved === 'object') {
+    const userId = (record.resolved as Record<string, unknown>).user_id
+    if (typeof userId === 'string') return userId
+  }
+  for (const value of Object.values(record)) {
+    const found = findEventUserId(value)
+    if (found !== '') return found
+  }
+  return ''
+}

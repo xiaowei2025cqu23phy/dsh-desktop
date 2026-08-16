@@ -56,8 +56,13 @@ export interface AskUserQuestionItem {
   multiSelect?: boolean
 }
 
-/** 主动推送函数(由宿主注入;QQ 被动模式可不注入,靠回复附加提示兜底)。 */
-export type PushFn = (channel: string, userId: string, text: string) => void
+/** 主动推送函数(由宿主注入;失败时靠回复附加提示兜底)。 */
+export type PushFn = (
+  channel: string,
+  userId: string,
+  text: string,
+  meta?: { kind: 'approval'; sessionId: string; approvalId: string },
+) => void
 
 export class RemoteCommandProcessor {
   private chatContexts = new Map<string, ChatContext>()
@@ -68,9 +73,46 @@ export class RemoteCommandProcessor {
 
   constructor(private harness: HarnessManager) {}
 
-  /** 注入主动推送实现(Telegram 等支持主动消息的通道)。 */
+  /** 注入主动推送实现(QQ / Telegram 等支持主动消息的通道)。 */
   setPush(push: PushFn): void {
     this.push = push
+  }
+
+  /**
+   * 应答审批(供机器人通道按钮/指令直接调用)。
+   * 校验发起者身份与(可选的)审批 id;返回给用户的应答结果文本。
+   */
+  async respondApproval(
+    channel: string,
+    userId: string,
+    sessionId: string,
+    approvalId: string,
+    outcome: 'allowed-once' | 'rejected',
+  ): Promise<string> {
+    const pending = this.findPendingApproval({ channel, userId }, sessionId, approvalId)
+    if (pending === null) {
+      return '该审批已处理或已过期。'
+    }
+    const client = this.harness.client()
+    try {
+      const receipt = await client.respond(pending.rpcId, {
+        ok: true,
+        value: {
+          sessionId: pending.sessionId,
+          approvalId: pending.approvalId,
+          outcome,
+        },
+      })
+      if (!receipt.accepted) {
+        return `应答未被接受:${receipt.reason ?? '未知原因'}(可能已超时处理)`
+      }
+      this.pendingApprovals.delete(`${pending.sessionId}:${pending.approvalId}`)
+      return outcome === 'allowed-once'
+        ? `✓ 已允许:${pending.toolName}${pending.reason !== undefined ? `(${pending.reason.slice(0, 60)})` : ''}`
+        : `✗ 已拒绝:${pending.toolName}`
+    } catch (error) {
+      return `应答失败:${error instanceof Error ? error.message : String(error)}`
+    }
   }
 
   /** 统一入口:处理一条来自某通道用户的文本消息,返回回复文本。 */
@@ -459,7 +501,11 @@ export class RemoteCommandProcessor {
           reason: payload.reason !== undefined ? String(payload.reason) : undefined,
         }
         this.pendingApprovals.set(`${sessionId}:${approvalId}`, pending)
-        this.notifyOwner(sessionId, this.formatApproval(pending))
+        this.notifyOwner(sessionId, this.formatApproval(pending), {
+          kind: 'approval',
+          sessionId,
+          approvalId,
+        })
         break
       }
       case 'approval/resolved': {
@@ -491,35 +537,16 @@ export class RemoteCommandProcessor {
     }
   }
 
-  /** 允许/拒绝审批:outcome 为 'allowed-once' | 'rejected'。 */
+  /** 允许/拒绝审批(指令入口):outcome 为 'allowed-once' | 'rejected'。 */
   private async cmdAllow(key: string, sessionId: string, outcome: 'allowed-once' | 'rejected'): Promise<string> {
     const owner = this.ownerFromKey(key)
-    const pending = this.findPendingApproval(owner, sessionId)
+    const pending = this.findPendingApproval(owner, sessionId, '')
     if (pending === null) {
       return sessionId !== ''
         ? `会话 ${sessionId} 没有待审批项(可能已处理或不是由你发起)`
         : '当前没有待审批项。收到审批通知后回复「允许」或「拒绝」即可。'
     }
-    const client = this.harness.client()
-    try {
-      const receipt = await client.respond(pending.rpcId, {
-        ok: true,
-        value: {
-          sessionId: pending.sessionId,
-          approvalId: pending.approvalId,
-          outcome,
-        },
-      })
-      if (!receipt.accepted) {
-        return `应答未被接受:${receipt.reason ?? '未知原因'}(可能已超时处理)`
-      }
-      this.pendingApprovals.delete(`${pending.sessionId}:${pending.approvalId}`)
-      return outcome === 'allowed-once'
-        ? `✓ 已允许:${pending.toolName}${pending.reason !== undefined ? `(${pending.reason.slice(0, 60)})` : ''}`
-        : `✗ 已拒绝:${pending.toolName}`
-    } catch (error) {
-      return `应答失败:${error instanceof Error ? error.message : String(error)}`
-    }
+    return this.respondApproval(owner.channel, owner.userId, pending.sessionId, pending.approvalId, outcome)
   }
 
   /** 回答选择题:「选 2」「选 1 3」「选 自定义:xx」「#2 选 1」。 */
@@ -615,10 +642,11 @@ export class RemoteCommandProcessor {
       : { channel: key.slice(0, sep), userId: key.slice(sep + 1) }
   }
 
-  /** 查该用户可应答的待审批项;sessionId 非空时精确匹配。 */
-  private findPendingApproval(owner: SessionOwner, sessionId: string): PendingApproval | null {
+  /** 查该用户可应答的待审批项;sessionId/approvalId 非空时精确匹配。 */
+  private findPendingApproval(owner: SessionOwner, sessionId: string, approvalId: string): PendingApproval | null {
     for (const pending of this.pendingApprovals.values()) {
       if (sessionId !== '' && pending.sessionId !== sessionId) continue
+      if (approvalId !== '' && pending.approvalId !== approvalId) continue
       const o = this.sessionOwners.get(pending.sessionId)
       if (o !== undefined && o.channel === owner.channel && o.userId === owner.userId) return pending
     }
@@ -635,10 +663,10 @@ export class RemoteCommandProcessor {
   }
 
   /** 交互帧到来时通知会话发起者(仅支持主动推送的通道;其余靠回复提示)。 */
-  private notifyOwner(sessionId: string, text: string): void {
+  private notifyOwner(sessionId: string, text: string, meta?: { kind: 'approval'; sessionId: string; approvalId: string }): void {
     if (this.push === null) return
     const owner = this.sessionOwners.get(sessionId)
-    if (owner !== undefined) this.push(owner.channel, owner.userId, text)
+    if (owner !== undefined) this.push(owner.channel, owner.userId, text, meta)
   }
 
   /** 审批通知文本。 */
