@@ -44,6 +44,18 @@ const api = {
       return () => { ipcRenderer.removeListener('screensaver:event', listener) }
     },
   },
+  remote: {
+    getConfig: () => ipcRenderer.invoke('remote:getConfig'),
+    setConfig: (patch: object) => ipcRenderer.invoke('remote:setConfig', patch),
+    lanAddresses: () => ipcRenderer.invoke('remote:lanAddresses'),
+    pairUrl: () => ipcRenderer.invoke('remote:pairUrl'),
+    qrDataUrl: () => ipcRenderer.invoke('remote:qrDataUrl'),
+  },
+  qq: {
+    getConfig: () => ipcRenderer.invoke('qq:getConfig'),
+    setConfig: (patch: object) => ipcRenderer.invoke('qq:setConfig', patch),
+    status: () => ipcRenderer.invoke('qq:status'),
+  },
   appearance: {
     getConfig: () => ipcRenderer.invoke('appearance:getConfig'),
     pickAndSet: (kind: 'window' | 'screensaver') => ipcRenderer.invoke('appearance:pickAndSet', kind),

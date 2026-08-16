@@ -54,10 +54,30 @@ export interface AppearanceConfig {
   mask: number
 }
 
+export interface RemoteConfig {
+  /** 局域网远程网关开关。 */
+  enabled: boolean
+  /** 网关监听端口。 */
+  port: number
+  /** Bearer 令牌(首次启用时自动生成)。 */
+  token: string
+}
+
+export interface QQBotConfig {
+  /** QQ 机器人开关(需在 QQ 开放平台注册并填入 appId/appSecret)。 */
+  enabled: boolean
+  /** QQ 开放平台机器人 AppID。 */
+  appId: string
+  /** QQ 开放平台机器人 AppSecret。 */
+  appSecret: string
+}
+
 export interface AppConfig {
   harness: HarnessConfig
   screensaver: ScreensaverConfig
   appearance: AppearanceConfig
+  remote: RemoteConfig
+  qq: QQBotConfig
   window: { width: number; height: number }
 }
 
@@ -87,6 +107,16 @@ const DEFAULTS: AppConfig = {
     windowWallpaper: null,
     screensaverWallpaper: null,
     mask: 0.55,
+  },
+  remote: {
+    enabled: false,
+    port: 3082,
+    token: '',
+  },
+  qq: {
+    enabled: false,
+    appId: '',
+    appSecret: '',
   },
   window: { width: 1280, height: 800 },
 }

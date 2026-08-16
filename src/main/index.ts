@@ -10,8 +10,11 @@ import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { AppearanceManager } from './appearance'
 import { ConfigStore } from './config'
+import { EventHub } from './event-hub'
+import { RemoteGateway } from './gateway'
 import { HarnessManager } from './harness'
 import { ModelManager } from './models'
+import { QQBotAdapter } from './qq-bot'
 import { ScreensaverController } from './screensaver'
 import { AppTray } from './tray'
 import { registerIpc } from './ipc'
@@ -31,7 +34,6 @@ if (!gotLock) {
   let screensaver: ScreensaverController
   let harness: HarnessManager
   let quitting = false
-
   app.on('second-instance', (_event, argv) => {
     console.log('[main] second-instance argv:', JSON.stringify(argv))
     const wantsScreensaver = argv.some((arg) => SCREENSAVER_ARGS.includes(arg.toLowerCase()))
@@ -52,22 +54,12 @@ if (!gotLock) {
     const models = new ModelManager(() => harness.client())
     screensaver = new ScreensaverController(config, harness)
     const appearance = new AppearanceManager(config)
-    registerIpc({ config, harness, models, screensaver, appearance })
-
-    // mux 事件桥:harness 就绪后订阅会话事件,转发给屏保窗口。
-    let stopMux: (() => void) | null = null
-    const attachMux = (): void => {
-      if (stopMux !== null) return
-      stopMux = harness.client().openMux((frame) => {
-        if (frame.method !== 'session/event') return
-        screensaver.forwardFrame(frame)
-      })
-    }
-    harness.on('status', (status: { state: string }) => {
-      if (status.state === 'running' || status.state === 'external') {
-        attachMux()
-      }
-    })
+    // mux 事件中枢:由 EventHub 管理,订阅者包括屏保窗口与远程客户端。
+    const events = new EventHub(harness)
+    events.subscribe((frame) => screensaver.forwardFrame(frame))
+    const gateway = new RemoteGateway(config, harness, events)
+    const qqBot = new QQBotAdapter(config, harness)
+    registerIpc({ config, harness, models, screensaver, appearance, gateway, qqBot })
 
     if (isScreensaverLaunch()) {
       // 系统屏保模式:只启动屏保窗口,不创建主窗口与托盘。
@@ -86,7 +78,9 @@ if (!gotLock) {
       return
     }
 
-    // 正常模式:主窗口 + 托盘 + 空闲检测。
+    // 正常模式:主窗口 + 托盘 + 空闲检测 + 远程网关 + QQ 机器人。
+    gateway.start()
+    void qqBot.start()
     mainWindow = createMainWindow(join(__dirname, '..', 'preload.js'))
     mainWindow.on('closed', () => { mainWindow = null })
 
@@ -129,7 +123,9 @@ if (!gotLock) {
         if (config.get().harness.stopOnQuit) await harness.stop()
         screensaver.dispose()
         tray?.dispose()
-        if (stopMux !== null) stopMux()
+        events.dispose()
+        gateway.stop()
+        await qqBot.stop()
         quitCleanupDone = true
         app.quit()
       })()

@@ -1,0 +1,17 @@
+{
+  "name": "DSH Remote",
+  "short_name": "DSH Remote",
+  "description": "DeepSeek Harness 手机遥控:远程收发消息、选择工作区、执行任务",
+  "start_url": "./?source=pwa",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0e14",
+  "theme_color": "#0b0e14",
+  "icons": [
+    {
+      "src": "./icon.png",
+      "sizes": "256x256",
+      "type": "image/png"
+    }
+  ]
+}

@@ -77,6 +77,48 @@
       </section>
 
       <section class="panel">
+        <h3>远程访问(手机 PWA)</h3>
+        <label class="check-row">
+          <input id="remote-enabled" type="checkbox" />
+          启用局域网远程访问(手机扫码连接)
+        </label>
+        <div class="field">
+          <label for="remote-port">端口</label>
+          <input id="remote-port" type="number" min="1024" max="65535" />
+        </div>
+        <div class="field">
+          <label>访问令牌</label>
+          <div class="field-row">
+            <input id="remote-token" type="text" readonly />
+            <button id="btn-token-regenerate" class="btn">重新生成</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>手机扫码连接</label>
+          <div class="qr-wrap" id="remote-qr"></div>
+          <div id="remote-addresses" class="hint"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>QQ 机器人(可选)</h3>
+        <label class="check-row">
+          <input id="qq-enabled" type="checkbox" />
+          启用 QQ 机器人远程控制
+        </label>
+        <div class="field">
+          <label for="qq-appid">AppID(QQ 开放平台)</label>
+          <input id="qq-appid" type="text" placeholder="在 q.qq.com 创建机器人后获取" />
+        </div>
+        <div class="field">
+          <label for="qq-secret">AppSecret</label>
+          <input id="qq-secret" type="password" placeholder="机器人密钥" />
+        </div>
+        <p class="hint">启用后可在 QQ 私聊机器人发送指令:帮助 / 状态 / 会话 / 任务 &lt;描述&gt; / 停止 / 模型</p>
+        <div id="qq-status" class="hint"></div>
+      </section>
+
+      <section class="panel">
         <h3>外观 · 壁纸</h3>
         <div class="field">
           <label>主窗口壁纸</label>

@@ -177,6 +177,10 @@ select:disabled { opacity: 0.55; }
 
 .hint { color: var(--text-dim); font-size: 12px; }
 
+.qr-wrap { display: flex; justify-content: center; padding: 8px 0; }
+.qr-wrap canvas { width: 180px; height: 180px; border-radius: 8px; background: #fff; padding: 8px; }
+.qr-wrap .qr-empty { color: var(--text-dim); font-size: 13px; padding: 24px; text-align: center; }
+
 .log-view {
   background: #080b10;
   border: 1px solid var(--border);

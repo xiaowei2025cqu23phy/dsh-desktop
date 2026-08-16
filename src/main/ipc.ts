@@ -5,8 +5,10 @@
 import { BrowserWindow, ipcMain, shell } from 'electron'
 import type { AppearanceManager } from './appearance'
 import type { ConfigStore } from './config'
+import type { RemoteGateway } from './gateway'
 import type { HarnessManager } from './harness'
 import type { ModelManager } from './models'
+import type { QQBotAdapter } from './qq-bot'
 import type { ScreensaverController } from './screensaver'
 
 export interface IpcDeps {
@@ -15,6 +17,8 @@ export interface IpcDeps {
   models: ModelManager
   screensaver: ScreensaverController
   appearance: AppearanceManager
+  gateway?: RemoteGateway
+  qqBot?: QQBotAdapter
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -49,6 +53,28 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('models:removeProvider', (_event, id: string) => deps.models.removeProvider(id))
   ipcMain.handle('models:discover', (_event, baseURL: string, api: string, apiKey: string) =>
     deps.models.discoverModels(baseURL, api, apiKey))
+
+  // ---- 远程网关 ----
+  if (deps.gateway !== undefined) {
+    const gateway = deps.gateway
+    ipcMain.handle('remote:getConfig', () => gateway.getConfig())
+    ipcMain.handle('remote:setConfig', (_event, patch: object) => {
+      const next = gateway.setConfig(patch)
+      gateway.restart()
+      return next
+    })
+    ipcMain.handle('remote:lanAddresses', () => gateway.lanAddresses())
+    ipcMain.handle('remote:pairUrl', () => gateway.pairUrl())
+    ipcMain.handle('remote:qrDataUrl', () => gateway.qrDataUrl())
+  }
+
+  // ---- QQ 机器人 ----
+  if (deps.qqBot !== undefined) {
+    const qqBot = deps.qqBot
+    ipcMain.handle('qq:getConfig', () => qqBot.getConfig())
+    ipcMain.handle('qq:setConfig', (_event, patch: object) => qqBot.setConfig(patch))
+    ipcMain.handle('qq:status', () => qqBot.isStarted())
+  }
 
   // ---- 外观 ----
   ipcMain.handle('appearance:getConfig', () => deps.appearance.getConfig())
