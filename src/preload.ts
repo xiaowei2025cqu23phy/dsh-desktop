@@ -80,6 +80,8 @@ const api = {
   updater: {
     getInfo: () => ipcRenderer.invoke('updater:getInfo'),
     check: () => ipcRenderer.invoke('updater:check'),
+    getConfig: () => ipcRenderer.invoke('updater:getConfig'),
+    setConfig: (patch: { autoCheck?: boolean }) => ipcRenderer.invoke('updater:setConfig', patch),
     openRelease: () => ipcRenderer.invoke('updater:openRelease'),
   },
 }

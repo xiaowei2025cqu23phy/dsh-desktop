@@ -130,6 +130,13 @@ if (!gotLock) {
 
     await harness.start()
 
+    // 启动后延迟自动检查更新(设置面板可关闭);有新版本时托盘刷新提示。
+    if (config.get().updater.autoCheck) {
+      setTimeout(() => {
+        void updater.check().then(() => tray?.refresh())
+      }, 20000)
+    }
+
     let quitCleanupDone = false
     app.on('before-quit', (event) => {
       console.log('[main] before-quit')
