@@ -914,6 +914,52 @@
   function openSheet(el) { el.classList.remove('hidden') }
   function closeSheet(el) { el.classList.add('hidden') }
 
+  // ---- 手机壁纸选择 ----
+  function loadWallpapers() {
+    var host = $('set-wallpapers')
+    fetch(state.server + '/api/wallpapers?token=' + encodeURIComponent(state.token), {
+      signal: AbortSignal.timeout(10000),
+    }).then(function (res) {
+      return res.json()
+    }).then(function (data) {
+      if (!data.ok || !Array.isArray(data.items) || data.items.length === 0) {
+        host.innerHTML = '<p class="empty">暂无可用壁纸</p>'
+        return
+      }
+      host.innerHTML = ''
+      data.items.forEach(function (item) {
+        var cell = document.createElement('div')
+        cell.className = 'wallpaper-cell' + (item.active ? ' active' : '')
+        var img = document.createElement('img')
+        img.src = item.thumb || (state.server + '/wallpaper?path=' + encodeURIComponent(item.path))
+        img.alt = item.name
+        img.loading = 'lazy'
+        var name = document.createElement('span')
+        name.textContent = item.name
+        cell.appendChild(img)
+        cell.appendChild(name)
+        cell.addEventListener('click', function () {
+          applyPhoneWallpaper(item, cell)
+        })
+        host.appendChild(cell)
+      })
+    }).catch(function () {
+      host.innerHTML = '<p class="empty">壁纸加载失败</p>'
+    })
+  }
+
+  function applyPhoneWallpaper(item, cell) {
+    apiAction('appearance.setPhoneWallpaper', { path: item.path }).then(function () {
+      S.toast('壁纸已切换:' + item.name, 'ok')
+      document.querySelectorAll('.wallpaper-cell').forEach(function (c) { c.classList.remove('active') })
+      cell.classList.add('active')
+      // 重新拉取背景(带时间戳防缓存)。
+      applyWallpaper(state.server)
+    }).catch(function (err) {
+      S.toast('切换失败:' + err.message, 'error')
+    })
+  }
+
   // ---- 连接流程 ----
   function connect() {
     var server = $('conn-server').value.trim().replace(/\/+$/, '')
@@ -971,6 +1017,7 @@
 
   // ---- 壁纸 ----
   function applyWallpaper(base) {
+    var stamp = '?t=' + Date.now()
     fetch((base.replace(/\/+$/, '')) + '/api/info').then(function (res) {
       return res.json()
     }).then(function (info) {
@@ -979,12 +1026,12 @@
       var img = new Image()
       img.onload = function () { document.body.classList.add('has-wallpaper') }
       img.onerror = function () { document.body.classList.remove('has-wallpaper') }
-      img.src = base.replace(/\/+$/, '') + '/wallpaper'
+      img.src = base.replace(/\/+$/, '') + '/wallpaper' + stamp
     }).catch(function () {
       var img = new Image()
       img.onload = function () { document.body.classList.add('has-wallpaper') }
       img.onerror = function () { document.body.classList.remove('has-wallpaper') }
-      img.src = base.replace(/\/+$/, '') + '/wallpaper'
+      img.src = base.replace(/\/+$/, '') + '/wallpaper' + stamp
     })
   }
 
@@ -1060,6 +1107,7 @@
         })
         $('set-models').textContent = names.join('\n') || '(未配置)'
       }).catch(function () { $('set-models').textContent = '(未连接)' })
+      loadWallpapers()
       openSheet($('view-settings'))
     })
     $('btn-settings-close').addEventListener('click', function () { closeSheet($('view-settings')) })

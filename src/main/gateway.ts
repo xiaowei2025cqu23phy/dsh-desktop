@@ -12,8 +12,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
-import { readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { extname, join, resolve, sep } from 'node:path'
+import { app, nativeImage } from 'electron'
 import type { ConfigStore } from './config'
 import type { EventHub } from './event-hub'
 import type { HarnessManager } from './harness'
@@ -170,6 +171,10 @@ export class RemoteGateway {
       }
       if (req.method === 'GET' && path === '/wallpaper') {
         this.serveWallpaper(res)
+        return
+      }
+      if (req.method === 'GET' && path === '/api/wallpapers') {
+        this.serveWallpaperList(url, req, res)
         return
       }
       if (req.method === 'GET' && path === '/api/events') {
@@ -396,6 +401,16 @@ export class RemoteGateway {
       await this.createPresetWorkspace(res, body as { action?: string; root?: unknown; name?: unknown })
       return
     }
+    if (body.action === 'appearance.setPhoneWallpaper') {
+      const path = typeof (body as { path?: unknown }).path === 'string' ? (body as { path: string }).path : ''
+      if (path === '' || !this.wallpaperEntries().some((w) => w.path === path)) {
+        this.json(res, 403, { error: 'wallpaper path not allowed' })
+        return
+      }
+      this.config.update('appearance', { phone: { path, position: { x: 0.5, y: 0.5 } } })
+      this.json(res, 200, { ok: true })
+      return
+    }
     this.json(res, 403, { error: `action not allowed: ${String(body.action)}` })
   }
 
@@ -478,9 +493,53 @@ export class RemoteGateway {
     }
   }
 
+  /** 可用的手机壁纸列表(内置包 + 用户本地包;带缩略图,供 PWA 选择)。 */
+  private serveWallpaperList(url: URL, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.authorized(url, req)) {
+      this.json(res, 401, { error: 'unauthorized' })
+      return
+    }
+    const entries = this.wallpaperEntries()
+    const current = this.config.get().appearance.phone.path
+    const items = entries.map((entry) => {
+      let thumb = ''
+      try {
+        const image = nativeImage.createFromPath(entry.path)
+        if (!image.isEmpty()) thumb = image.resize({ width: 240 }).toDataURL()
+      } catch {
+        // 缩略图生成失败:忽略该项的 thumb,前端仍可展示名称。
+      }
+      return { id: entry.id, name: entry.name, path: entry.path, thumb, active: entry.path === current }
+    })
+    this.json(res, 200, { ok: true, items })
+  }
+
+  /** 扫描壁纸包目录:内置包(assets/wallpapers)+ 用户本地包(userData/wallpapers 下 pack-*)。 */
+  private wallpaperEntries(): Array<{ id: string; name: string; path: string }> {
+    const entries: Array<{ id: string; name: string; path: string }> = []
+    const collect = (root: string, isUserPack: boolean): void => {
+      if (!existsSync(root)) return
+      for (const name of readdirSync(root)) {
+        const dir = join(root, name)
+        try {
+          if (!statSync(dir).isDirectory()) continue
+        } catch {
+          continue
+        }
+        if (isUserPack && !name.startsWith('pack-')) continue
+        const phone = join(dir, 'phone.png')
+        const window_ = join(dir, 'window.png')
+        const file = existsSync(phone) ? phone : existsSync(window_) ? window_ : null
+        if (file !== null) entries.push({ id: name, name, path: file })
+      }
+    }
+    collect(join(app.getAppPath(), 'assets', 'wallpapers'), false)
+    collect(join(app.getPath('userData'), 'wallpapers'), true)
+    return entries
+  }
+
   /** 手机 PWA 背景壁纸:与桌面端主窗口壁纸保持一致。 */
-  private serveWallpaper(res: ServerResponse): void {
-    const appearance = this.config.get().appearance
+  private serveWallpaper(res: ServerResponse): void {    const appearance = this.config.get().appearance
     const file = appearance.phone.path ?? appearance.window.path
     if (file === null || !existsSync(file)) {
       this.json(res, 404, { error: 'no wallpaper' })
