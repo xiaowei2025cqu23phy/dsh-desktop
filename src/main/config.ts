@@ -79,6 +79,11 @@ export interface QQBotConfig {
   appId: string
   /** QQ 开放平台机器人 AppSecret。 */
   appSecret: string
+  /**
+   * QQ 任务默认工作区/目录:任务命令未指定 @工作区 或 目录: 时使用。
+   * 填目录路径(含 / 或 \)按 cwd 处理,否则按工作区标题/ID 匹配。
+   */
+  defaultTarget: string
 }
 
 export interface AppConfig {
@@ -127,6 +132,7 @@ const DEFAULTS: AppConfig = {
     enabled: false,
     appId: '',
     appSecret: '',
+    defaultTarget: '',
   },
   window: { width: 1280, height: 800 },
 }
