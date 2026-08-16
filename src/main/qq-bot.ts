@@ -11,7 +11,7 @@ import { app } from 'electron'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { ConfigStore, QQBotConfig } from './config'
-import { APPROVE_BUTTON_PREFIX, findEventUserId, parseApprovalButtonData } from './qq-commands'
+import { APPROVE_BUTTON_PREFIX, findEventGroupOpenid, findEventUserId, parseApprovalButtonData } from './qq-commands'
 import { startOnboard, type OnboardProgress } from './qq-onboard'
 import type { RemoteCommandProcessor } from './remote-commands'
 
@@ -262,7 +262,7 @@ export class QQBotAdapter {
     }
   }
 
-  /** 审批按钮点击:解析 data → 应答审批 → ACK → 回发结果。 */
+  /** 审批按钮点击:解析 data → 应答审批 → ACK → 回发结果(群里点的回发群,私聊点的回发私聊)。 */
   private async handleInteraction(event: unknown): Promise<void> {
     const bot = this.bot
     if (bot === null) return
@@ -282,7 +282,16 @@ export class QQBotAdapter {
     }
     const result = await this.processor.respondApproval('qq', userId, parsed.sessionId, parsed.approvalId, parsed.decision)
     await bot.acknowledgeInteraction(interactionId, 0, {}).catch(() => {})
-    // 应答结果回发(仅私聊 target 可定位时)。
+    // 应答结果回发:群按钮点击回发群里,私聊点击回发私聊;都定位不到时用登记回退。
+    const groupOpenid = findEventGroupOpenid(raw.data)
+    if (groupOpenid !== '') {
+      await bot.sendText({ scope: 'group', targetId: groupOpenid }, result).catch(() => {})
+      return
+    }
+    if (userId !== '') {
+      await bot.sendText({ scope: 'c2c', targetId: userId }, result).catch(() => {})
+      return
+    }
     const entry = this.userTargets.get(userId)
     if (entry !== undefined) {
       await bot.sendText(entry.target, result).catch(() => {})

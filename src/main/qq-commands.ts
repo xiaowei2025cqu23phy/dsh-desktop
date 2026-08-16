@@ -135,3 +135,18 @@ export function findEventUserId(data: unknown): string {
   }
   return ''
 }
+
+/** 在 INTERACTION_CREATE 的 data 里递归查找群 openid(data.detail.group_openid;群按钮点击回发用)。 */
+export function findEventGroupOpenid(data: unknown): string {
+  if (data === null || typeof data !== 'object') return ''
+  const record = data as Record<string, unknown>
+  if (record.detail !== null && typeof record.detail === 'object') {
+    const groupOpenid = (record.detail as Record<string, unknown>).group_openid
+    if (typeof groupOpenid === 'string') return groupOpenid
+  }
+  for (const value of Object.values(record)) {
+    const found = findEventGroupOpenid(value)
+    if (found !== '') return found
+  }
+  return ''
+}
