@@ -1,5 +1,7 @@
 # DeepSeek Harness Desktop
 
+中文 | [English](README.en.md)
+
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的桌面客户端(Electron + TypeScript)。
 
 ## 许可证与使用条款
@@ -21,7 +23,6 @@
 ## 下载与安装
 
 从 [GitHub Releases](https://github.com/xiaowei2025cqu23phy/dsh-desktop/releases) 下载,三种形态任选:
-
 | 形态 | 文件 | 说明 |
 |---|---|---|
 | **安装版(推荐)** | `DeepSeek-Harness-Desktop-Setup-*.exe` | NSIS 安装程序,双击安装,自动创建开始菜单与桌面快捷方式,可选安装目录 |
@@ -32,6 +33,8 @@
 
 > 系统要求:Windows x64、Node.js 18+(仅在桌面端需要托管拉起 harness 时使用)。
 > 提示:先运行 `npx @deepseek-ai/dsh web` 并配置好模型密钥,再打开桌面端,体验最佳。
+
+> 📖 完整安装、配置、手机端与 QQ 机器人使用步骤见 [实操指南(汉英双语)](docs/USAGE.md)。
 
 ## 参考与致谢
 
