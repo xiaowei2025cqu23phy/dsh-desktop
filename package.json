@@ -19,8 +19,13 @@
       "dist/main/**",
       "dist/preload.js",
       "dist/renderer/**",
+      "dist/remote/**",
       "assets/**",
       "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/@tencent-connect/**",
+      "node_modules/qrcode/**"
     ],
     "win": {
       "target": [
