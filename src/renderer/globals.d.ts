@@ -46,6 +46,18 @@ interface AppearanceConfigView {
   mask: number
 }
 
+interface RemoteConfigView {
+  enabled: boolean
+  port: number
+  token: string
+}
+
+interface QQConfigView {
+  enabled: boolean
+  appId: string
+  appSecret: string
+}
+
 interface DesktopApi {
   harness: {
     getStatus(): Promise<HarnessStatus>
@@ -78,6 +90,18 @@ interface DesktopApi {
     attach(): Promise<{ sessionId: string | null; lastSeq: number }>
     reportSessionId(sessionId: string): void
     onEvent(callback: (frame: ServerRequestFrame) => void): () => void
+  }
+  remote: {
+    getConfig(): Promise<RemoteConfigView>
+    setConfig(patch: object): Promise<RemoteConfigView>
+    lanAddresses(): Promise<string[]>
+    pairUrl(): Promise<string>
+    qrDataUrl(): Promise<string | null>
+  }
+  qq: {
+    getConfig(): Promise<QQConfigView>
+    setConfig(patch: object): Promise<QQConfigView>
+    status(): Promise<boolean>
   }
   appearance: {
     getConfig(): Promise<AppearanceConfigView>

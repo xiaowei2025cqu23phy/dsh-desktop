@@ -132,7 +132,8 @@ async function applyModelSelection(): Promise<void> {
 async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
-  await Promise.all([loadHarnessConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(), refreshLogs()])
+  await Promise.all([loadHarnessConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(),
+    loadRemoteConfig(), loadQQConfig(), refreshLogs()])
   if (logsTimer === null) {
     logsTimer = setInterval(() => { if (drawerOpen) void refreshLogs() }, 3000)
   }
@@ -314,6 +315,66 @@ async function clearWallpaper(kind: 'window' | 'screensaver'): Promise<void> {
   }
 }
 
+// ---- 远程访问 ----
+
+async function loadRemoteConfig(): Promise<void> {
+  try {
+    const config = await API.remote.getConfig()
+    input('remote-enabled').checked = config.enabled
+    input('remote-port').value = String(config.port)
+    input('remote-token').value = config.token
+    await renderQr()
+  } catch (error) {
+    S.toast(`读取远程配置失败:${String(error)}`, 'error')
+  }
+}
+
+async function renderQr(): Promise<void> {
+  const wrap = $id('remote-qr')
+  wrap.innerHTML = ''
+  const config = await API.remote.getConfig()
+  const addresses = await API.remote.lanAddresses()
+  $id('remote-addresses').textContent =
+    addresses.length > 0 ? `手机与电脑连接同一 WiFi,扫码或访问:\n${addresses.map((a) => `http://${a}:${config.port}`).join('\n')}` : '(未检测到局域网地址)'
+  if (!config.enabled || config.token === '') {
+    const empty = document.createElement('div')
+    empty.className = 'qr-empty'
+    empty.textContent = '启用远程访问后显示二维码'
+    wrap.appendChild(empty)
+    return
+  }
+  const pairUrl = await API.remote.pairUrl()
+  const qrDataUrl = await API.remote.qrDataUrl()
+  if (qrDataUrl !== null) {
+    const img = document.createElement('img')
+    img.src = qrDataUrl
+    img.alt = '扫码连接'
+    img.width = 180
+    img.height = 180
+    wrap.appendChild(img)
+    return
+  }
+  const empty = document.createElement('div')
+  empty.className = 'qr-empty'
+  empty.textContent = pairUrl
+  wrap.appendChild(empty)
+}
+
+// ---- QQ 机器人 ----
+
+async function loadQQConfig(): Promise<void> {
+  try {
+    const config = await API.qq.getConfig()
+    input('qq-enabled').checked = config.enabled
+    input('qq-appid').value = config.appId
+    input('qq-secret').value = config.appSecret
+    const started = await API.qq.status()
+    $id('qq-status').textContent = started ? '✓ 已连接 QQ' : (config.enabled && config.appId ? '连接中/失败,查看日志' : '')
+  } catch {
+    // 忽略
+  }
+}
+
 // ---- 事件绑定 ----
 
 function bind(): void {
@@ -350,6 +411,35 @@ function bind(): void {
     })
   })
   $id('btn-open-webui').addEventListener('click', () => void API.harness.openWebUi())
+
+  // 远程访问
+  input('remote-enabled').addEventListener('change', async () => {
+    await API.remote.setConfig({ enabled: input('remote-enabled').checked })
+    await renderQr()
+    S.toast(input('remote-enabled').checked ? '远程访问已启用' : '远程访问已关闭', 'ok')
+  })
+  input('remote-port').addEventListener('change', async () => {
+    await API.remote.setConfig({ port: Math.max(1024, Math.min(65535, Number(input('remote-port').value) || 3082)) })
+    await renderQr()
+  })
+  $id('btn-token-regenerate').addEventListener('click', async () => {
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(16))).map((b) => b.toString(16).padStart(2, '0')).join('')
+    await API.remote.setConfig({ token })
+    await loadRemoteConfig()
+    S.toast('令牌已重新生成', 'ok')
+  })
+
+  // QQ 机器人
+  input('qq-enabled').addEventListener('change', async () => {
+    await API.qq.setConfig({ enabled: input('qq-enabled').checked })
+    await loadQQConfig()
+  })
+  input('qq-appid').addEventListener('change', async () => {
+    await API.qq.setConfig({ appId: input('qq-appid').value.trim() })
+  })
+  input('qq-secret').addEventListener('change', async () => {
+    await API.qq.setConfig({ appSecret: input('qq-secret').value.trim() })
+  })
 
   // 外观
   $id('btn-wall-window').addEventListener('click', () => void pickWallpaper('window'))

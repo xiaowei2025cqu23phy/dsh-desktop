@@ -33,5 +33,9 @@
     "electron": "^43.4.0",
     "electron-builder": "^26.15.3",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@tencent-connect/qqbot-nodejs": "^1.0.4",
+    "qrcode": "^1.5.4"
   }
 }
