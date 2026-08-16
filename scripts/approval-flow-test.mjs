@@ -220,5 +220,37 @@ function makeHarness(log) {
   check('汇报-其他事件不推送', pushes.length, 0)
 }
 
+// ---- 群场景:推送目标=群(修复群里收不到审批/汇报) ----
+{
+  const pushes = []
+  const processor = new RemoteCommandProcessor(makeHarness([]))
+  processor.setPush((channel, userId, text, meta, target) => pushes.push([channel, userId, text, meta, target]))
+  processor.setReport('qq', true)
+  // 群里发任务(带群推送目标)
+  const entered = await processor.handleText('qq', 'member-openid-1', '任务 写首诗', { scope: 'group', targetId: 'GROUP_OPENID_9' })
+  check('群-任务启动', entered.includes('任务已启动'), true)
+  // 任务完成汇报 → 应推送到群 target
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-g1', method: 'session/event',
+    payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'ok' } } } },
+  })
+  check('群-汇报推送目标', pushes.length === 1 && JSON.stringify(pushes[0][4]) === JSON.stringify({ scope: 'group', targetId: 'GROUP_OPENID_9' }), true)
+  // 审批 → 推送目标同样是群
+  pushes.length = 0
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-g2', method: 'approval/requested',
+    payload: { sessionId: 'session-test-1', approvalId: 'ga1', toolName: 'write', reason: '写文件' },
+  })
+  check('群-审批推送目标', pushes.length === 1 && pushes[0][3] !== undefined && pushes[0][4].targetId === 'GROUP_OPENID_9', true)
+  // 私聊对照:无 pushTarget → 回调 target 为 undefined
+  pushes.length = 0
+  await processor.handleText('qq', 'private-openid-2', '任务 再来一首', undefined)
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-g3', method: 'session/event',
+    payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'ok' } } } },
+  })
+  check('私聊-无显式目标', pushes.length === 1 && pushes[0][4] === undefined, true)
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

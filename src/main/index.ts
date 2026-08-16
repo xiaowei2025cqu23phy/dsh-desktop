@@ -67,9 +67,9 @@ if (!gotLock) {
     // 审批/提问等交互帧转发给命令核心(应答走 /api/respond,与 PWA 同一路径)。
     events.subscribe((frame) => commands.handleInteractionFrame(frame))
     // 主动推送:Telegram 与 QQ(交互后 48h 窗口)都能即时通知审批/提问。
-    commands.setPush((channel, userId, text) => {
+    commands.setPush((channel, userId, text, meta, target) => {
       if (channel === 'telegram' && telegramBot !== null) void telegramBot.sendMessage(Number(userId), text)
-      else if (channel === 'qq' && qqBot !== null) void qqBot.sendToUser(userId, text)
+      else if (channel === 'qq' && qqBot !== null) void qqBot.sendToUser(userId, text, meta, target)
     })
     const gateway = new RemoteGateway(config, harness, events, commands)
     qqBot = new QQBotAdapter(config, commands)

@@ -31,6 +31,8 @@ interface ChatContext {
 interface SessionOwner {
   channel: string
   userId: string
+  /** 主动推送目标(群消息=群,私聊=用户);缺失时按 userId 回退。 */
+  pushTarget?: { scope: string; targetId: string }
 }
 
 /** 待审批项。 */
@@ -66,6 +68,8 @@ export type PushFn = (
   userId: string,
   text: string,
   meta?: { kind: 'approval'; sessionId: string; approvalId: string },
+  /** 推送目标(群=群 id;私聊=用户 openid);缺失时通道按 userId 回退。 */
+  target?: { scope: string; targetId: string },
 ) => void
 
 export class RemoteCommandProcessor {
@@ -136,7 +140,13 @@ export class RemoteCommandProcessor {
   }
 
   /** 统一入口:处理一条来自某通道用户的文本消息,返回回复文本。 */
-  async handleText(channel: string, userId: string, text: string): Promise<string> {
+  async handleText(
+    channel: string,
+    userId: string,
+    text: string,
+    /** 推送目标(群消息=群;私聊可不传,按 userId 回退)。 */
+    pushTarget?: { scope: string; targetId: string },
+  ): Promise<string> {
     const content = text.trim()
     const key = `${channel}:${userId}`
     let reply: string
@@ -150,7 +160,7 @@ export class RemoteCommandProcessor {
           reply = await this.cmdChatMessage(key, content)
         } else if (this.autoChatChannels.has(channel)) {
           // 默认对话模式:非指令消息自动进入纯对话并发送。
-          const entered = await this.cmdEnter(key, '')
+          const entered = await this.cmdEnter(key, '', pushTarget)
           const autoCtx = this.chatContexts.get(key)
           reply = autoCtx !== undefined
             ? `${entered}\n\n${await this.cmdChatMessage(key, content)}`
@@ -159,7 +169,7 @@ export class RemoteCommandProcessor {
           reply = this.fullHelp()
         }
       } else {
-        reply = await this.executeCommand(command, key)
+        reply = await this.executeCommand(command, key, pushTarget)
       }
     }
     const suffix = this.pendingSuffix(channel, userId)
@@ -228,7 +238,11 @@ export class RemoteCommandProcessor {
     ].join('\n')
   }
 
-  private async executeCommand(command: QQCommand, key: string): Promise<string> {
+  private async executeCommand(
+    command: QQCommand,
+    key: string,
+    pushTarget?: { scope: string; targetId: string },
+  ): Promise<string> {
     switch (command.kind) {
       case 'help':
         return this.fullHelp()
@@ -247,9 +261,9 @@ export class RemoteCommandProcessor {
       case 'progress':
         return this.cmdProgress(command.sessionId)
       case 'run':
-        return this.cmdRun(key, command.description)
+        return this.cmdRun(key, command.description, pushTarget)
       case 'enter':
-        return this.cmdEnter(key, command.target)
+        return this.cmdEnter(key, command.target, pushTarget)
       case 'exit':
         return this.cmdExit(key)
       case 'allow':
@@ -405,7 +419,11 @@ export class RemoteCommandProcessor {
     }
   }
 
-  private async cmdRun(key: string, description: string): Promise<string> {
+  private async cmdRun(
+    key: string,
+    description: string,
+    pushTarget?: { scope: string; targetId: string },
+  ): Promise<string> {
     if (description === '') return '任务描述不能为空,示例:任务 分析这个仓库的架构'
     const client = this.harness.client()
     const parsed = parseTaskOptions(description)
@@ -442,7 +460,7 @@ export class RemoteCommandProcessor {
       if (workspaceId !== null) payload.workspaceId = workspaceId
       else if (cwd !== null) payload.cwd = cwd
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
-      this.sessionOwners.set(created.sessionId, this.ownerFromKey(key))
+      this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget })
       await client.rpc('session.prompt', {
         sessionId: created.sessionId,
         mode: 'queue',
@@ -458,7 +476,11 @@ export class RemoteCommandProcessor {
   defaultTarget = ''
 
   /** 进入对话模式;target 为空 = 纯对话(不绑定工作区/目录)。 */
-  private async cmdEnter(key: string, target: string): Promise<string> {
+  private async cmdEnter(
+    key: string,
+    target: string,
+    pushTarget?: { scope: string; targetId: string },
+  ): Promise<string> {
     const client = this.harness.client()
     try {
       let workspaceId: string | null = null
@@ -481,7 +503,7 @@ export class RemoteCommandProcessor {
       if (workspaceId !== null) payload.workspaceId = workspaceId
       else if (cwd !== null) payload.cwd = cwd
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
-      this.sessionOwners.set(created.sessionId, this.ownerFromKey(key))
+      this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget })
       this.chatContexts.set(key, { sessionId: created.sessionId, label })
       const lines = target === ''
         ? [
@@ -603,7 +625,7 @@ export class RemoteCommandProcessor {
     const text = reason.kind === 'error'
       ? `❌ 任务失败(会话 ${sessionId})${message !== '' ? `\n${message.slice(0, 200)}` : ''}\n发送「打开 ${sessionId}」查看详情`
       : `✅ 任务完成(会话 ${sessionId})\n发送「打开 ${sessionId}」查看结果`
-    if (this.push !== null) this.push(owner.channel, owner.userId, text)
+    if (this.push !== null) this.push(owner.channel, owner.userId, text, undefined, owner.pushTarget)
   }
 
   /** 允许/拒绝审批(指令入口):outcome 为 'allowed-once' | 'rejected'。 */
@@ -732,10 +754,14 @@ export class RemoteCommandProcessor {
   }
 
   /** 交互帧到来时通知会话发起者(仅支持主动推送的通道;其余靠回复提示)。 */
-  private notifyOwner(sessionId: string, text: string, meta?: { kind: 'approval'; sessionId: string; approvalId: string }): void {
+  private notifyOwner(
+    sessionId: string,
+    text: string,
+    meta?: { kind: 'approval'; sessionId: string; approvalId: string },
+  ): void {
     if (this.push === null) return
     const owner = this.sessionOwners.get(sessionId)
-    if (owner !== undefined) this.push(owner.channel, owner.userId, text, meta)
+    if (owner !== undefined) this.push(owner.channel, owner.userId, text, meta, owner.pushTarget)
   }
 
   /** 审批通知文本。 */
