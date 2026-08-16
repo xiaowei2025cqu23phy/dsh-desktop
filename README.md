@@ -2,6 +2,35 @@
 
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的桌面客户端(Electron + TypeScript)。
 
+## 许可证与使用条款
+
+本项目遵循**自定义许可协议**(见 [LICENSE](LICENSE)),核心条款:
+
+- **不得商用**:任何衍生项目不得用于商业用途(DeepSeek 官方、本项目作者本人及作者书面授权的个人/组织除外)。
+- **必须开源**:任何衍生项目必须公开源代码,并同样遵守本协议。
+- 第三方依赖组件(DeepSeek Harness、`@tencent-connect/qqbot-nodejs`、Electron 等)遵循各自许可证,详见下文「参考与致谢」。
+
+## 隐私说明
+
+- 发布包(安装包/zip)只包含应用代码与运行库,**不包含**任何本地配置、壁纸、访问令牌、API 密钥、会话数据或日志。
+- 用户的壁纸、令牌与配置保存在系统用户目录(`%APPDATA%/DeepSeek Harness Desktop`),永远不会进入安装包或提交到仓库。
+- 若从源码自行构建,构建产物同样不涉及上述用户数据。
+
+## 参考与致谢
+
+本项目在设计与实现中参考、依赖并致谢以下开源项目的贡献:
+
+| 项目 | 贡献 | 许可 |
+|---|---|---|
+| [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) | 核心智能体运行时与 Web UI;桌面端直接实现其 HTTP RPC 协议(`dsh-host-apiproxy`:一元 RPC、mux 事件流、settings/credentials/llm 域) | MIT |
+| [tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs) | QQ 开放平台机器人 SDK:WebSocket 网关、消息事件、文本/媒体/流式消息发送,用于 QQ 远程控制通道 | MIT |
+| [tencent-connect](https://github.com/tencent-connect) 组织相关仓库(bot-docs、botpy 等) | QQ 开放平台 API 与交互文档,QQ 适配器实现的协议参考 | 各自许可 |
+| [node-qrcode](https://github.com/soldair/node-qrcode) | 二维码生成,用于手机扫码配对 | MIT |
+| [Electron](https://github.com/electron/electron) | 桌面应用框架 | MIT |
+| [electron-builder](https://github.com/electron-userland/electron-builder) | 应用打包 | MIT |
+
+同时感谢 DeepSeek Harness 社区与本项目测试过程中提供反馈的各位使用者。
+
 - **内嵌 Web UI**:原生控制条 + 内嵌完整 harness Web UI(会话、工具、插件全功能)。
 - **AI 屏保(替换系统屏保)**:空闲 N 分钟自动全屏显示 agent 实时工作画面(思考过程、文本流、工具调用),移动鼠标或按键立即退出;也可注册为 Windows 系统屏保。
 - **各种模型选择**:快捷切换默认模型(DeepSeek 官方、OpenAI、Anthropic 及 37+ 目录 Provider),添加自定义 OpenAI 兼容网关(公司网关、Ollama 本地等),密钥安全写入 credentials 存储。
