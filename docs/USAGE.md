@@ -158,7 +158,7 @@ This guide walks you through the desktop client end to end: installation, config
 
 **典型流程**:`工作区` 看列表 → `进入 qqbot` → 连续对话(修改代码、查资料……)→ `退出`。
 
-**说明**:QQ 官方机器人以**被动回复**为主,但与机器人交互后 48 小时内支持**主动推送**(审批/提问即时通知);长回复自动分段;推送失败时待办仍会附加在下次回复末尾提醒。
+**说明**:QQ 官方机器人以**被动回复**为主,但与机器人交互后 48 小时内支持**主动推送**(审批/提问即时通知;**审批通知带「允许/拒绝」内联按钮**,点一下即可应答,也可回复文字);长回复自动分段;推送失败时待办仍会附加在下次回复末尾提醒。
 
 **English**
 
@@ -183,7 +183,7 @@ This guide walks you through the desktop client end to end: installation, config
 
 **Typical flow**: `工作区` to list → `进入 qqbot` → chat continuously (fix code, look things up…) → `退出`.
 
-**Notes**: QQ official bots are mainly **passive-reply**, but within 48h of a user interaction they support **proactive push** (instant approval/question notifications); long replies are split automatically; if a push fails, pending items are still appended to the next reply as a reminder.
+**Notes**: QQ official bots are mainly **passive-reply**, but within 48h of a user interaction they support **proactive push** (instant approval/question notifications; **approval messages carry inline Allow/Deny buttons** — tap to answer, or reply with text); long replies are split automatically; if a push fails, pending items are still appended to the next reply as a reminder.
 
 ---
 
