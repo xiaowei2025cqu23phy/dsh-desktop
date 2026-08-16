@@ -185,8 +185,8 @@ export class QQBotAdapter {
   // ---- 内部 ----
 
   /** 主动推送(审批带内联键盘按钮;超窗或失败静默降级,回复提醒兜底)。
-   *  target 提供时直接推送到该目标(私聊=用户);QQ 群不支持主动消息,
-   *  群场景改推发起者私聊(有 c2c 登记时),否则靠回复提醒兜底。 */
+   *  target 提供时直接推送到该目标;群场景优先推群(需机器人开通
+   *  「群内主动发言」权限),失败时回退发起者私聊(c2c 登记存在时)。 */
   async sendToUser(
     userId: string,
     text: string,
@@ -197,11 +197,13 @@ export class QQBotAdapter {
     if (bot === null || text === '') return
     if (target !== undefined) {
       if (target.scope === 'group') {
-        // QQ 平台限制:群消息必须被动回复(主动群消息 API 拒绝)。
-        // 改推发起者私聊(需其曾私聊过机器人),审批按钮在私聊可点。
-        const entry = this.userTargets.get(userId)
-        if (entry !== undefined && entry.target.scope === 'c2c') {
-          await this.pushText(bot, entry.target, text, meta)
+        const sent = await this.tryPush(bot, target, text, meta)
+        if (!sent) {
+          // 群主动消息被拒(如未开通群内主动发言权限):回退发起者私聊。
+          const entry = this.userTargets.get(userId)
+          if (entry !== undefined && entry.target.scope === 'c2c') {
+            await this.pushText(bot, entry.target, text, meta)
+          }
         }
       } else {
         await this.pushText(bot, target, text, meta)
@@ -216,6 +218,28 @@ export class QQBotAdapter {
       return
     }
     await this.pushText(bot, entry.target, text, meta)
+  }
+
+  /** 尝试推送;成功返回 true,失败(权限/超窗/网络)返回 false。 */
+  private async tryPush(
+    bot: QQBotLike,
+    target: PushTarget,
+    text: string,
+    meta?: { kind: 'approval'; sessionId: string; approvalId: string },
+  ): Promise<boolean> {
+    try {
+      if (meta !== undefined && meta.kind === 'approval') {
+        await bot.sendTextWithKeyboard(target, text, buildApprovalKeyboard(meta.sessionId, meta.approvalId))
+      } else {
+        for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
+          await bot.sendText(target, text.slice(index, index + MAX_MESSAGE_LENGTH))
+        }
+      }
+      return true
+    } catch (error) {
+      console.error('[qq-bot] 主动推送失败(尝试回退):', error)
+      return false
+    }
   }
 
   private async pushText(
