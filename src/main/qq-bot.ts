@@ -20,15 +20,23 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { ConfigStore, QQBotConfig } from './config'
 import type { HarnessManager } from './harness'
-import { parseCommand, parseTaskOptions } from './qq-commands'
+import { parseCommand, parseTaskOptions, type QQCommand } from './qq-commands'
 
 /** 单条 QQ 消息长度上限(保守取平台限制以下)。 */
 const MAX_MESSAGE_LENGTH = 1500
+
+/** 对话模式上下文:进入工作区后,非指令消息自动发往该会话。 */
+interface ChatContext {
+  sessionId: string
+  label: string
+}
 
 export class QQBotAdapter {
   private bot: { on: (event: string, listener: (...args: unknown[]) => void) => void;
     start: () => Promise<void>; stop: () => void; sendText: (target: unknown, text: string) => Promise<unknown> } | null = null
   private started = false
+  /** 按 QQ 发送者维护的对话模式上下文。 */
+  private chatContexts = new Map<string, ChatContext>()
 
   constructor(
     private config: ConfigStore,
@@ -113,33 +121,97 @@ export class QQBotAdapter {
 
   // ---- 内部 ----
 
+  /** 完整指令集(未知指令时也回复这份),每条指令带可直接复制的示例。 */
+  private fullHelp(): string {
+    return [
+      'DSH Remote QQ 机器人指令集',
+      '━━━━━━━━━━━━━━━━',
+      '',
+      '📋 查询类',
+      '状态 — 电脑与任务总览',
+      '  例:状态',
+      '会话 — 最近 5 个会话',
+      '  例:会话',
+      '工作区 — 工作区列表',
+      '  例:工作区',
+      '模型 — 可用模型列表',
+      '  例:模型',
+      '',
+      '🚀 任务类(一次性任务)',
+      '任务 <描述> — 默认工作区执行',
+      '  例:任务 分析这个仓库的架构',
+      '  例:任务 写一个 README 并提交',
+      '任务 @<工作区名> <描述> — 指定工作区',
+      '  例:任务 @qqbot 修复登录 bug',
+      '任务 目录:<路径> <描述> — 指定目录',
+      '  例:任务 目录:D:/work/proj 编译并运行测试',
+      '',
+      '💬 对话模式(连续对话)',
+      '进入 <工作区名/目录> — 开始对话',
+      '  例:进入 qqbot',
+      '  例:进入 D:/work/proj',
+      '进入后直接发消息,自动在该工作区连续对话:',
+      '  例:帮我看看项目里有哪些 TODO',
+      '  例:把刚才那个 bug 修了',
+      '退出 — 结束对话模式',
+      '  例:退出',
+      '',
+      '📌 会话管理',
+      '进展 <会话id> — 任务实时进展',
+      '  例:进展 session-xxxxxxxx',
+      '停止 <会话id> — 停止任务',
+      '  例:停止 session-xxxxxxxx',
+      '打开 <会话id> — 查看会话内容',
+      '  例:打开 session-xxxxxxxx',
+      '',
+      '💡 典型流程:先「工作区」看列表 → 「进入 qqbot」→ 连续对话 → 「退出」',
+    ].join('\n')
+  }
+
   private async handleMessage(msg: unknown): Promise<void> {
     const bot = this.bot
     if (bot === null) return
-    const record = msg as { content?: unknown; replyTarget?: unknown }
+    const record = msg as { content?: unknown; replyTarget?: unknown; author?: unknown }
     if (typeof record.content !== 'string') return
     const content = record.content.trim()
     if (content === '') return
-    const reply = await this.executeCommand(content)
+    const userId = this.senderId(record)
+    let reply: string
+    const command = parseCommand(content)
+    if (command.kind === 'unknown') {
+      // 对话模式:非指令消息直接发给当前工作区会话。
+      const ctx = this.chatContexts.get(userId)
+      if (ctx !== undefined) {
+        reply = await this.cmdChatMessage(userId, content)
+      } else {
+        // 未识别指令 → 回复完整指令集。
+        reply = this.fullHelp()
+      }
+    } else {
+      reply = await this.executeCommand(command, userId)
+    }
     await this.reply(bot, record.replyTarget, reply)
   }
 
-  private async executeCommand(content: string): Promise<string> {
-    const command = parseCommand(content)
+  /** 从消息对象提取发送者标识(私聊取 openid;缺失时退回 replyTarget)。 */
+  private senderId(record: { author?: unknown; replyTarget?: unknown }): string {
+    const author = record.author
+    if (author !== null && typeof author === 'object') {
+      const id = (author as { id?: unknown }).id
+      if (typeof id === 'string') return id
+    }
+    const target = record.replyTarget
+    if (target !== null && typeof target === 'object') {
+      const id = (target as { id?: unknown }).id
+      if (typeof id === 'string') return `t:${id}`
+    }
+    return 'anonymous'
+  }
+
+  private async executeCommand(command: QQCommand, userId: string): Promise<string> {
     switch (command.kind) {
       case 'help':
-        return [
-          'DSH Remote QQ 机器人指令:',
-          '· 状态 — harness 与运行中任务',
-          '· 会话 — 最近 5 个会话',
-          '· 工作区 — 工作区列表',
-          '· 任务 <描述> — 执行任务(可加 @工作区名 或 目录:<路径>)',
-          '· 进展 <会话id> — 任务实时进展(文本/工具/状态)',
-          '· 停止 <会话id> — 停止会话',
-          '· 打开 <会话id> — 查看会话最近内容',
-          '· 模型 — 可用模型列表',
-          '示例:任务 分析一下这个仓库的架构',
-        ].join('\n')
+        return this.fullHelp()
       case 'status':
         return this.cmdStatus()
       case 'sessions':
@@ -156,8 +228,12 @@ export class QQBotAdapter {
         return this.cmdProgress(command.sessionId)
       case 'run':
         return this.cmdRun(command.description)
+      case 'enter':
+        return this.cmdEnter(userId, command.target)
+      case 'exit':
+        return this.cmdExit(userId)
       default:
-        return '未识别的指令,发送「帮助」查看可用指令。'
+        return this.fullHelp()
     }
   }
 
@@ -348,6 +424,64 @@ export class QQBotAdapter {
       return `任务已启动 ✓\n会话: ${created.sessionId}\n描述: ${taskText.slice(0, 80)}\n发送「打开 ${created.sessionId}」查看进展`
     } catch (error) {
       return `启动失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  /** 进入工作区对话模式:解析目标(路径或工作区名),创建会话并记住上下文。 */
+  private async cmdEnter(userId: string, target: string): Promise<string> {
+    if (target === '') return '请指定工作区,例如:进入 qqbot(目录路径也可以)'
+    const client = this.harness.client()
+    try {
+      let workspaceId: string | null = null
+      let cwd: string | null = null
+      if (/[\\/]/.test(target)) {
+        cwd = target
+      } else {
+        const workspaces = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string }> }>('workspace.list')
+        const found = (workspaces.items ?? []).find((w) => w.title === target || w.workspaceId === target || w.path === target)
+        if (found === undefined) {
+          return `未找到工作区「${target}」,发送「工作区」查看列表`
+        }
+        workspaceId = found.workspaceId
+        cwd = found.path ?? null
+      }
+      const payload: Record<string, unknown> = {}
+      if (workspaceId !== null) payload.workspaceId = workspaceId
+      else if (cwd !== null) payload.cwd = cwd
+      const created = await client.rpc<{ sessionId: string }>('session.create', payload)
+      this.chatContexts.set(userId, { sessionId: created.sessionId, label: target })
+      return [
+        `已进入工作区「${target}」对话模式 ✓`,
+        `会话: ${created.sessionId}`,
+        '现在直接发消息即可对话(无需指令前缀),发送「退出」结束对话模式。',
+      ].join('\n')
+    } catch (error) {
+      return `进入失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  /** 退出对话模式。 */
+  private cmdExit(userId: string): string {
+    const ctx = this.chatContexts.get(userId)
+    if (ctx === undefined) return '当前不在对话模式。'
+    this.chatContexts.delete(userId)
+    return `已退出工作区「${ctx.label}」对话模式。会话 ${ctx.sessionId} 保留在后台,可发「打开 ${ctx.sessionId}」继续查看。`
+  }
+
+  /** 对话模式消息:发送到当前工作区会话。 */
+  private async cmdChatMessage(userId: string, text: string): Promise<string> {
+    const ctx = this.chatContexts.get(userId)
+    if (ctx === undefined) return this.fullHelp()
+    const client = this.harness.client()
+    try {
+      await client.rpc('session.prompt', {
+        sessionId: ctx.sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text }],
+      })
+      return `✓ 已发送到「${ctx.label}」(会话 ${ctx.sessionId})\n发「进展 ${ctx.sessionId}」查看进度,「退出」结束对话。`
+    } catch (error) {
+      return `发送失败:${error instanceof Error ? error.message : String(error)}`
     }
   }
 
