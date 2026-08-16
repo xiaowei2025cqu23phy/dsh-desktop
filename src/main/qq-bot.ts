@@ -130,10 +130,11 @@ export class QQBotAdapter {
       case 'help':
         return [
           'DSH Remote QQ 机器人指令:',
-          '· 状态 — harness 与运行中会话',
+          '· 状态 — harness 与运行中任务',
           '· 会话 — 最近 5 个会话',
           '· 工作区 — 工作区列表',
           '· 任务 <描述> — 执行任务(可加 @工作区名 或 目录:<路径>)',
+          '· 进展 <会话id> — 任务实时进展(文本/工具/状态)',
           '· 停止 <会话id> — 停止会话',
           '· 打开 <会话id> — 查看会话最近内容',
           '· 模型 — 可用模型列表',
@@ -151,6 +152,8 @@ export class QQBotAdapter {
         return this.cmdCancel(command.sessionId)
       case 'open':
         return this.cmdOpen(command.sessionId)
+      case 'progress':
+        return this.cmdProgress(command.sessionId)
       case 'run':
         return this.cmdRun(command.description)
       default:
@@ -162,15 +165,58 @@ export class QQBotAdapter {
     const client = this.harness.client()
     try {
       const host = await client.rpc<{ version?: string; cwd?: string; attachedSessions?: number }>('host.describe')
-      const list = await client.rpc<{ items: Array<{ running?: boolean; blank?: boolean }> }>('session.list', {}, 20000)
+      const list = await client.rpc<{ items: Array<{ running?: boolean; blank?: boolean; title?: string | null; sessionId: string }> }>('session.list', {}, 20000)
       const total = (list.items ?? []).length
-      const running = (list.items ?? []).filter((s) => s.running === true).length
-      return [
+      const running = (list.items ?? []).filter((s) => s.running === true)
+      const lines = [
         `harness: v${host.version ?? '?'}`,
         `工作目录: ${host.cwd ?? '?'}`,
-        `会话: ${total} 个,运行中 ${running} 个`,
-        `已附加: ${host.attachedSessions ?? '?'}`,
-      ].join('\n')
+        `会话: ${total} 个,运行中 ${running.length} 个`,
+      ]
+      if (running.length > 0) {
+        lines.push('运行中:')
+        for (const item of running.slice(0, 5)) {
+          lines.push(`  ▶ ${(item.title ?? item.sessionId).slice(0, 30)}\n    ${item.sessionId}`)
+        }
+      }
+      return lines.join('\n')
+    } catch (error) {
+      return `查询失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  /** 任务进展:会话状态 + 工具调用统计 + 最近输出摘要。 */
+  private async cmdProgress(sessionId: string): Promise<string> {
+    if (!/^session-/.test(sessionId)) return '请提供完整的会话 id(以 session- 开头)'
+    const client = this.harness.client()
+    try {
+      const [list, data] = await Promise.all([
+        client.rpc<{ items: Array<{ sessionId: string; running?: boolean; title?: string | null }> }>('session.list', {}, 20000),
+        client.rpc<{ events: Array<{ event?: { type?: string; seq?: number; data?: { content?: unknown; name?: unknown; error?: unknown } } }> }>('session.history', { sessionId, maxMessages: 6 }, 30000),
+      ])
+      const meta = (list.items ?? []).find((s) => s.sessionId === sessionId)
+      const events = data.events ?? []
+      const toolCalls = events.filter((e) => e.event?.type === 'tool/call').length
+      const toolFails = events.filter((e) => e.event?.type === 'tool/result' && e.event.data?.error !== undefined).length
+      const assistantTexts: string[] = []
+      for (const entry of events) {
+        if (entry.event?.type === 'assistant/message' && Array.isArray(entry.event.data?.content)) {
+          const text = (entry.event.data.content as Array<{ text?: string }>).map((b) => b.text ?? '').join('')
+          if (text.trim() !== '') assistantTexts.push(text)
+        }
+      }
+      const lastText = assistantTexts.length > 0
+        ? assistantTexts[assistantTexts.length - 1].replace(/\s+/g, ' ').slice(0, 200)
+        : '(暂无输出)'
+      const status = meta?.running ? '▶ 运行中' : '⏸ 空闲/已结束'
+      const title = meta?.title ?? '(无标题)'
+      const lines = [
+        `会话 ${sessionId.slice(0, 20)}…`,
+        `${status} | ${title.slice(0, 30)}`,
+        `最近 6 条消息内:工具调用 ${toolCalls} 次${toolFails > 0 ? `,失败 ${toolFails} 次` : ''}`,
+        `最新输出: ${lastText}`,
+      ]
+      return lines.join('\n')
     } catch (error) {
       return `查询失败:${error instanceof Error ? error.message : String(error)}`
     }
