@@ -46,12 +46,21 @@ export interface ScreensaverConfig {
 }
 
 export interface AppearanceConfig {
-  /** 主窗口壁纸图片路径(null = 默认深色)。 */
-  windowWallpaper: string | null
-  /** 屏保壁纸图片路径(null = 默认深色)。 */
-  screensaverWallpaper: string | null
+  /** 主窗口壁纸(裁剪后的图片 + cover 布设偏移)。 */
+  window: WallpaperSpec
+  /** 手机端 PWA 壁纸。 */
+  phone: WallpaperSpec
+  /** 屏保壁纸。 */
+  screensaver: WallpaperSpec
   /** 壁纸遮罩强度 0~0.9(保证文字可读)。 */
   mask: number
+}
+
+export interface WallpaperSpec {
+  /** 壁纸文件路径(裁剪后的成品,null = 默认深色)。 */
+  path: string | null
+  /** cover 模式下布设偏移(0~1,0.5 = 居中)。 */
+  position: { x: number; y: number }
 }
 
 export interface RemoteConfig {
@@ -104,8 +113,9 @@ const DEFAULTS: AppConfig = {
     systemScreensaverBackup: null,
   },
   appearance: {
-    windowWallpaper: null,
-    screensaverWallpaper: null,
+    window: { path: null, position: { x: 0.5, y: 0.5 } },
+    phone: { path: null, position: { x: 0.5, y: 0.5 } },
+    screensaver: { path: null, position: { x: 0.5, y: 0.5 } },
     mask: 0.55,
   },
   remote: {
@@ -136,7 +146,19 @@ export class ConfigStore {
       // 剥离 UTF-8 BOM:PowerShell/部分编辑器保存的 JSON 可能带 BOM,JSON.parse 不接受。
       const text = readFileSync(this.path, 'utf8').replace(/^\uFEFF/, '')
       const raw = JSON.parse(text) as Partial<AppConfig>
-      return this.merge(DEFAULTS, raw)
+      const config = this.merge(DEFAULTS, raw)
+      // 兼容旧版本扁平字段(windowWallpaper/screensaverWallpaper → 新结构)。
+      const legacy = (raw.appearance ?? {}) as {
+        windowWallpaper?: string | null
+        screensaverWallpaper?: string | null
+      }
+      if (config.appearance.window.path === null && typeof legacy.windowWallpaper === 'string') {
+        config.appearance.window.path = legacy.windowWallpaper
+      }
+      if (config.appearance.screensaver.path === null && typeof legacy.screensaverWallpaper === 'string') {
+        config.appearance.screensaver.path = legacy.screensaverWallpaper
+      }
+      return config
     } catch (error) {
       console.error('[config] 配置文件解析失败,使用默认值:', String(error))
       return structuredClone(DEFAULTS)

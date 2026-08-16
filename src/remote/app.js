@@ -1,22 +1,24 @@
 /**
  * DSH Remote PWA:DeepSeek Harness 手机遥控。
- * 纯 vanilla JS。连接桌面端远程网关(局域网),实现会话收发、工作区、任务、模型。
+ * 布局参考 DeepSeek App:左侧抽屉(工作区 ⇄ 会话)+ 聊天主界面。
  */
-
 (function () {
   'use strict'
 
   var $ = function (id) { return document.getElementById(id) }
 
-  // ---- 连接状态 ----
   var state = {
     server: '',
     token: '',
     connected: false,
-    sessionId: null,      // 当前查看的会话
-    lastSeq: 0,           // 事件去重
-    messages: [],         // 当前会话渲染的消息
-    es: null,             // EventSource
+    sessionId: null,
+    lastSeq: 0,
+    msgLog: [],           // [{ kind: 'user'|'assistant'|'tool'|'system', text }]
+    es: null,
+    workspaces: [],       // [{ workspaceId, path, title, sessions: [] }]
+    currentWsId: null,
+    currentWsPath: null,
+    tempCache: localStorage.getItem('dsh-temp-cache') === '1',
   }
 
   var S = {
@@ -34,7 +36,9 @@
       return parts.join('\n')
     },
     escapeHtml: function (t) {
-      return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+      return String(t)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
     },
     toast: function (msg, kind) {
       var host = $('toast-host')
@@ -42,7 +46,10 @@
       el.className = 'toast ' + (kind === 'error' ? 'toast-error' : kind === 'ok' ? 'toast-ok' : '')
       el.textContent = msg
       host.appendChild(el)
-      setTimeout(function () { el.classList.add('toast-hide'); setTimeout(function () { el.remove() }, 300) }, 3200)
+      setTimeout(function () {
+        el.classList.add('toast-hide')
+        setTimeout(function () { el.remove() }, 300)
+      }, 3200)
     },
   }
 
@@ -64,6 +71,145 @@
     })
   }
 
+  // ---- 本机临时会话缓存 ----
+  function cacheKey(sid) { return 'dsh-cache-' + sid }
+
+  function loadCachedMessages(sid) {
+    try {
+      var raw = localStorage.getItem(cacheKey(sid))
+      return raw ? JSON.parse(raw) : null
+    } catch (e) { return null }
+  }
+
+  function persistCache() {
+    if (!state.tempCache || state.sessionId === null) return
+    try { localStorage.setItem(cacheKey(state.sessionId), JSON.stringify(state.msgLog)) } catch (e) { /* 存储满忽略 */ }
+  }
+
+  function clearAllCache() {
+    var keys = []
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i)
+      if (k && k.indexOf('dsh-cache-') === 0) keys.push(k)
+    }
+    keys.forEach(function (k) { localStorage.removeItem(k) })
+  }
+
+  // ---- 消息渲染 ----
+  function hideEmpty(hide) { $('chat-empty').classList.toggle('hidden', hide) }
+
+  function clearChat() {
+    state.msgLog = []
+    state.lastSeq = 0
+    $('chat-stream').querySelectorAll('.msg').forEach(function (el) { el.remove() })
+    hideEmpty(false)
+  }
+
+  function appendMessage(kind, text) {
+    var stream = $('chat-stream')
+    hideEmpty(true)
+    var el = document.createElement('div')
+    el.className = 'msg msg-' + kind
+    el.appendChild(document.createTextNode(text))
+    stream.appendChild(el)
+    state.msgLog.push({ kind: kind, text: text })
+    stream.scrollTop = stream.scrollHeight
+    return el
+  }
+
+  function appendTool(name, args, failed) {
+    var stream = $('chat-stream')
+    hideEmpty(true)
+    var el = document.createElement('div')
+    el.className = 'msg msg-tool'
+    el.innerHTML = '<span class="tool-name">' + S.escapeHtml(name) + '</span>' +
+      '<span class="tool-state">调用中…</span><br><pre style="margin-top:4px;white-space:pre-wrap">' +
+      S.escapeHtml(String(args || '').slice(0, 300)) + '</pre>'
+    el._stateEl = el.querySelector('.tool-state')
+    stream.appendChild(el)
+    state.msgLog.push({ kind: 'tool', text: name + ' 调用中' })
+    stream.scrollTop = stream.scrollHeight
+    return el
+  }
+
+  function markLastTool(failed) {
+    var els = $('chat-stream').querySelectorAll('.msg-tool')
+    for (var i = els.length - 1; i >= 0; i--) {
+      var el = els[i]
+      if (el._stateEl && el._stateEl.textContent === '调用中…') {
+        el._stateEl.textContent = failed ? '失败' : '完成'
+        el._stateEl.className = 'tool-state ' + (failed ? 'fail' : 'done')
+        if (state.msgLog[state.msgLog.length - 1] && state.msgLog[state.msgLog.length - 1].kind === 'tool') {
+          state.msgLog[state.msgLog.length - 1].text = state.msgLog[state.msgLog.length - 1].text.replace('调用中', failed ? '失败' : '完成')
+        }
+        persistCache()
+        return
+      }
+    }
+  }
+
+  function lastAssistantEl() {
+    var els = $('chat-stream').querySelectorAll('.msg-assistant')
+    return els.length > 0 ? els[els.length - 1] : null
+  }
+
+  function appendDelta(delta) {
+    var last = state.msgLog[state.msgLog.length - 1]
+    if (!last || last.kind !== 'assistant') {
+      appendMessage('assistant', '')
+      last = state.msgLog[state.msgLog.length - 1]
+    }
+    last.text += delta
+    var el = lastAssistantEl()
+    if (el) {
+      el.lastChild.textContent = last.text
+      el.classList.add('cursor-blink')
+    }
+    var stream = $('chat-stream')
+    stream.scrollTop = stream.scrollHeight
+  }
+
+  function replaceLastAssistant(full) {
+    var last = state.msgLog[state.msgLog.length - 1]
+    if (!last || last.kind !== 'assistant') {
+      appendMessage('assistant', full)
+      return
+    }
+    last.text = full
+    var el = lastAssistantEl()
+    if (el) {
+      el.lastChild.textContent = full
+      el.classList.remove('cursor-blink')
+    }
+    persistCache()
+  }
+
+  function renderCachedMessage(m) {
+    if (!m || typeof m.text !== 'string') return
+    if (m.kind === 'tool') {
+      var stream = $('chat-stream')
+      hideEmpty(true)
+      var el = document.createElement('div')
+      el.className = 'msg msg-tool'
+      el.textContent = m.text
+      stream.appendChild(el)
+      stream.scrollTop = stream.scrollHeight
+      return
+    }
+    appendMessage(m.kind === 'user' ? 'user' : 'assistant', m.text)
+  }
+
+  function setChatStatus(text, cls) {
+    var el = $('chat-status')
+    el.textContent = text
+    el.className = 'chat-status' + (cls === 'running' ? ' running' : '')
+  }
+
+  function setConnDot(on) {
+    $('conn-dot').className = 'conn-dot ' + (on ? 'on' : 'off')
+  }
+
+  // ---- 事件流 ----
   function connectEvents() {
     if (state.es) state.es.close()
     var es = new EventSource(state.server + '/api/events?token=' + encodeURIComponent(state.token))
@@ -77,7 +223,6 @@
     }
   }
 
-  // ---- 事件折叠(与屏保同款逻辑的精简版) ----
   function handleFrame(frame) {
     if (!frame || frame.method !== 'session/event') return
     var payload = frame.payload
@@ -96,10 +241,12 @@
         break
       case 'turn/end':
         setChatStatus('空闲', '')
+        persistCache()
         break
       case 'user/message': {
         var text = S.textFromBlocks(data.content)
         if (text.trim() !== '') appendMessage('user', text)
+        persistCache()
         break
       }
       case 'assistant/chunk': {
@@ -125,7 +272,9 @@
         break
       }
       case 'session/title': {
-        if (typeof data.title === 'string' && data.title.trim() !== '') $('chat-title').textContent = data.title.trim()
+        if (typeof data.title === 'string' && data.title.trim() !== '') {
+          $('chat-title').textContent = data.title.trim()
+        }
         break
       }
       default:
@@ -137,143 +286,59 @@
     try { return JSON.stringify(JSON.parse(raw), null, 2) } catch (e) { return raw }
   }
 
-  // ---- 消息渲染 ----
-  function appendMessage(kind, text) {
-    var stream = $('chat-stream')
-    var el = document.createElement('div')
-    el.className = 'msg msg-' + kind
-    var node = document.createTextNode(text)
-    el.appendChild(node)
-    el._textNode = node
-    el._kind = kind
-    state.messages.push(el)
-    stream.appendChild(el)
-    stream.scrollTop = stream.scrollHeight
-    return el
-  }
-
-  function lastAssistantEl() {
-    for (var i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i]._kind === 'assistant') return state.messages[i]
-    }
-    return null
-  }
-
-  function appendDelta(delta) {
-    var el = lastAssistantEl()
-    if (el === null) el = appendMessage('assistant', '')
-    el._textNode.appendData(delta)
-    el.classList.add('cursor-blink')
-    var stream = $('chat-stream')
-    stream.scrollTop = stream.scrollHeight
-  }
-
-  function replaceLastAssistant(full) {
-    var el = lastAssistantEl()
-    if (el === null) el = appendMessage('assistant', '')
-    el._textNode.textContent = full
-    el.classList.remove('cursor-blink')
-  }
-
-  function appendTool(name, args, failed) {
-    var stream = $('chat-stream')
-    var el = document.createElement('div')
-    el.className = 'msg msg-tool'
-    el.innerHTML = '<span class="tool-name">' + S.escapeHtml(name) + '</span>' +
-      '<span class="tool-state">调用中…</span><br><pre style="margin-top:4px;white-space:pre-wrap">' +
-      S.escapeHtml(args.slice(0, 300)) + '</pre>'
-    el._kind = 'tool'
-    el._stateEl = el.querySelector('.tool-state')
-    state.messages.push(el)
-    stream.appendChild(el)
-    stream.scrollTop = stream.scrollHeight
-    return el
-  }
-
-  function markLastTool(failed) {
-    for (var i = state.messages.length - 1; i >= 0; i--) {
-      var el = state.messages[i]
-      if (el._kind === 'tool' && el._stateEl && el._stateEl.textContent === '调用中…') {
-        el._stateEl.textContent = failed ? '失败' : '完成'
-        el._stateEl.className = 'tool-state ' + (failed ? 'fail' : 'done')
-        return
-      }
-    }
-  }
-
-  function setChatStatus(text, cls) {
-    var el = $('chat-status')
-    el.textContent = text
-    el.className = 'chat-status' + (cls === 'running' ? ' running' : '')
-  }
-
-  function setConnDot(on) {
-    var el = $('conn-dot')
-    el.className = 'conn-dot ' + (on ? 'on' : 'off')
-  }
-
-  // ---- 视图切换 ----
-  function showView(name) {
-    var map = { connect: 'view-connect', main: 'view-main', chat: 'view-chat' }
-    for (var key in map) {
-      $(map[key]).classList.toggle('hidden', key !== name)
-    }
-  }
-
-  // ---- 会话列表 ----
-  function loadSessions() {
-    var list = $('session-list')
-    list.innerHTML = '<p class="empty">加载中…</p>'
-    return apiRpc('session.list', {}).then(function (data) {
-      var items = data.items || []
-      if (items.length === 0) {
-        list.innerHTML = '<p class="empty">还没有会话,去「任务」页创建一个吧</p>'
-        return
-      }
-      list.innerHTML = ''
-      items.forEach(function (item) {
-        var el = document.createElement('div')
-        el.className = 'item'
-        var title = item.title || item.sessionId.slice(0, 16)
-        var sub = item.running ? '<span class="badge running">运行中</span>' : ''
-        if (item.blank) sub += '<span class="badge blank">空</span>'
-        var time = item.updatedAt ? new Date(item.updatedAt).toLocaleString('zh-CN', { hour12: false }) : ''
-        el.innerHTML = '<div class="item-title">' + S.escapeHtml(title) + '</div>' +
-          '<div class="item-sub">' + sub + '<span>' + S.escapeHtml(time) + '</span></div>'
-        el.addEventListener('click', function () { openSession(item.sessionId) })
-        list.appendChild(el)
-      })
-    }).catch(function (err) {
-      list.innerHTML = '<p class="empty">加载失败:' + S.escapeHtml(err.message) + '</p>'
-    })
-  }
-
-  // ---- 会话详情 ----
-  function openSession(sessionId) {
+  // ---- 会话 ----
+  function openSession(sessionId, cwd) {
     state.sessionId = sessionId
-    state.lastSeq = 0
-    state.messages = []
-    $('chat-stream').innerHTML = ''
+    state.currentWsPath = cwd || state.currentWsPath
+    state.currentWsId = findWorkspaceId(state.currentWsPath)
+    clearChat()
     $('chat-title').textContent = '会话'
     setChatStatus('加载中…', '')
-    showView('chat')
-    apiRpc('session.history', { sessionId: sessionId, maxMessages: 30 }).then(function (data) {
+    closeSidebar()
+    markCurrentRow(sessionId)
+
+    var cached = loadCachedMessages(sessionId)
+    if (cached && cached.length > 0) {
+      cached.forEach(renderCachedMessage)
+      setChatStatus('已加载(本机缓存)', '')
+    }
+
+    apiRpc('session.history', { sessionId: sessionId, maxMessages: 50 }).then(function (data) {
+      state.lastSeq = 0
+      state.msgLog = []
+      $('chat-stream').querySelectorAll('.msg').forEach(function (el) { el.remove() })
+      hideEmpty(false)
       var events = data.events || []
       events.forEach(function (entry) {
         var ev = entry && S.isRecord(entry.event) ? entry.event : entry
         handleFrame({ method: 'session/event', payload: { sessionId: sessionId, event: ev } })
       })
-      setChatStatus(state.messages.length > 0 ? '已加载' : '空会话', '')
+      setChatStatus(state.msgLog.length > 0 ? '已加载' : '空会话', '')
+      persistCache()
     }).catch(function (err) {
       setChatStatus('加载失败:' + err.message, '')
       S.toast('加载历史失败:' + err.message, 'error')
     })
   }
 
+  function newSession() {
+    var payload = {}
+    if (state.currentWsId) payload.workspaceId = state.currentWsId
+    apiRpc('session.create', payload).then(function (created) {
+      openSession(created.sessionId, state.currentWsPath)
+      loadSidebar()
+    }).catch(function (err) {
+      S.toast('新建会话失败:' + err.message, 'error')
+    })
+  }
+
   function sendMessage() {
     var input = $('chat-input')
     var text = input.value.trim()
-    if (text === '' || state.sessionId === null) return
+    if (text === '' || state.sessionId === null) {
+      if (state.sessionId === null) S.toast('请先新建或选择一个会话', 'error')
+      return
+    }
     input.value = ''
     apiRpc('session.prompt', {
       sessionId: state.sessionId,
@@ -287,36 +352,146 @@
     })
   }
 
-  // ---- 工作区 ----
-  function loadWorkspaces() {
+  // ---- 侧边栏 ----
+  function openSidebar() {
+    state.sidebarOpen = true
+    $('sidebar').classList.remove('hidden')
+    $('sidebar-backdrop').classList.remove('hidden')
+    loadSidebar()
+  }
+
+  function closeSidebar() {
+    state.sidebarOpen = false
+    $('sidebar').classList.add('hidden')
+    $('sidebar-backdrop').classList.add('hidden')
+  }
+
+  function findWorkspaceId(path) {
+    if (!path) return null
+    for (var i = 0; i < state.workspaces.length; i++) {
+      if (state.workspaces[i].path === path) return state.workspaces[i].workspaceId
+    }
+    return null
+  }
+
+  function loadSidebar() {
     var list = $('workspace-list')
     list.innerHTML = '<p class="empty">加载中…</p>'
-    return apiRpc('workspace.list', {}).then(function (data) {
-      var items = data.items || []
-      if (items.length === 0) {
-        list.innerHTML = '<p class="empty">还没有工作区</p>'
-        return
-      }
-      list.innerHTML = ''
-      items.forEach(function (item) {
-        var el = document.createElement('div')
-        el.className = 'item'
-        el.innerHTML = '<div class="item-title">' + S.escapeHtml(item.title || item.path) + '</div>' +
-          '<div class="item-sub"><span>' + S.escapeHtml(item.path) + '</span></div>'
-        el.addEventListener('click', function () { selectWorkspace(item) })
-        list.appendChild(el)
+    Promise.all([
+      apiRpc('workspace.list', {}),
+      apiRpc('session.list', {}),
+    ]).then(function (results) {
+      var wsData = results[0]
+      var sessData = results[1]
+      var workspaces = wsData.items || []
+      var sessions = (sessData.items || []).filter(function (s) { return !s.origin })
+      sessions.sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0) })
+      var byPath = {}
+      workspaces.forEach(function (ws) {
+        ws.sessions = []
+        byPath[ws.path] = ws
       })
+      var unmatched = []
+      sessions.forEach(function (s) {
+        var ws = byPath[s.cwd]
+        if (ws) ws.sessions.push(s)
+        else unmatched.push(s)
+      })
+      state.workspaces = workspaces
+      state.currentWsId = findWorkspaceId(state.currentWsPath) || state.currentWsId
+      renderSidebar(unmatched)
     }).catch(function (err) {
       list.innerHTML = '<p class="empty">加载失败:' + S.escapeHtml(err.message) + '</p>'
     })
   }
 
-  function selectWorkspace(item) {
-    S.toast('已选择:' + (item.title || item.path), 'ok')
-    fillWorkspaceSelect(item)
+  function sessionTitle(s) {
+    return (s.projections && s.projections.values && s.projections.values.title) || '新会话'
   }
 
-  function fillWorkspaceSelect(selected) {
+  function renderSidebar(unmatched) {
+    var list = $('workspace-list')
+    list.innerHTML = ''
+    var frag = document.createDocumentFragment()
+    if (unmatched.length > 0) {
+      frag.appendChild(wsGroupElement('最近', null, unmatched, true))
+    }
+    state.workspaces.forEach(function (ws, i) {
+      frag.appendChild(wsGroupElement(ws.title || ws.path, ws, ws.sessions, unmatched.length === 0 && i === 0))
+    })
+    if (state.workspaces.length === 0 && unmatched.length === 0) {
+      var empty = document.createElement('p')
+      empty.className = 'empty'
+      empty.textContent = '还没有工作区,点上方「新建工作区」添加'
+      frag.appendChild(empty)
+    }
+    list.appendChild(frag)
+  }
+
+  function wsGroupElement(name, ws, sessions, openDefault) {
+    var group = document.createElement('div')
+    group.className = 'ws-group'
+
+    var head = document.createElement('div')
+    head.className = 'ws-item' + (openDefault ? ' open' : '')
+    var title = document.createElement('span')
+    title.className = 'ws-name'
+    title.textContent = name
+    var count = document.createElement('span')
+    count.className = 'ws-count'
+    count.textContent = String(sessions.length)
+    var arrow = document.createElement('span')
+    arrow.className = 'ws-arrow'
+    arrow.textContent = '›'
+    head.appendChild(title)
+    head.appendChild(count)
+    head.appendChild(arrow)
+
+    var body = document.createElement('div')
+    body.className = 'ws-body' + (openDefault ? ' open' : '')
+    if (sessions.length === 0) {
+      var empty = document.createElement('p')
+      empty.className = 'empty'
+      empty.textContent = '暂无会话'
+      body.appendChild(empty)
+    } else {
+      sessions.forEach(function (s) {
+        var row = document.createElement('div')
+        row.className = 'session-row' + (s.sessionId === state.sessionId ? ' current' : '')
+        row._sid = s.sessionId
+        var t = document.createElement('span')
+        t.className = 'session-title' + (s.blank ? ' blank' : '')
+        t.textContent = sessionTitle(s)
+        row.appendChild(t)
+        if (s.running) {
+          var b = document.createElement('span')
+          b.className = 'session-badge'
+          b.textContent = '运行中'
+          row.appendChild(b)
+        }
+        row.addEventListener('click', function () { openSession(s.sessionId, s.cwd) })
+        body.appendChild(row)
+      })
+    }
+
+    head.addEventListener('click', function () {
+      var open = head.classList.toggle('open')
+      body.classList.toggle('open', open)
+    })
+    group.appendChild(head)
+    group.appendChild(body)
+    return group
+  }
+
+  function markCurrentRow(sessionId) {
+    var rows = document.querySelectorAll('.session-row')
+    rows.forEach(function (row) {
+      row.classList.toggle('current', row._sid === sessionId)
+    })
+  }
+
+  // ---- 任务 ----
+  function fillWorkspaceSelect(selectedId) {
     return apiRpc('workspace.list', {}).then(function (data) {
       var select = $('task-workspace')
       select.innerHTML = ''
@@ -328,14 +503,13 @@
       items.forEach(function (item) {
         var o = document.createElement('option')
         o.value = item.workspaceId
-        o.textContent = (item.title || item.path)
-        if (selected && item.workspaceId === selected.workspaceId) o.selected = true
+        o.textContent = item.title || item.path
+        if (selectedId && item.workspaceId === selectedId) o.selected = true
         select.appendChild(o)
       })
     })
   }
 
-  // ---- 模型 ----
   function loadModels() {
     return apiRpc('llm.models', {}).then(function (data) {
       var groups = data.groups || []
@@ -359,7 +533,6 @@
     })
   }
 
-  // ---- 运行任务 ----
   function runTask() {
     var prompt = $('task-prompt').value.trim()
     if (prompt === '') {
@@ -390,12 +563,18 @@
     }).then(function (sessionId) {
       statusEl.textContent = '任务已启动 ✓'
       statusEl.className = 'conn-status ok'
+      closeSheet($('view-task'))
       openSession(sessionId)
+      loadSidebar()
     }).catch(function (err) {
       statusEl.textContent = '启动失败:' + err.message
       statusEl.className = 'conn-status err'
     })
   }
+
+  // ---- 弹层 ----
+  function openSheet(el) { el.classList.remove('hidden') }
+  function closeSheet(el) { el.classList.add('hidden') }
 
   // ---- 连接流程 ----
   function connect() {
@@ -408,6 +587,7 @@
     }
     state.server = server
     state.token = token
+    applyWallpaper(server)
     $('conn-status').textContent = '连接中…'
     $('conn-status').className = 'conn-status'
     apiRpc('host.describe', {}).then(function (host) {
@@ -427,11 +607,19 @@
     $('set-server').textContent = state.server
     $('set-harness').textContent = host ? ('v' + (host.version || '?') + ' · ' + (host.cwd || '')) : ''
     showView('main')
+    setChatStatus('空闲', '')
     connectEvents()
-    loadSessions()
-    loadWorkspaces()
-    loadModels().then(function () {})
+    loadSidebar()
     fillWorkspaceSelect()
+    loadModels()
+    openSidebar()
+  }
+
+  function showView(name) {
+    var map = { connect: 'view-connect', main: 'view-main' }
+    for (var key in map) {
+      $(map[key]).classList.toggle('hidden', key !== name)
+    }
   }
 
   function disconnect() {
@@ -439,12 +627,31 @@
     state.es = null
     state.connected = false
     state.sessionId = null
+    closeSidebar()
     showView('connect')
+  }
+
+  // ---- 壁纸 ----
+  function applyWallpaper(base) {
+    fetch((base.replace(/\/+$/, '')) + '/api/info').then(function (res) {
+      return res.json()
+    }).then(function (info) {
+      var pos = info.wallpaperPosition || { x: 0.5, y: 0.5 }
+      document.body.style.setProperty('--wallpaper-position', (pos.x * 100) + '% ' + (pos.y * 100) + '%')
+      var img = new Image()
+      img.onload = function () { document.body.classList.add('has-wallpaper') }
+      img.onerror = function () { document.body.classList.remove('has-wallpaper') }
+      img.src = base.replace(/\/+$/, '') + '/wallpaper'
+    }).catch(function () {
+      var img = new Image()
+      img.onload = function () { document.body.classList.add('has-wallpaper') }
+      img.onerror = function () { document.body.classList.remove('has-wallpaper') }
+      img.src = base.replace(/\/+$/, '') + '/wallpaper'
+    })
   }
 
   // ---- 初始化 ----
   function init() {
-    // 扫码参数:?token=xxx 或 ?server=xxx&token=xxx
     var params = new URLSearchParams(window.location.search)
     var serverParam = params.get('server')
     var tokenParam = params.get('token')
@@ -455,53 +662,32 @@
     else $('conn-server').value = window.location.origin
     if (tokenParam) $('conn-token').value = tokenParam
     else if (savedToken) $('conn-token').value = savedToken
+    applyWallpaper(window.location.origin)
+    $('opt-temp-cache').checked = state.tempCache
 
     $('btn-connect').addEventListener('click', connect)
     $('conn-token').addEventListener('keydown', function (e) { if (e.key === 'Enter') connect() })
 
-    // 自动连接:有完整参数(扫码或已保存)时直接尝试
-    if ((serverParam && tokenParam) || (savedServer && savedToken)) {
-      connect()
-    }
+    if ((serverParam && tokenParam) || (savedServer && savedToken)) connect()
 
-    // Tab 切换
-    var tabs = document.querySelectorAll('.tab-btn')
-    tabs.forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        tabs.forEach(function (b) { b.classList.remove('active') })
-        btn.classList.add('active')
-        var pages = ['sessions', 'task', 'workspaces', 'settings']
-        pages.forEach(function (p) {
-          $('tab-' + p).classList.toggle('hidden', p !== btn.dataset.tab)
-        })
-        if (btn.dataset.tab === 'sessions') loadSessions()
-        if (btn.dataset.tab === 'workspaces') loadWorkspaces()
-      })
-    })
-
-    $('btn-new-session').addEventListener('click', function () {
-      tabs[1].click()
-    })
-    $('btn-disconnect').addEventListener('click', disconnect)
-    $('btn-task-run').addEventListener('click', runTask)
-    $('btn-ws-refresh').addEventListener('click', function () {
-      fillWorkspaceSelect().catch(function (err) { S.toast(err.message, 'error') })
-    })
-    $('btn-ws-new').addEventListener('click', function () {
+    // 侧边栏
+    $('btn-menu').addEventListener('click', openSidebar)
+    $('btn-empty-new').addEventListener('click', newSession)
+    $('btn-new-session').addEventListener('click', newSession)
+    $('btn-sidebar-close').addEventListener('click', closeSidebar)
+    $('sidebar-backdrop').addEventListener('click', closeSidebar)
+    $('btn-new-workspace').addEventListener('click', function () {
       var path = prompt('请输入工作区目录的完整路径:')
       if (path && path.trim() !== '') {
         apiRpc('workspace.create', { path: path.trim() }).then(function () {
           S.toast('工作区已创建', 'ok')
-          loadWorkspaces()
+          loadSidebar()
           fillWorkspaceSelect()
         }).catch(function (err) { S.toast('创建失败:' + err.message, 'error') })
       }
     })
-    $('btn-chat-back').addEventListener('click', function () {
-      state.sessionId = null
-      showView('main')
-      loadSessions()
-    })
+
+    // 聊天
     $('btn-chat-send').addEventListener('click', sendMessage)
     $('chat-input').addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -516,6 +702,58 @@
         }).catch(function (err) { S.toast('停止失败:' + err.message, 'error') })
       }
     })
+
+    // 任务
+    $('btn-open-task').addEventListener('click', function () {
+      closeSidebar()
+      fillWorkspaceSelect(state.currentWsId)
+      openSheet($('view-task'))
+    })
+    $('btn-task-close').addEventListener('click', function () { closeSheet($('view-task')) })
+    $('btn-ws-refresh').addEventListener('click', function () {
+      fillWorkspaceSelect().catch(function (err) { S.toast(err.message, 'error') })
+    })
+    $('btn-task-run').addEventListener('click', runTask)
+
+    // 设置
+    $('btn-open-settings').addEventListener('click', function () {
+      closeSidebar()
+      apiRpc('llm.models', {}).then(function (data) {
+        var names = (data.groups || []).map(function (g) {
+          return (g.name || g.id) + ': ' + g.models.map(function (m) { return m.name || m.id }).join(', ')
+        })
+        $('set-models').textContent = names.join('\n') || '(未配置)'
+      }).catch(function () { $('set-models').textContent = '(未连接)' })
+      openSheet($('view-settings'))
+    })
+    $('btn-settings-close').addEventListener('click', function () { closeSheet($('view-settings')) })
+    $('opt-temp-cache').addEventListener('change', function () {
+      state.tempCache = $('opt-temp-cache').checked
+      localStorage.setItem('dsh-temp-cache', state.tempCache ? '1' : '0')
+      S.toast(state.tempCache ? '已开启:会话仅缓存本机' : '已关闭本机缓存', 'ok')
+    })
+    $('btn-clear-cache').addEventListener('click', function () {
+      clearAllCache()
+      S.toast('本机会话缓存已清除', 'ok')
+    })
+    $('btn-restart-service').addEventListener('click', function () {
+      if (!state.connected) {
+        S.toast('未连接', 'error')
+        return
+      }
+      fetch(state.server + '/api/action', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token },
+        body: JSON.stringify({ action: 'harness.restart' }),
+      }).then(function (res) {
+        return res.json()
+      }).then(function (data) {
+        if (data.ok) S.toast('已请求重启服务', 'ok')
+        else S.toast('重启失败:' + (data.error || 'unknown'), 'error')
+      }).catch(function (err) {
+        S.toast('重启失败:' + err.message, 'error')
+      })
+    })
     $('btn-add-home').addEventListener('click', function () {
       S.toast('在浏览器菜单中选择「添加到主屏幕」', 'ok')
     })
@@ -526,14 +764,7 @@
       $('conn-token').value = ''
       disconnect()
     })
-
-    // 设置页模型展示
-    apiRpc('llm.models', {}).then(function (data) {
-      var names = (data.groups || []).map(function (g) {
-        return (g.name || g.id) + ': ' + g.models.map(function (m) { return m.name || m.id }).join(', ')
-      })
-      $('set-models').textContent = names.join('\n') || '(未配置)'
-    }).catch(function () { /* 未连接时忽略 */ })
+    $('btn-disconnect').addEventListener('click', disconnect)
   }
 
   init()

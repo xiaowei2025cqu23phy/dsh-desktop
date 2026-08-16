@@ -3,6 +3,8 @@
  */
 
 import { BrowserWindow, ipcMain, shell } from 'electron'
+import { existsSync, readFileSync } from 'node:fs'
+import { extname } from 'node:path'
 import type { AppearanceManager } from './appearance'
 import type { ConfigStore } from './config'
 import type { RemoteGateway } from './gateway'
@@ -78,15 +80,40 @@ export function registerIpc(deps: IpcDeps): void {
 
   // ---- 外观 ----
   ipcMain.handle('appearance:getConfig', () => deps.appearance.getConfig())
-  ipcMain.handle('appearance:pickAndSet', async (_event, kind: string) => {
-    if (kind !== 'window' && kind !== 'screensaver') throw new Error('未知的壁纸类型')
-    return deps.appearance.pickAndSet(kind)
+  ipcMain.handle('appearance:pickSource', async (_event, kind: string) => {
+    if (!isWallpaperKind(kind)) throw new Error('未知的壁纸类型')
+    return deps.appearance.pickSource(kind)
+  })
+  ipcMain.handle('appearance:saveWallpaper', async (_event, kind: string, dataUrl: string, position: { x: number; y: number }) => {
+    if (!isWallpaperKind(kind)) throw new Error('未知的壁纸类型')
+    return deps.appearance.saveWallpaper(kind, dataUrl, position)
   })
   ipcMain.handle('appearance:clear', (_event, kind: string) => {
-    if (kind !== 'window' && kind !== 'screensaver') throw new Error('未知的壁纸类型')
+    if (!isWallpaperKind(kind)) throw new Error('未知的壁纸类型')
     return deps.appearance.clear(kind)
   })
   ipcMain.handle('appearance:setMask', (_event, mask: number) => deps.appearance.setMask(mask))
+  // 指定端壁纸的 data URL + 布设偏移:供内嵌 harness Web UI 作为背景注入。
+  ipcMain.handle('appearance:wallpaperData', (_event, kind: string) => {
+    if (!isWallpaperKind(kind)) return { dataUrl: null, position: { x: 0.5, y: 0.5 } }
+    const spec = deps.appearance.getConfig()[kind]
+    const path = spec.path
+    if (path === null || !existsSync(path)) return { dataUrl: null }
+    const types: Record<string, string> = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.webp': 'image/webp',
+      '.gif': 'image/gif',
+      '.bmp': 'image/bmp',
+    }
+    const mime = types[extname(path).toLowerCase()]
+    if (mime === undefined) return { dataUrl: null }
+    const buffer = readFileSync(path)
+    // 防御性上限 20MB;渲染端注入前会用 canvas 压缩,避免超大 data URL 拖慢内嵌页面。
+    if (buffer.byteLength > 20 * 1024 * 1024) return { dataUrl: null }
+    return { dataUrl: `data:${mime};base64,${buffer.toString('base64')}`, position: spec.position }
+  })
 
   // ---- 应用 ----
   ipcMain.handle('app:openSettingsFolder', async () => {
@@ -98,4 +125,8 @@ export function registerIpc(deps: IpcDeps): void {
     setTimeout(() => process.exit(0), 500)
   })
   ipcMain.handle('app:getWindowCount', () => BrowserWindow.getAllWindows().length)
+}
+
+function isWallpaperKind(kind: string): kind is 'window' | 'phone' | 'screensaver' {
+  return kind === 'window' || kind === 'phone' || kind === 'screensaver'
 }

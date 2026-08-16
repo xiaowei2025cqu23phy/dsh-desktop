@@ -205,11 +205,14 @@ export class HarnessManager extends EventEmitter {
     const { command, args } = splitCommand(this.config.command.replace('{port}', String(this.config.port)))
     const env: NodeJS.ProcessEnv = { ...process.env }
     if (this.config.dshHome) env.DSH_HOME = this.config.dshHome
+    // Windows 上 npx/pnpm/yarn 等是 .cmd/.bat 批处理,直接 spawn 会抛 ENOENT/EINVAL,
+    // 导致托管服务永远起不来。Windows 下经 shell(cmd.exe)启动,由 cmd 负责批处理解析。
+    const isWindows = process.platform === 'win32'
     const child = spawn(command, args, {
       env,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false,
+      shell: isWindows,
     })
     this.child = child
     this.managedPid = child.pid ?? null

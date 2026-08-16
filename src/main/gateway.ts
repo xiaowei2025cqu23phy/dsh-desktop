@@ -85,9 +85,9 @@ export class RemoteGateway {
   /** 局域网可达地址列表(供设置面板显示与二维码)。 */
   lanAddresses(): string[] {
     const result: string[] = []
-    for (const entries of Object.values(networkInterfaces())) {
+    for (const [name, entries] of Object.entries(networkInterfaces())) {
       for (const entry of entries ?? []) {
-        if (entry.family === 'IPv4' && !entry.internal) {
+        if (entry.family === 'IPv4' && !entry.internal && usableLanAddress(entry.address, name)) {
           result.push(entry.address)
         }
       }
@@ -162,6 +162,10 @@ export class RemoteGateway {
         this.serveStatic(path, res)
         return
       }
+      if (req.method === 'GET' && path === '/wallpaper') {
+        this.serveWallpaper(res)
+        return
+      }
       if (req.method === 'GET' && path === '/api/events') {
         this.serveEvents(url, req, res)
         return
@@ -170,8 +174,18 @@ export class RemoteGateway {
         await this.handleRpc(url, req, res)
         return
       }
+      if (req.method === 'POST' && path === '/api/action') {
+        await this.handleAction(url, req, res)
+        return
+      }
       if (req.method === 'GET' && path === '/api/info') {
-        this.json(res, 200, { name: 'dsh-desktop-remote', version: '0.1.0' })
+        const appearance = this.config.get().appearance
+        const spec = appearance.phone.path !== null ? appearance.phone : appearance.window
+        this.json(res, 200, {
+          name: 'dsh-desktop-remote',
+          version: '0.1.0',
+          wallpaperPosition: spec.position,
+        })
         return
       }
       this.json(res, 404, { error: 'not found' })
@@ -256,6 +270,55 @@ export class RemoteGateway {
     }
   }
 
+  /** 手机端可执行的控制动作(白名单,与 RPC 白名单同样受 token 保护)。 */
+  private async handleAction(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.authorized(url, req)) {
+      this.json(res, 401, { error: 'unauthorized' })
+      return
+    }
+    const chunks: Buffer[] = []
+    for await (const chunk of req) {
+      chunks.push(chunk as Buffer)
+    }
+    let body: { action?: unknown }
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { action?: unknown }
+    } catch {
+      this.json(res, 400, { error: 'invalid json' })
+      return
+    }
+    if (body.action === 'harness.restart') {
+      await this.harness.restart()
+      this.json(res, 200, { ok: true })
+      return
+    }
+    this.json(res, 403, { error: `action not allowed: ${String(body.action)}` })
+  }
+
+  /** 手机 PWA 背景壁纸:与桌面端主窗口壁纸保持一致。 */
+  private serveWallpaper(res: ServerResponse): void {
+    const appearance = this.config.get().appearance
+    const file = appearance.phone.path ?? appearance.window.path
+    if (file === null || !existsSync(file)) {
+      this.json(res, 404, { error: 'no wallpaper' })
+      return
+    }
+    const types: Record<string, string> = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.webp': 'image/webp',
+      '.gif': 'image/gif',
+      '.bmp': 'image/bmp',
+    }
+    const ext = extname(file).toLowerCase()
+    res.writeHead(200, {
+      'content-type': types[ext] ?? 'application/octet-stream',
+      'cache-control': 'no-cache',
+    })
+    res.end(readFileSync(file))
+  }
+
   private serveEvents(url: URL, req: IncomingMessage, res: ServerResponse): void {
     if (!this.authorized(url, req)) {
       this.json(res, 401, { error: 'unauthorized' })
@@ -284,4 +347,22 @@ export class RemoteGateway {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
     res.end(text)
   }
+}
+
+/**
+ * 过滤不适合手机局域网访问的地址:
+ * - 198.18.0.0/15:代理软件(Clash/sing-box 等)fake-ip 保留段,只存在于本机 TUN 隧道,手机无法路由;
+ * - 169.254.x.x:链路本地;
+ * - 虚拟网卡(WSL/Hyper-V/Docker/VMware/VirtualBox/TUN 等)的接口名。
+ */
+function usableLanAddress(address: string, interfaceName: string): boolean {
+  if (/virtual|vethernet|wsl|hyper-v|docker|vmware|virtualbox|loopback|bluetooth|tun|tap|utun|ppp|meta/i.test(interfaceName)) {
+    return false
+  }
+  const parts = address.split('.').map(Number)
+  if (parts.length !== 4) return false
+  const first = parts[0]
+  if (first === 169) return false // 169.254 链路本地
+  if (first === 198 && (parts[1] === 18 || parts[1] === 19)) return false // 代理 fake-ip
+  return true
 }

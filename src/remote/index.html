@@ -9,7 +9,7 @@
   <link rel="apple-touch-icon" href="./icon.png" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>DSH Remote</title>
+  <title>DeepSeek Harness</title>
   <link rel="stylesheet" href="./app.css" />
 </head>
 <body>
@@ -18,8 +18,8 @@
     <section id="view-connect" class="view">
       <div class="connect-box">
         <div class="logo">◈</div>
-        <h1>DSH Remote</h1>
-        <p class="sub">DeepSeek Harness 手机遥控</p>
+        <h1>DeepSeek Harness</h1>
+        <p class="sub">手机遥控</p>
         <div class="field">
           <label>服务器地址</label>
           <input id="conn-server" type="text" placeholder="http://192.168.1.5:3082" />
@@ -34,109 +34,108 @@
       </div>
     </section>
 
-    <!-- 主界面 -->
+    <!-- 主界面:聊天 -->
     <section id="view-main" class="view hidden">
       <header class="topbar">
-        <div class="brand">
-          <span class="logo-dot"></span>
-          <span id="main-title">DSH Remote</span>
+        <button id="btn-menu" class="btn btn-icon" title="侧边栏">☰</button>
+        <div class="chat-title-wrap">
+          <span id="chat-title" class="chat-title">DeepSeek Harness</span>
+          <span id="chat-status" class="chat-status">未连接</span>
         </div>
         <div class="topbar-right">
           <span id="conn-dot" class="conn-dot" title="连接状态"></span>
-          <button id="btn-disconnect" class="btn btn-ghost">断开</button>
+          <button id="btn-chat-stop" class="btn btn-ghost">停止</button>
         </div>
       </header>
-
-      <!-- 会话列表 -->
-      <div id="tab-sessions" class="tab-page">
-        <div class="list-head">
-          <h2>会话</h2>
-          <button id="btn-new-session" class="btn btn-primary btn-sm">新会话</button>
+      <main id="chat-stream" class="chat-stream">
+        <div id="chat-empty" class="chat-empty">
+          <div class="logo">◈</div>
+          <p>在侧边栏选择工作区与会话,或新建对话</p>
+          <button id="btn-empty-new" class="btn btn-primary">＋ 新对话</button>
         </div>
-        <div id="session-list" class="list">
-          <p class="empty">加载中…</p>
-        </div>
-      </div>
-
-      <!-- 新任务 -->
-      <div id="tab-task" class="tab-page">
-        <div class="list-head"><h2>新任务</h2></div>
-        <div class="task-form">
-          <div class="field">
-            <label>任务描述</label>
-            <textarea id="task-prompt" rows="4" placeholder="例如:分析这个仓库的架构,给出改进建议"></textarea>
-          </div>
-          <div class="field">
-            <label>工作区(项目目录)</label>
-            <select id="task-workspace"></select>
-            <button id="btn-ws-refresh" class="btn btn-sm">刷新</button>
-          </div>
-          <div class="field">
-            <label>模型</label>
-            <select id="task-model"></select>
-          </div>
-          <button id="btn-task-run" class="btn btn-primary btn-block">运行任务</button>
-          <p id="task-status" class="conn-status"></p>
-        </div>
-      </div>
-
-      <!-- 工作区 -->
-      <div id="tab-workspaces" class="tab-page">
-        <div class="list-head">
-          <h2>工作区</h2>
-          <button id="btn-ws-new" class="btn btn-primary btn-sm">新建</button>
-        </div>
-        <div id="workspace-list" class="list">
-          <p class="empty">加载中…</p>
-        </div>
-      </div>
-
-      <!-- 设置 -->
-      <div id="tab-settings" class="tab-page">
-        <div class="list-head"><h2>设置</h2></div>
-        <div class="task-form">
-          <div class="field">
-            <label>服务器</label>
-            <p id="set-server" class="value-text"></p>
-          </div>
-          <div class="field">
-            <label>可用模型</label>
-            <div id="set-models" class="value-text"></div>
-          </div>
-          <div class="field">
-            <label>Harness</label>
-            <p id="set-harness" class="value-text"></p>
-          </div>
-          <button id="btn-add-home" class="btn">添加到主屏幕</button>
-          <button id="btn-forget" class="btn btn-danger">清除连接信息</button>
-        </div>
-      </div>
-
-      <!-- 底部导航 -->
-      <nav class="tabbar">
-        <button class="tab-btn active" data-tab="sessions">会话</button>
-        <button class="tab-btn" data-tab="task">任务</button>
-        <button class="tab-btn" data-tab="workspaces">工作区</button>
-        <button class="tab-btn" data-tab="settings">设置</button>
-      </nav>
-    </section>
-
-    <!-- 会话详情 -->
-    <section id="view-chat" class="view hidden">
-      <header class="topbar">
-        <button id="btn-chat-back" class="btn btn-ghost">‹ 返回</button>
-        <div class="chat-title-wrap">
-          <span id="chat-title" class="chat-title">会话</span>
-          <span id="chat-status" class="chat-status">—</span>
-        </div>
-        <button id="btn-chat-stop" class="btn btn-ghost" title="停止当前回合">停止</button>
-      </header>
-      <main id="chat-stream" class="chat-stream"></main>
+      </main>
       <footer class="composer">
         <textarea id="chat-input" rows="1" placeholder="输入消息,回车发送"></textarea>
         <button id="btn-chat-send" class="btn btn-primary">发送</button>
       </footer>
     </section>
+
+    <!-- 侧边栏:工作区 + 会话 -->
+    <div id="sidebar-backdrop" class="backdrop hidden"></div>
+    <aside id="sidebar" class="sidebar hidden">
+      <div class="sidebar-head">
+        <div class="brand"><span class="logo-dot"></span><span>DeepSeek Harness</span></div>
+        <button id="btn-sidebar-close" class="btn btn-ghost">✕</button>
+      </div>
+      <div class="sidebar-actions">
+        <button id="btn-new-session" class="btn btn-primary btn-block">＋ 新对话</button>
+        <button id="btn-new-workspace" class="btn btn-block">＋ 新建工作区</button>
+      </div>
+      <div id="workspace-list" class="ws-list"><p class="empty">加载中…</p></div>
+      <nav class="sidebar-foot">
+        <button id="btn-open-task" class="btn">新任务</button>
+        <button id="btn-open-settings" class="btn">设置</button>
+        <button id="btn-disconnect" class="btn btn-danger">断开</button>
+      </nav>
+    </aside>
+
+    <!-- 任务弹层 -->
+    <div id="view-task" class="sheet hidden">
+      <header class="sheet-head">
+        <h2>新任务</h2>
+        <button id="btn-task-close" class="btn btn-ghost">✕</button>
+      </header>
+      <div class="task-form">
+        <div class="field">
+          <label>任务描述</label>
+          <textarea id="task-prompt" rows="4" placeholder="例如:分析这个仓库的架构,给出改进建议"></textarea>
+        </div>
+        <div class="field">
+          <label>工作区(项目目录)</label>
+          <select id="task-workspace"></select>
+          <button id="btn-ws-refresh" class="btn btn-sm">刷新</button>
+        </div>
+        <div class="field">
+          <label>模型</label>
+          <select id="task-model"></select>
+        </div>
+        <button id="btn-task-run" class="btn btn-primary btn-block">运行任务</button>
+        <p id="task-status" class="conn-status"></p>
+      </div>
+    </div>
+
+    <!-- 设置弹层 -->
+    <div id="view-settings" class="sheet hidden">
+      <header class="sheet-head">
+        <h2>设置</h2>
+        <button id="btn-settings-close" class="btn btn-ghost">✕</button>
+      </header>
+      <div class="task-form">
+        <div class="field">
+          <label>服务器</label>
+          <p id="set-server" class="value-text"></p>
+        </div>
+        <div class="field">
+          <label>可用模型</label>
+          <div id="set-models" class="value-text"></div>
+        </div>
+        <div class="field">
+          <label>Harness</label>
+          <p id="set-harness" class="value-text"></p>
+        </div>
+        <label class="check-row">
+          <input id="opt-temp-cache" type="checkbox" />
+          临时会话仅缓存本机(不随历史保留)
+        </label>
+        <button id="btn-clear-cache" class="btn">清除本机会话缓存</button>
+        <div class="field">
+          <label>服务操作</label>
+          <button id="btn-restart-service" class="btn btn-block">重启 Harness 服务</button>
+        </div>
+        <button id="btn-add-home" class="btn">添加到主屏幕</button>
+        <button id="btn-forget" class="btn btn-danger">清除连接信息</button>
+      </div>
+    </div>
   </div>
   <div id="toast-host"></div>
   <script src="./app.js"></script>
