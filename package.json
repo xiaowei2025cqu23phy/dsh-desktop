@@ -9,19 +9,22 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && node scripts/copy-assets.mjs",
     "start": "npm run build && electron .",
     "smoke": "node scripts/smoke.mjs",
-    "pack": "npm run build && electron-builder --win portable"
+    "pack": "npm run build && electron-builder --win zip",
+    "pack:portable": "npm run build && electron-builder --win portable"
   },
   "build": {
     "appId": "ai.deepseek.harness.desktop",
     "productName": "DeepSeek Harness Desktop",
     "files": [
-      "dist/**",
+      "dist/main/**",
+      "dist/preload.js",
+      "dist/renderer/**",
       "assets/**",
       "package.json"
     ],
     "win": {
       "target": [
-        "portable"
+        "zip"
       ],
       "icon": "assets/icon.png"
     }
