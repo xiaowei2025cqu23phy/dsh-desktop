@@ -930,13 +930,20 @@
       data.items.forEach(function (item) {
         var cell = document.createElement('div')
         cell.className = 'wallpaper-cell' + (item.active ? ' active' : '')
-        var img = document.createElement('img')
-        img.src = item.thumb || (state.server + '/wallpaper?path=' + encodeURIComponent(item.path))
-        img.alt = item.name
-        img.loading = 'lazy'
+        if (item.thumb) {
+          var img = document.createElement('img')
+          img.src = item.thumb
+          img.alt = item.name
+          img.loading = 'lazy'
+          cell.appendChild(img)
+        } else {
+          var ph = document.createElement('div')
+          ph.className = 'wallpaper-cell-ph'
+          ph.textContent = '🖼'
+          cell.appendChild(ph)
+        }
         var name = document.createElement('span')
         name.textContent = item.name
-        cell.appendChild(img)
         cell.appendChild(name)
         cell.addEventListener('click', function () {
           applyPhoneWallpaper(item, cell)
@@ -949,7 +956,10 @@
   }
 
   function applyPhoneWallpaper(item, cell) {
-    apiAction('appearance.setPhoneWallpaper', { path: item.path }).then(function () {
+    var request = item.id === 'default'
+      ? apiAction('appearance.clearPhoneWallpaper')
+      : apiAction('appearance.setPhoneWallpaper', { path: item.path })
+    request.then(function () {
       S.toast('壁纸已切换:' + item.name, 'ok')
       document.querySelectorAll('.wallpaper-cell').forEach(function (c) { c.classList.remove('active') })
       cell.classList.add('active')
