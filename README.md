@@ -228,3 +228,14 @@ scripts/           冒烟与端到端测试脚本
 QQ 机器人通道的协议细节参考了 [QQ 开放平台 API v2 文档](https://bot.q.qq.com/wiki/develop/api-v2/) 与 [Agent QQBot 接入指南](https://bot.q.qq.com/wiki/agent-qqbot/)。
 
 如果你也是这些项目的维护者——谢谢你们的工作,让这个项目成为可能 🙏
+
+## 支持与联系 / Support
+
+觉得有用?欢迎加入内测交流群反馈问题、提出建议;也可以请作者喝杯咖啡 ☕
+
+| 内测交流群(QQ) | 微信赞赏 |
+|---|---|
+| ![QQ 群](assets/support/qq-group.jpg) | ![微信赞赏码](assets/support/wechat-reward.png) |
+| 群链接:https://qm.qq.com/q/okezsdj6nu | 赞赏随心,感谢支持 |
+
+群内可直连 [@QQ 机器人](docs/USAGE.md#7-qq-机器人远程控制--qq-bot-remote-control) 试玩远程控制、审批与主动汇报能力。

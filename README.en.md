@@ -179,6 +179,17 @@ QQ bot protocol details follow the [QQ Open Platform API v2](https://bot.q.qq.co
 
 If you maintain any of these projects — thank you for making this possible 🙏
 
+## Support
+
+Found it useful? Join the beta group for feedback and feature requests, or buy the author a coffee ☕
+
+| Beta group (QQ) | WeChat reward |
+|---|---|
+| ![QQ group](assets/support/qq-group.jpg) | ![WeChat reward](assets/support/wechat-reward.png) |
+| https://qm.qq.com/q/okezsdj6nu | Any amount appreciated |
+
+Inside the group you can try the [QQ bot](docs/USAGE.md) directly — remote control, approvals and proactive reports.
+
 ## Known Limitations
 
 - The screensaver is a **viewing mode**: interactions (input, approvals) happen back in the main Web UI; a session that needs confirmation waits and stays visible in the Web UI.
