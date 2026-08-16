@@ -162,6 +162,20 @@ textarea { resize: vertical; }
 .q-custom-row { margin-top: 8px; }
 .q-custom { width: 100%; padding: 9px 11px; font-size: 13px; border-radius: 10px; }
 
+/* ---- 手机壁纸选择 ---- */
+.wallpaper-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.wallpaper-cell {
+  border: 2px solid var(--border); border-radius: 10px; overflow: hidden;
+  cursor: pointer; background: var(--bg-2); transition: border-color 0.15s ease;
+}
+.wallpaper-cell img { width: 100%; height: 64px; object-fit: cover; display: block; }
+.wallpaper-cell span {
+  display: block; font-size: 11px; color: var(--text-dim);
+  padding: 4px 4px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wallpaper-cell.active { border-color: var(--accent); }
+.wallpaper-cell.active span { color: var(--accent); font-weight: 600; }
+
 .composer {
   flex: 0 0 auto; display: flex; gap: 8px; padding: 10px 10px;
   border-top: 1px solid var(--border);

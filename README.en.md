@@ -39,14 +39,17 @@ Uninstalling keeps user config and wallpapers (does not delete `%APPDATA%`); for
 
 ## Features
 
+## ✨ Highlights
+
 - **Embedded Web UI**: native control bar + the full harness Web UI (sessions, tools, plugins).
-- **AI Screensaver (system screensaver replacement)**: after N idle minutes, a fullscreen view shows the agent working live (reasoning, text stream, tool calls); click, key, wheel, or touch exits instantly. Can be registered as the Windows system screensaver.
+- **AI Screensaver (system screensaver replacement)**: after N idle minutes, a fullscreen view shows the agent working live (reasoning, text stream, tool calls); click, key, wheel, or touch exits instantly. Built-in **task timeout guard** prevents runaway CPU loops; can be registered as the Windows system screensaver — idle time becomes productive time.
+- **Phone remote control (PWA)**: scan the QR code to connect over LAN — send tasks, watch live streaming progress, stop tasks; **one-tap approval/question cards** — no more waiting forever when the agent asks for permission.
+- **QQ / Telegram bot channels**: run tasks from group chat or DM; **proactive push** enabled (QQ 48h interaction window) — task done, failed, or needs approval, the bot comes to you; QQ approvals carry inline **Allow/Deny buttons**; **scan-to-login** grabs bot credentials automatically.
+- **Default chat mode**: with one toggle, plain messages enter pure chat directly (no workspace bound) — no command prefix needed.
 - **Model selection**: quick default-model switching (DeepSeek official, OpenAI, Anthropic, 37+ catalog providers), plus custom OpenAI-compatible gateways (corporate gateways, Ollama local, etc.); API keys are written securely via `credentials.set`.
 - **Harness hosting**: auto-detects a running `dsh web`, spawns one if missing (default `npx @deepseek-ai/dsh web`), restarts on crash, and takes over automatically when an external instance disappears.
-- **Wallpapers**: separately customizable for the main window / phone PWA / screensaver, with a crop editor, position offset, and mask control.
-- **Phone remote control (PWA)**: scan the QR code to connect over LAN — session messaging, workspace selection, task execution, live streaming; add to home screen as an app.
-- **QQ bot channel (optional)**: control the computer from anywhere via QQ — run tasks, check progress, and even enter a continuous chat mode inside a workspace.
-- **System tray**: auto-start on boot, one-click screensaver, quick Web UI access.
+- **Per-surface wallpapers + beads pixel filter**: separate wallpapers for main window / phone / screensaver, crop editor, position offset, mask; import your own images and pixelate them locally (no copyright issues); built-in whale wallpaper packs, one-click apply.
+- **System tray**: auto-start on boot, one-click screensaver, quick Web UI access, update notifications.
 
 ## Demos
 
