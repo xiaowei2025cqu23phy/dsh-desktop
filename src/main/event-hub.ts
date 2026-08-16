@@ -36,7 +36,12 @@ export class EventHub {
   private attach(): void {
     if (this.stopMux !== null) return
     this.stopMux = this.harness.client().openMux((frame) => {
-      if (frame.method !== 'session/event') return
+      // 转发会话事件 + 审批/提问帧(否则手机端等不到审批请求,任务会卡住)。
+      if (frame.method !== 'session/event' &&
+          frame.method !== 'approval/requested' && frame.method !== 'approval/resolved' &&
+          frame.method !== 'question/requested' && frame.method !== 'question/resolved') {
+        return
+      }
       for (const callback of this.subscribers) {
         try {
           callback(frame)

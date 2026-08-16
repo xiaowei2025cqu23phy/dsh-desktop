@@ -62,9 +62,16 @@ if (!gotLock) {
     events.subscribe((frame) => screensaver.forwardFrame(frame))
     // 统一远程命令核心(QQ / Telegram / Webhook 共用)。
     const commands = new RemoteCommandProcessor(harness)
+    let telegramBot: TelegramBotAdapter | null = null
+    // 审批/提问等交互帧转发给命令核心(应答走 /api/respond,与 PWA 同一路径)。
+    events.subscribe((frame) => commands.handleInteractionFrame(frame))
+    // Telegram 支持主动推送:审批/提问即时通知;QQ 为被动模式,靠回复附加提示兜底。
+    commands.setPush((channel, userId, text) => {
+      if (channel === 'telegram' && telegramBot !== null) void telegramBot.sendMessage(Number(userId), text)
+    })
     const gateway = new RemoteGateway(config, harness, events, commands)
     const qqBot = new QQBotAdapter(config, commands)
-    const telegramBot = new TelegramBotAdapter(config, commands)
+    telegramBot = new TelegramBotAdapter(config, commands)
     const updater = new UpdateChecker()
     registerIpc({ config, harness, models, screensaver, appearance, gateway, qqBot, telegramBot, updater })
 
@@ -134,7 +141,7 @@ if (!gotLock) {
         events.dispose()
         gateway.stop()
         await qqBot.stop()
-        telegramBot.stop()
+        telegramBot?.stop()
         quitCleanupDone = true
         app.quit()
       })()

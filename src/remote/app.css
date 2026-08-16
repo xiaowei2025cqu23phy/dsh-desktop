@@ -135,6 +135,33 @@ textarea { resize: vertical; }
 .cursor-blink::after { content: "▍"; color: var(--accent-2); animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* ---- 审批 / 提问卡片 ---- */
+.interaction-card {
+  align-self: stretch; border-radius: 14px; padding: 12px 13px;
+  font-size: 13px; line-height: 1.6;
+  background: rgba(232, 179, 57, 0.06); border: 1px solid rgba(232, 179, 57, 0.3);
+  animation: card-in 0.22s ease;
+}
+@keyframes card-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.interaction-card.done { background: rgba(46, 204, 113, 0.08); border-color: rgba(46, 204, 113, 0.35); color: var(--ok); font-weight: 600; }
+.interaction-title { font-weight: 700; margin-bottom: 6px; }
+.interaction-tool { color: var(--warn); font-weight: 600; }
+.interaction-reason { color: var(--text-dim); font-size: 12px; margin: 2px 0 8px; word-break: break-word; }
+.interaction-actions { display: flex; gap: 10px; margin-top: 10px; }
+.interaction-actions .btn { flex: 1; padding: 10px; font-size: 14px; border-radius: 10px; }
+.btn-allow, .btn-submit { background: linear-gradient(135deg, var(--accent), #3b63d6); border-color: transparent; color: #fff; }
+.btn-deny { background: rgba(232, 96, 87, 0.12); border: 1px solid rgba(232, 96, 87, 0.5); color: #ff8f87; }
+.q-item { margin: 6px 0; }
+.q-text { font-weight: 600; }
+.q-multi { color: var(--accent-2); font-size: 11px; }
+.q-detail { color: var(--text-dim); font-size: 12px; margin: 2px 0; }
+.q-none { color: var(--text-dim); font-size: 12px; }
+.q-opt { display: flex; align-items: flex-start; gap: 8px; padding: 6px 4px; font-size: 13px; }
+.q-opt input { margin-top: 3px; accent-color: var(--accent); }
+.q-desc { color: var(--text-dim); font-size: 12px; }
+.q-custom-row { margin-top: 8px; }
+.q-custom { width: 100%; padding: 9px 11px; font-size: 13px; border-radius: 10px; }
+
 .composer {
   flex: 0 0 auto; display: flex; gap: 8px; padding: 10px 10px;
   border-top: 1px solid var(--border);

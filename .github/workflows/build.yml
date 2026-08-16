@@ -28,6 +28,9 @@ jobs:
       - name: Run command parser tests
         run: node scripts/qq-commands-test.mjs
 
+      - name: Run approval flow tests
+        run: node scripts/approval-flow-test.mjs
+
       - name: Package (installer + zip)
         run: npx electron-builder --win nsis zip
 

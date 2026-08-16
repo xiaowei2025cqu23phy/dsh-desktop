@@ -45,6 +45,23 @@ check('退出', parseCommand('退出'), { kind: 'exit' })
 check('exit', parseCommand('exit'), { kind: 'exit' })
 check('结束', parseCommand('结束'), { kind: 'exit' })
 
+// 审批/提问应答
+check('允许', parseCommand('允许'), { kind: 'allow', sessionId: '' })
+check('允许 带会话', parseCommand('允许 session-abc'), { kind: 'allow', sessionId: 'session-abc' })
+check('同意', parseCommand('同意'), { kind: 'allow', sessionId: '' })
+check('批准', parseCommand('批准'), { kind: 'allow', sessionId: '' })
+check('approve', parseCommand('approve'), { kind: 'allow', sessionId: '' })
+check('拒绝', parseCommand('拒绝'), { kind: 'reject', sessionId: '' })
+check('拒绝 带会话', parseCommand('拒绝 session-abc'), { kind: 'reject', sessionId: 'session-abc' })
+check('reject', parseCommand('reject'), { kind: 'reject', sessionId: '' })
+check('选 单选', parseCommand('选 2'), { kind: 'select', text: '2' })
+check('选择 多选', parseCommand('选择 1 3'), { kind: 'select', text: '1 3' })
+check('select 自定义', parseCommand('select 自定义:先备份再删'), { kind: 'select', text: '自定义:先备份再删' })
+check('选 指定题号', parseCommand('选 #2 1'), { kind: 'select', text: '#2 1' })
+check('选 指定题号-前缀', parseCommand('#2 选 1 自定义:x'), { kind: 'select', text: '#2 1 自定义:x' })
+check('选 指定题号-前缀-空', parseCommand('#1 选'), { kind: 'select', text: '#1' })
+check('选 空', parseCommand('选'), { kind: 'select', text: '' })
+
 // 未知
 check('未知指令', parseCommand('你好啊'), { kind: 'unknown', text: '你好啊' })
 check('空指令', parseCommand('  '), { kind: 'unknown', text: '' })

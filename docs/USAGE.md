@@ -153,10 +153,12 @@ This guide walks you through the desktop client end to end: installation, config
 | *(对话模式)* | 直接发消息连续对话,无需前缀;`退出` 结束 | `帮我看看项目里的 TODO` |
 | `进展 <会话id>` | 实时进展(状态/工具统计/最新输出) | `进展 session-xxxxxxxx` |
 | `停止 <会话id>` / `打开 <会话id>` | 停止任务 / 查看内容 | `停止 session-xxxxxxxx` |
+| `允许` / `拒绝` | **审批应答**:agent 请求权限时,允许/拒绝当前操作(多个待审批时带会话 id) | `允许` / `拒绝 session-xxxxxxxx` |
+| `选 <编号>` | **选择题应答**:回答 agent 的提问(多选:`选 1 3`;自定义:`选 自定义:先备份再删`;多题批次:`#2 选 1`) | `选 2` |
 
 **典型流程**:`工作区` 看列表 → `进入 qqbot` → 连续对话(修改代码、查资料……)→ `退出`。
 
-**说明**:QQ 官方机器人为**被动回复**(不能主动推送);长回复自动分段。
+**说明**:QQ 官方机器人为**被动回复**(不能主动推送);长回复自动分段。待审批/待回答事项会在你下次发消息时附加在回复末尾提醒。
 
 **English**
 
@@ -176,10 +178,12 @@ This guide walks you through the desktop client end to end: installation, config
 | *(chat mode)* | Chat freely without prefixes; `退出` ends it | `帮我看看项目里的 TODO` |
 | `进展 <sessionId>` | Live progress (status / tool stats / latest output) | `进展 session-xxxxxxxx` |
 | `停止 <sessionId>` / `打开 <sessionId>` | Stop a task / view content | `停止 session-xxxxxxxx` |
+| `允许` / `拒绝` | **Approval replies**: allow/reject the pending permission request (add a session id when several are pending) | `允许` / `拒绝 session-xxxxxxxx` |
+| `选 <number>` | **Question replies**: answer an agent question (multi-select: `选 1 3`; custom: `选 自定义:backup first`; multi-question batch: `#2 选 1`) | `选 2` |
 
 **Typical flow**: `工作区` to list → `进入 qqbot` → chat continuously (fix code, look things up…) → `退出`.
 
-**Notes**: QQ official bots are **passive-reply** (no proactive push); long replies are split automatically.
+**Notes**: QQ official bots are **passive-reply** (no proactive push); long replies are split automatically. Pending approvals/questions are appended to the next reply as a reminder.
 
 ---
 

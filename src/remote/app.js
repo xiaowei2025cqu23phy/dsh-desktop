@@ -19,6 +19,10 @@
     currentWsId: null,
     currentWsPath: null,
     tempCache: localStorage.getItem('dsh-temp-cache') === '1',
+    approvals: {},        // sessionId -> [{ rpcId, sessionId, approvalId, toolName, reason }]
+    approvalCards: {},    // `${sessionId}:${approvalId}` -> DOM 元素
+    questions: {},        // sessionId -> { rpcId, sessionId, questions }
+    questionCards: {},    // sessionId -> DOM 元素
   }
 
   var S = {
@@ -71,6 +75,18 @@
     })
   }
 
+  /** 应答服务端请求(审批 / 提问),与桌面端机器人通道同一路径。返回 {accepted, reason?}。 */
+  function apiRespond(rpcId, result) {
+    return fetch(state.server + '/api/respond', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token },
+      body: JSON.stringify({ type: 'client-response', rpcId: rpcId, result: result }),
+    }).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      return res.json()
+    })
+  }
+
   // ---- 本机临时会话缓存 ----
   function cacheKey(sid) { return 'dsh-cache-' + sid }
 
@@ -102,6 +118,9 @@
     state.msgLog = []
     state.lastSeq = 0
     $('chat-stream').querySelectorAll('.msg').forEach(function (el) { el.remove() })
+    $('chat-stream').querySelectorAll('.interaction-card').forEach(function (el) { el.remove() })
+    state.approvalCards = {}
+    state.questionCards = {}
     hideEmpty(false)
   }
 
@@ -224,7 +243,16 @@
   }
 
   function handleFrame(frame) {
-    if (!frame || frame.method !== 'session/event') return
+    if (!frame || !S.isRecord(frame)) return
+    if (frame.method === 'approval/requested' || frame.method === 'approval/resolved') {
+      handleApprovalFrame(frame)
+      return
+    }
+    if (frame.method === 'question/requested' || frame.method === 'question/resolved') {
+      handleQuestionFrame(frame)
+      return
+    }
+    if (frame.method !== 'session/event') return
     var payload = frame.payload
     if (!S.isRecord(payload)) return
     if (state.sessionId !== null && payload.sessionId !== state.sessionId) return
@@ -286,6 +314,188 @@
     try { return JSON.stringify(JSON.parse(raw), null, 2) } catch (e) { return raw }
   }
 
+  // ---- 审批 / 提问卡片 ----
+  function handleApprovalFrame(frame) {
+    var payload = S.isRecord(frame.payload) ? frame.payload : {}
+    var sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
+    if (sessionId === '') return
+    if (frame.method === 'approval/requested') {
+      var item = {
+        rpcId: frame.rpcId,
+        sessionId: sessionId,
+        approvalId: String(payload.approvalId || ''),
+        toolName: String(payload.toolName || '工具'),
+        reason: typeof payload.reason === 'string' ? payload.reason : '',
+      }
+      if (!Array.isArray(state.approvals[sessionId])) state.approvals[sessionId] = []
+      state.approvals[sessionId].push(item)
+      if (state.sessionId === sessionId) renderApprovalCard(item)
+      else S.toast('会话 ' + sessionId + ' 需要审批', 'error')
+    } else {
+      var approvalId = String(payload.approvalId || '')
+      var key = sessionId + ':' + approvalId
+      var cardEl = state.approvalCards[key]
+      if (cardEl) {
+        cardEl.remove()
+        delete state.approvalCards[key]
+      }
+      var list = state.approvals[sessionId]
+      if (Array.isArray(list)) {
+        state.approvals[sessionId] = list.filter(function (a) { return String(a.approvalId) !== approvalId })
+      }
+    }
+  }
+
+  function renderApprovalCard(item) {
+    var stream = $('chat-stream')
+    hideEmpty(true)
+    var card = document.createElement('div')
+    card.className = 'interaction-card approval-card'
+    var html = '<div class="interaction-title">⚠️ 需要审批</div>' +
+      '<div class="interaction-tool">工具:' + S.escapeHtml(item.toolName) + '</div>' +
+      '<div class="interaction-reason">' + S.escapeHtml(item.reason || '') + '</div>' +
+      '<div class="interaction-actions">' +
+      '<button class="btn btn-allow">允许</button>' +
+      '<button class="btn btn-deny">拒绝</button></div>'
+    card.innerHTML = html
+    card.querySelector('.btn-allow').addEventListener('click', function () {
+      respondApproval(item, 'allowed-once', card)
+    })
+    card.querySelector('.btn-deny').addEventListener('click', function () {
+      respondApproval(item, 'rejected', card)
+    })
+    stream.appendChild(card)
+    state.approvalCards[item.sessionId + ':' + item.approvalId] = card
+    stream.scrollTop = stream.scrollHeight
+  }
+
+  function respondApproval(item, outcome, card) {
+    var buttons = card.querySelectorAll('button')
+    buttons.forEach(function (b) { b.disabled = true })
+    apiRespond(item.rpcId, {
+      ok: true,
+      value: { sessionId: item.sessionId, approvalId: item.approvalId, outcome: outcome },
+    }).then(function (receipt) {
+      if (!receipt || receipt.accepted !== true) {
+        buttons.forEach(function (b) { b.disabled = false })
+        S.toast('应答未被接受:' + ((receipt && receipt.reason) || '未知原因'), 'error')
+        return
+      }
+      card.classList.add('done')
+      card.innerHTML = outcome === 'allowed-once' ? '✓ 已允许' : '✗ 已拒绝'
+      delete state.approvalCards[item.sessionId + ':' + item.approvalId]
+      S.toast(outcome === 'allowed-once' ? '已允许' : '已拒绝', 'ok')
+    }).catch(function (err) {
+      buttons.forEach(function (b) { b.disabled = false })
+      S.toast('应答失败:' + err.message, 'error')
+    })
+  }
+
+  function handleQuestionFrame(frame) {
+    var payload = S.isRecord(frame.payload) ? frame.payload : {}
+    var sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
+    if (sessionId === '') return
+    if (frame.method === 'question/requested') {
+      if (!Array.isArray(payload.questions) || payload.questions.length === 0) return
+      state.questions[sessionId] = { rpcId: frame.rpcId, sessionId: sessionId, questions: payload.questions }
+      if (state.sessionId === sessionId) renderQuestionCard(state.questions[sessionId])
+      else S.toast('会话 ' + sessionId + ' 需要你回答', 'error')
+    } else {
+      var cardEl = state.questionCards[sessionId]
+      if (cardEl) {
+        cardEl.remove()
+        delete state.questionCards[sessionId]
+      }
+      delete state.questions[sessionId]
+    }
+  }
+
+  function renderQuestionCard(pending) {
+    var stream = $('chat-stream')
+    hideEmpty(true)
+    var card = document.createElement('div')
+    card.className = 'interaction-card question-card'
+    var html = '<div class="interaction-title">❓ 需要你回答</div>'
+    pending.questions.forEach(function (q, i) {
+      var multi = q.multiSelect ? ' <span class="q-multi">(多选)</span>' : ''
+      html += '<div class="q-item">' +
+        '<div class="q-text">' + (pending.questions.length > 1 ? '#' + (i + 1) + ' ' : '') + S.escapeHtml(q.question) + multi + '</div>' +
+        (typeof q.detail === 'string' && q.detail !== '' ? '<div class="q-detail">' + S.escapeHtml(q.detail) + '</div>' : '')
+      if (Array.isArray(q.options) && q.options.length > 0) {
+        q.options.forEach(function (opt, j) {
+          var desc = (opt && typeof opt.description === 'string' && opt.description !== '') ? '<span class="q-desc"> — ' + S.escapeHtml(opt.description) + '</span>' : ''
+          html += '<label class="q-opt"><input type="' + (q.multiSelect ? 'checkbox' : 'radio') + '" name="q-' + i + '" value="' + j + '">' +
+            S.escapeHtml(opt.label) + desc + '</label>'
+        })
+      } else {
+        html += '<div class="q-none">(无选项,请在下方填写)</div>'
+      }
+      html += '</div>'
+    })
+    html += '<div class="q-custom-row"><input class="q-custom" placeholder="补充说明(可选)"></div>' +
+      '<div class="interaction-actions"><button class="btn btn-submit">提交回答</button></div>'
+    card.innerHTML = html
+    card.querySelector('.btn-submit').addEventListener('click', function () { submitQuestion(pending, card) })
+    stream.appendChild(card)
+    state.questionCards[pending.sessionId] = card
+    stream.scrollTop = stream.scrollHeight
+  }
+
+  function submitQuestion(pending, card) {
+    var answers = pending.questions.map(function (q, i) {
+      var inputs = card.querySelectorAll('input[name="q-' + i + '"]')
+      var selected = []
+      var hasOptions = inputs.length > 0
+      if (hasOptions && q.multiSelect) {
+        inputs.forEach(function (input) { if (input.checked) selected.push(q.options[Number(input.value)].label) })
+      } else if (hasOptions) {
+        for (var k = 0; k < inputs.length; k++) {
+          if (inputs[k].checked) { selected.push(q.options[Number(inputs[k].value)].label); break }
+        }
+      }
+      var customInput = card.querySelector('.q-custom')
+      var custom = customInput && customInput.value.trim() !== '' ? customInput.value.trim() : undefined
+      if (custom !== undefined && !q.multiSelect) return { id: q.id, selected: [], custom: custom }
+      return { id: q.id, selected: selected, custom: custom }
+    })
+    for (var i = 0; i < answers.length; i++) {
+      if (answers[i].selected.length === 0 && !answers[i].custom) {
+        S.toast('请回答每个问题(未答的给「补充说明」)', 'error')
+        return
+      }
+    }
+    var button = card.querySelector('.btn-submit')
+    button.disabled = true
+    apiRespond(pending.rpcId, {
+      ok: true,
+      value: { sessionId: pending.sessionId, answer: { answers: answers } },
+    }).then(function (receipt) {
+      if (!receipt || receipt.accepted !== true) {
+        button.disabled = false
+        S.toast('回答未被接受:' + ((receipt && receipt.reason) || '未知原因'), 'error')
+        return
+      }
+      card.classList.add('done')
+      card.innerHTML = '✓ 已提交回答(' + answers.length + ' 个问题)'
+      delete state.questionCards[pending.sessionId]
+      delete state.questions[pending.sessionId]
+      S.toast('已提交回答', 'ok')
+    }).catch(function (err) {
+      button.disabled = false
+      S.toast('提交失败:' + err.message, 'error')
+    })
+  }
+
+  /** 打开会话时重绘该会话未决的审批/提问卡片。 */
+  function renderPendingCards(sessionId) {
+    var approvals = state.approvals[sessionId]
+    if (Array.isArray(approvals)) {
+      approvals.forEach(function (item) { renderApprovalCard(item) })
+    }
+    var pending = state.questions[sessionId]
+    if (pending) renderQuestionCard(pending)
+  }
+
   // ---- 会话 ----
   function openSession(sessionId, cwd) {
     state.sessionId = sessionId
@@ -315,6 +525,8 @@
       })
       setChatStatus(state.msgLog.length > 0 ? '已加载' : '空会话', '')
       persistCache()
+      // 恢复该会话未决的审批/提问卡片(切回会话时仍可应答)
+      renderPendingCards(sessionId)
     }).catch(function (err) {
       setChatStatus('加载失败:' + err.message, '')
       S.toast('加载历史失败:' + err.message, 'error')

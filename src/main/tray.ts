@@ -2,14 +2,16 @@
  * 系统托盘:常驻后台,提供快速操作。
  */
 
-import { Menu, Tray, app, nativeImage } from 'electron'
+import { Menu, Tray, app, nativeImage, shell } from 'electron'
 import { join } from 'node:path'
 import type { HarnessManager } from './harness'
 import type { ScreensaverController } from './screensaver'
+import type { UpdateChecker } from './updater'
 
 export interface TrayDeps {
   harness: HarnessManager
   screensaver: ScreensaverController
+  updater?: UpdateChecker
   showMainWindow: () => void
   openWebUi: () => void
   quit: () => void
@@ -45,9 +47,22 @@ export class AppTray {
       stopped: '已停止',
       error: '错误',
     }
+    const hasUpdate = this.deps.updater?.hasUpdate() === true
+    const updateInfo = this.deps.updater?.getInfo()
     const menu = Menu.buildFromTemplate([
       { label: `DeepSeek Harness Desktop — ${stateLabel[status.state] ?? status.state}`, enabled: false },
       { label: `地址:${status.baseUrl}`, enabled: false },
+      ...(hasUpdate && updateInfo !== undefined
+        ? [
+            { type: 'separator' as const },
+            {
+              label: `⬆ 发现新版本 v${updateInfo.latest}(当前 v${updateInfo.current})`,
+              click: () => {
+                if (updateInfo.url !== null) void shell.openExternal(updateInfo.url)
+              },
+            },
+          ]
+        : []),
       { type: 'separator' },
       { label: '显示主窗口', click: () => this.deps.showMainWindow() },
       { label: '打开 Web UI', click: () => this.deps.openWebUi() },
@@ -77,6 +92,7 @@ export class AppTray {
       { label: '退出', click: () => this.deps.quit() },
     ])
     this.tray.setContextMenu(menu)
+    if (hasUpdate) this.tray.setToolTip(`DeepSeek Harness Desktop — 发现新版本 v${updateInfo?.latest}`)
   }
 
   dispose(): void {

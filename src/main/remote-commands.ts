@@ -4,10 +4,14 @@
  * - handleText(channel, userId, text):入口,负责指令分发与对话模式。
  * - 对话模式:进入工作区后,非指令消息自动发往该工作区会话,「退出」结束;
  *   上下文按 `${channel}:${userId}` 隔离。
+ * - handleInteractionFrame(frame):审批/提问等交互帧的处理(应答走 /api/respond)。
+ *   审批「允许/拒绝」、选择题「选 N」;待办在下次消息回复末尾附带提示,
+ *   Telegram 等支持主动推送的通道会即时推送(经 setPush 注入)。
  * - 未识别指令:回复完整指令集(含可直接复制的示例)。
  */
 
 import type { HarnessManager } from './harness'
+import type { ServerRequest } from './client'
 import { parseCommand, parseTaskOptions, type QQCommand } from './qq-commands'
 
 /** 单条回复长度上限(超长由通道分段)。 */
@@ -19,25 +23,75 @@ interface ChatContext {
   label: string
 }
 
+/** 会话归属:哪个通道的哪个用户发起了该会话(用于审批/提问的定向通知)。 */
+interface SessionOwner {
+  channel: string
+  userId: string
+}
+
+/** 待审批项。 */
+interface PendingApproval {
+  rpcId: string
+  sessionId: string
+  approvalId: string
+  toolName: string
+  reason?: string
+}
+
+/** 待回答的提问批次(选择题)。 */
+interface PendingQuestion {
+  rpcId: string
+  sessionId: string
+  questions: AskUserQuestionItem[]
+  answers: Map<string, { selected: string[]; custom?: string }>
+}
+
+/** 提问条目的 wire 结构(与 harness dsh-user-questions 对齐)。 */
+export interface AskUserQuestionItem {
+  id: string
+  question: string
+  detail?: string
+  header?: string
+  options?: Array<{ label: string; description?: string }>
+  multiSelect?: boolean
+}
+
+/** 主动推送函数(由宿主注入;QQ 被动模式可不注入,靠回复附加提示兜底)。 */
+export type PushFn = (channel: string, userId: string, text: string) => void
+
 export class RemoteCommandProcessor {
   private chatContexts = new Map<string, ChatContext>()
+  private sessionOwners = new Map<string, SessionOwner>()
+  private pendingApprovals = new Map<string, PendingApproval>()
+  private pendingQuestions = new Map<string, PendingQuestion>()
+  private push: PushFn | null = null
 
   constructor(private harness: HarnessManager) {}
+
+  /** 注入主动推送实现(Telegram 等支持主动消息的通道)。 */
+  setPush(push: PushFn): void {
+    this.push = push
+  }
 
   /** 统一入口:处理一条来自某通道用户的文本消息,返回回复文本。 */
   async handleText(channel: string, userId: string, text: string): Promise<string> {
     const content = text.trim()
-    if (content === '') return ''
     const key = `${channel}:${userId}`
-    const command = parseCommand(content)
-    if (command.kind === 'unknown') {
-      const ctx = this.chatContexts.get(key)
-      if (ctx !== undefined) {
-        return this.cmdChatMessage(key, content)
+    let reply: string
+    if (content === '') {
+      reply = ''
+    } else {
+      const command = parseCommand(content)
+      if (command.kind === 'unknown') {
+        const ctx = this.chatContexts.get(key)
+        reply = ctx !== undefined ? await this.cmdChatMessage(key, content) : this.fullHelp()
+      } else {
+        reply = await this.executeCommand(command, key)
       }
-      return this.fullHelp()
     }
-    return this.executeCommand(command, key)
+    const suffix = this.pendingSuffix(channel, userId)
+    if (suffix === '') return reply
+    return reply === '' ? suffix : `${reply}\n\n${suffix}`
   }
 
   /** 完整指令集(未知指令时也回复这份),每条指令带可直接复制的示例。 */
@@ -83,6 +137,18 @@ export class RemoteCommandProcessor {
       '打开 <会话id> — 查看会话内容',
       '  例:打开 session-xxxxxxxx',
       '',
+      '✅ 审批与提问(agent 需要你决定时)',
+      '允许 — 允许当前待审批操作',
+      '  例:允许(多个待审批时:允许 <会话id>)',
+      '拒绝 — 拒绝当前待审批操作',
+      '  例:拒绝',
+      '选 <编号> — 回答选择题(多选:选 1 3)',
+      '  例:选 2',
+      '  例:选 1 3',
+      '  例:选 自定义:先备份再删除',
+      '多问题批次:#<题号> 选 <编号>',
+      '  例:#2 选 1',
+      '',
       '💡 典型流程:先「工作区」看列表 → 「进入 qqbot」→ 连续对话 → 「退出」',
     ].join('\n')
   }
@@ -106,11 +172,17 @@ export class RemoteCommandProcessor {
       case 'progress':
         return this.cmdProgress(command.sessionId)
       case 'run':
-        return this.cmdRun(command.description)
+        return this.cmdRun(key, command.description)
       case 'enter':
         return this.cmdEnter(key, command.target)
       case 'exit':
         return this.cmdExit(key)
+      case 'allow':
+        return this.cmdAllow(key, command.sessionId, 'allowed-once')
+      case 'reject':
+        return this.cmdAllow(key, command.sessionId, 'rejected')
+      case 'select':
+        return this.cmdSelect(key, command.text)
       default:
         return this.fullHelp()
     }
@@ -258,7 +330,7 @@ export class RemoteCommandProcessor {
     }
   }
 
-  private async cmdRun(description: string): Promise<string> {
+  private async cmdRun(key: string, description: string): Promise<string> {
     if (description === '') return '任务描述不能为空,示例:任务 分析这个仓库的架构'
     const client = this.harness.client()
     const parsed = parseTaskOptions(description)
@@ -295,6 +367,7 @@ export class RemoteCommandProcessor {
       if (workspaceId !== null) payload.workspaceId = workspaceId
       else if (cwd !== null) payload.cwd = cwd
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
+      this.sessionOwners.set(created.sessionId, this.ownerFromKey(key))
       await client.rpc('session.prompt', {
         sessionId: created.sessionId,
         mode: 'queue',
@@ -331,6 +404,7 @@ export class RemoteCommandProcessor {
       if (workspaceId !== null) payload.workspaceId = workspaceId
       else if (cwd !== null) payload.cwd = cwd
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
+      this.sessionOwners.set(created.sessionId, this.ownerFromKey(key))
       this.chatContexts.set(key, { sessionId: created.sessionId, label: target })
       return [
         `已进入工作区「${target}」对话模式 ✓`,
@@ -363,5 +437,259 @@ export class RemoteCommandProcessor {
     } catch (error) {
       return `发送失败:${error instanceof Error ? error.message : String(error)}`
     }
+  }
+
+  /**
+   * 处理 harness 交互帧(审批 / 提问)。
+   * 由宿主从事件流桥接调用;应答统一走 /api/respond,与 PWA 手机端同一路径。
+   */
+  handleInteractionFrame(frame: ServerRequest): void {
+    if (frame.type !== 'server-request') return
+    const payload = (frame.payload ?? {}) as Record<string, unknown>
+    switch (frame.method) {
+      case 'approval/requested': {
+        const sessionId = String(payload.sessionId ?? '')
+        const approvalId = String(payload.approvalId ?? '')
+        if (sessionId === '' || approvalId === '') return
+        const pending: PendingApproval = {
+          rpcId: frame.rpcId,
+          sessionId,
+          approvalId,
+          toolName: String(payload.toolName ?? '?'),
+          reason: payload.reason !== undefined ? String(payload.reason) : undefined,
+        }
+        this.pendingApprovals.set(`${sessionId}:${approvalId}`, pending)
+        this.notifyOwner(sessionId, this.formatApproval(pending))
+        break
+      }
+      case 'approval/resolved': {
+        const sessionId = String(payload.sessionId ?? '')
+        const approvalId = String(payload.approvalId ?? '')
+        if (sessionId !== '') this.pendingApprovals.delete(`${sessionId}:${approvalId}`)
+        break
+      }
+      case 'question/requested': {
+        const sessionId = String(payload.sessionId ?? '')
+        const questions = Array.isArray(payload.questions) ? (payload.questions as AskUserQuestionItem[]) : []
+        if (sessionId === '' || questions.length === 0) return
+        this.pendingQuestions.set(sessionId, {
+          rpcId: frame.rpcId,
+          sessionId,
+          questions,
+          answers: new Map(),
+        })
+        this.notifyOwner(sessionId, this.formatQuestion(sessionId, questions, 0))
+        break
+      }
+      case 'question/resolved': {
+        const sessionId = String(payload.sessionId ?? '')
+        if (sessionId !== '') this.pendingQuestions.delete(sessionId)
+        break
+      }
+      default:
+        break
+    }
+  }
+
+  /** 允许/拒绝审批:outcome 为 'allowed-once' | 'rejected'。 */
+  private async cmdAllow(key: string, sessionId: string, outcome: 'allowed-once' | 'rejected'): Promise<string> {
+    const owner = this.ownerFromKey(key)
+    const pending = this.findPendingApproval(owner, sessionId)
+    if (pending === null) {
+      return sessionId !== ''
+        ? `会话 ${sessionId} 没有待审批项(可能已处理或不是由你发起)`
+        : '当前没有待审批项。收到审批通知后回复「允许」或「拒绝」即可。'
+    }
+    const client = this.harness.client()
+    try {
+      const receipt = await client.respond(pending.rpcId, {
+        ok: true,
+        value: {
+          sessionId: pending.sessionId,
+          approvalId: pending.approvalId,
+          outcome,
+        },
+      })
+      if (!receipt.accepted) {
+        return `应答未被接受:${receipt.reason ?? '未知原因'}(可能已超时处理)`
+      }
+      this.pendingApprovals.delete(`${pending.sessionId}:${pending.approvalId}`)
+      return outcome === 'allowed-once'
+        ? `✓ 已允许:${pending.toolName}${pending.reason !== undefined ? `(${pending.reason.slice(0, 60)})` : ''}`
+        : `✗ 已拒绝:${pending.toolName}`
+    } catch (error) {
+      return `应答失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  /** 回答选择题:「选 2」「选 1 3」「选 自定义:xx」「#2 选 1」。 */
+  private async cmdSelect(key: string, text: string): Promise<string> {
+    const owner = this.ownerFromKey(key)
+    const pending = this.findPendingQuestion(owner)
+    if (pending === null) {
+      return '当前没有待回答的提问。收到提问通知后按「选 <编号>」回答。'
+    }
+    const parts = text.trim().split(/\s+/)
+    let index = 0
+    let questionIdx = 0
+    const hashMatch = /^#(\d+)$/.exec(parts[0] ?? '')
+    if (hashMatch !== null) {
+      questionIdx = Number(hashMatch[1]) - 1
+      index = 1
+    } else if (pending.questions.length === 1) {
+      questionIdx = 0
+    }
+    const question = pending.questions[questionIdx]
+    if (question === undefined) {
+      return `题号无效,共 ${pending.questions.length} 题(格式:#1 选 2)`
+    }
+    const selected: string[] = []
+    let custom: string | undefined
+    for (const token of parts.slice(index)) {
+      const customMatch = /^自定义:(.*)$/.exec(token)
+      if (customMatch !== null) {
+        custom = customMatch[1]
+        continue
+      }
+      const num = Number(token)
+      if (!Number.isInteger(num) || num < 1) {
+        return `无法识别「${token}」。格式:选 <编号>(如:选 2;多选:选 1 3;自定义:选 自定义:先备份)`
+      }
+      const option = question.options?.[num - 1]
+      if (option === undefined) {
+        return `编号 ${num} 超出选项范围(共 ${question.options?.length ?? 0} 项)`
+      }
+      selected.push(option.label)
+    }
+    if (selected.length === 0 && custom === undefined) {
+      return '请给出选项编号或自定义内容,如:「选 2」「选 自定义:先备份」'
+    }
+    if (custom !== undefined && !question.multiSelect && selected.length > 0) {
+      // 单选时 custom 覆盖 selected(与 harness 语义一致)。
+      pending.answers.set(question.id, { selected: [], custom })
+    } else {
+      const existing = pending.answers.get(question.id)
+      pending.answers.set(question.id, {
+        selected: existing !== undefined && question.multiSelect ? [...existing.selected, ...selected] : selected,
+        custom,
+      })
+    }
+    const answeredCount = pending.questions.filter((q) => pending.answers.has(q.id)).length
+    if (answeredCount < pending.questions.length) {
+      const answered = [...pending.answers.keys()]
+      const remaining = pending.questions
+        .map((q, i) => ({ q, i }))
+        .filter(({ q }) => !answered.includes(q.id))
+        .map(({ q, i }) => `#${i + 1} ${q.question.slice(0, 40)}`)
+        .join(';')
+      return `已记录回答 ${answeredCount}/${pending.questions.length}。剩余:${remaining}`
+    }
+    // 全部答完:提交。
+    const answers = pending.questions.map((q) => {
+      const a = pending.answers.get(q.id)
+      return a !== undefined ? { id: q.id, selected: a.selected, custom: a.custom } : { id: q.id, selected: [] }
+    })
+    const client = this.harness.client()
+    try {
+      const receipt = await client.respond(pending.rpcId, {
+        ok: true,
+        value: { sessionId: pending.sessionId, answer: { answers } },
+      })
+      this.pendingQuestions.delete(pending.sessionId)
+      if (!receipt.accepted) {
+        return `回答未被接受:${receipt.reason ?? '未知原因'}`
+      }
+      return `✓ 已回答 ${answers.length} 个问题,已提交给 agent`
+    } catch (error) {
+      return `提交失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  // ---- 内部 ----
+
+  /** 从 `${channel}:${userId}` 拆出归属(通道名不含冒号,userId 为 openid/数字)。 */
+  private ownerFromKey(key: string): SessionOwner {
+    const sep = key.indexOf(':')
+    return sep < 0
+      ? { channel: key, userId: '' }
+      : { channel: key.slice(0, sep), userId: key.slice(sep + 1) }
+  }
+
+  /** 查该用户可应答的待审批项;sessionId 非空时精确匹配。 */
+  private findPendingApproval(owner: SessionOwner, sessionId: string): PendingApproval | null {
+    for (const pending of this.pendingApprovals.values()) {
+      if (sessionId !== '' && pending.sessionId !== sessionId) continue
+      const o = this.sessionOwners.get(pending.sessionId)
+      if (o !== undefined && o.channel === owner.channel && o.userId === owner.userId) return pending
+    }
+    return null
+  }
+
+  /** 查该用户最近的待回答提问。 */
+  private findPendingQuestion(owner: SessionOwner): PendingQuestion | null {
+    for (const pending of this.pendingQuestions.values()) {
+      const o = this.sessionOwners.get(pending.sessionId)
+      if (o !== undefined && o.channel === owner.channel && o.userId === owner.userId) return pending
+    }
+    return null
+  }
+
+  /** 交互帧到来时通知会话发起者(仅支持主动推送的通道;其余靠回复提示)。 */
+  private notifyOwner(sessionId: string, text: string): void {
+    if (this.push === null) return
+    const owner = this.sessionOwners.get(sessionId)
+    if (owner !== undefined) this.push(owner.channel, owner.userId, text)
+  }
+
+  /** 审批通知文本。 */
+  private formatApproval(pending: PendingApproval): string {
+    const lines = [
+      `⚠️ 需要审批(会话 ${pending.sessionId})`,
+      `工具:${pending.toolName}`,
+    ]
+    if (pending.reason !== undefined && pending.reason !== '') lines.push(`原因:${pending.reason.slice(0, 120)}`)
+    lines.push('回复:「允许」或「拒绝」')
+    return lines.join('\n')
+  }
+
+  /** 提问通知文本(选择题)。 */
+  private formatQuestion(sessionId: string, questions: AskUserQuestionItem[], answeredCount: number): string {
+    const lines: string[] = [`❓ 需要你回答(会话 ${sessionId})`]
+    questions.forEach((q, i) => {
+      const multi = q.multiSelect === true ? ' (多选)' : ''
+      lines.push(`#${i + 1} ${q.question}${multi}`)
+      if (q.detail !== undefined && q.detail !== '') lines.push(`  ${q.detail.slice(0, 80)}`)
+      if (q.options !== undefined && q.options.length > 0) {
+        q.options.forEach((opt, j) => {
+          const desc = opt.description !== undefined && opt.description !== '' ? ` — ${opt.description.slice(0, 40)}` : ''
+          lines.push(`  (${j + 1}) ${opt.label}${desc}`)
+        })
+      } else {
+        lines.push('  (无选项,请用自定义回答)')
+      }
+    })
+    if (questions.length > 1) {
+      lines.push(`回复格式:#<题号> 选 <编号>,如「#1 选 2」;已答 ${answeredCount}/${questions.length}`)
+    } else {
+      lines.push('回复格式:选 <编号>;自定义:「选 自定义:你的回答」')
+    }
+    return lines.join('\n')
+  }
+
+  /** 该用户未决的审批/提问提示(附加在下次回复末尾;QQ 被动模式的主要通知途径)。 */
+  private pendingSuffix(channel: string, userId: string): string {
+    const lines: string[] = []
+    for (const pending of this.pendingApprovals.values()) {
+      const o = this.sessionOwners.get(pending.sessionId)
+      if (o === undefined || o.channel !== channel || o.userId !== userId) continue
+      const reason = pending.reason !== undefined && pending.reason !== '' ? `(${pending.reason.slice(0, 50)})` : ''
+      lines.push(`⚠️ 待审批:${pending.toolName}${reason} 会话 ${pending.sessionId} — 回复「允许」或「拒绝」`)
+    }
+    for (const pending of this.pendingQuestions.values()) {
+      const o = this.sessionOwners.get(pending.sessionId)
+      if (o === undefined || o.channel !== channel || o.userId !== userId) continue
+      lines.push(`❓ 待回答:${pending.questions.length} 个问题(会话 ${pending.sessionId}) — 回复「选 1」或「#1 选 2」`)
+    }
+    return lines.join('\n')
   }
 }

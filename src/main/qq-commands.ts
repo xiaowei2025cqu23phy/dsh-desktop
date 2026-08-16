@@ -14,6 +14,9 @@ export type QQCommand =
   | { kind: 'run'; description: string }
   | { kind: 'enter'; target: string }
   | { kind: 'exit' }
+  | { kind: 'allow'; sessionId: string }
+  | { kind: 'reject'; sessionId: string }
+  | { kind: 'select'; text: string }
   | { kind: 'unknown'; text: string }
 
 export function parseCommand(content: string): QQCommand {
@@ -43,6 +46,20 @@ export function parseCommand(content: string): QQCommand {
   }
   if (parts[0] === '任务' || parts[0] === 'run' || parts[0] === '执行') {
     return { kind: 'run', description: content.trim().slice(parts[0].length).trim() }
+  }
+  if (parts[0] === '允许' || parts[0] === '同意' || parts[0] === '批准' || parts[0] === 'approve' || parts[0] === 'allow') {
+    return { kind: 'allow', sessionId: parts[1] ?? '' }
+  }
+  if (parts[0] === '拒绝' || parts[0] === 'reject' || parts[0] === 'deny') {
+    return { kind: 'reject', sessionId: parts[1] ?? '' }
+  }
+  if (parts[0] === '选' || parts[0] === '选择' || parts[0] === 'select') {
+    return { kind: 'select', text: content.trim().slice(parts[0].length).trim() }
+  }
+  // 多问题批次指定题号:#2 选 1 → 保留题号给 cmdSelect 解析
+  const numberedSelect = /^#(\d+)\s+(选|选择|select)\s*(.*)$/.exec(content.trim())
+  if (numberedSelect !== null) {
+    return { kind: 'select', text: `#${numberedSelect[1]} ${numberedSelect[3].trim()}`.trim() }
   }
   return { kind: 'unknown', text: content.trim() }
 }

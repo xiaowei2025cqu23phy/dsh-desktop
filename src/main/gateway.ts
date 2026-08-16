@@ -182,6 +182,11 @@ export class RemoteGateway {
         await this.handleCommand(url, req, res)
         return
       }
+      if (req.method === 'POST' && path === '/api/respond') {
+        // 审批/提问应答:转发到 harness 的 /api/respond(带 token 认证)。
+        await this.handleRespond(url, req, res)
+        return
+      }
       if (req.method === 'POST' && path === '/api/action') {
         await this.handleAction(url, req, res)
         return
@@ -315,6 +320,47 @@ export class RemoteGateway {
         ok: false,
         error: { code: (error as { code?: string }).code ?? 'internal', message: error instanceof Error ? error.message : String(error) },
       })
+    }
+  }
+
+  /** 审批/提问应答端点:把 client-response 原样转发给 harness /api/respond。 */
+  private async handleRespond(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.authorized(url, req)) {
+      this.json(res, 401, { error: 'unauthorized' })
+      return
+    }
+    const chunks: Buffer[] = []
+    for await (const chunk of req) {
+      chunks.push(chunk as Buffer)
+      if (Buffer.concat(chunks).byteLength > 256 * 1024) {
+        this.json(res, 413, { error: 'payload too large' })
+        return
+      }
+    }
+    const body = Buffer.concat(chunks)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(body.toString('utf8'))
+    } catch {
+      this.json(res, 400, { error: 'invalid json' })
+      return
+    }
+    const record = parsed as { type?: unknown; rpcId?: unknown; result?: unknown }
+    if (record.type !== 'client-response' || typeof record.rpcId !== 'string' || record.result === undefined) {
+      this.json(res, 400, { error: 'client-response with rpcId and result required' })
+      return
+    }
+    try {
+      const response = await fetch(`${this.harness.baseUrl()}/api/respond`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(parsed),
+        signal: AbortSignal.timeout(15000),
+      })
+      const text = await response.text()
+      this.json(res, response.status, text === '' ? {} : JSON.parse(text))
+    } catch (error) {
+      this.json(res, 502, { error: error instanceof Error ? error.message : String(error) })
     }
   }
 
