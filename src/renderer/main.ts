@@ -202,7 +202,8 @@ async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
   await Promise.all([loadHarnessConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(),
-    loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), refreshWebhookEndpoint(), refreshLogs()])
+    loadWallpaperPacks(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), refreshWebhookEndpoint(),
+    loadUpdateInfo(), refreshLogs()])
   if (logsTimer === null) {
     logsTimer = setInterval(() => { if (drawerOpen) void refreshLogs() }, 3000)
   }
@@ -356,6 +357,8 @@ interface WallpaperEditorState {
   img: HTMLImageElement
   /** 当前裁剪比例(null = 自由)。 */
   ratio: number | null
+  /** 滤镜效果:none 原图 / beads 拼豆像素。 */
+  effect: 'none' | 'beads'
   crop: CropRect
   position: { x: number; y: number }
   outputMime: string
@@ -407,6 +410,36 @@ async function loadAppearance(): Promise<void> {
   }
 }
 
+/** 加载内置壁纸包按钮。 */
+async function loadWallpaperPacks(): Promise<void> {
+  const host = $id('wallpaper-packs')
+  try {
+    const packs = await API.appearance.listPacks()
+    host.innerHTML = ''
+    if (packs.length === 0) {
+      host.innerHTML = '<span class="hint">(无内置壁纸包)</span>'
+      return
+    }
+    for (const pack of packs) {
+      const btn = document.createElement('button')
+      btn.className = 'btn btn-sm'
+      btn.textContent = pack.id
+      btn.title = '一键应用到主窗口 / 手机端 / 屏保'
+      btn.addEventListener('click', () => {
+        void API.appearance.applyPack(pack.id).then(async () => {
+          await loadAppearance()
+          S.toast(`壁纸包「${pack.id}」已应用到三端`, 'ok')
+        }).catch((error: unknown) => {
+          S.toast(`应用失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+        })
+      })
+      host.appendChild(btn)
+    }
+  } catch (error) {
+    host.innerHTML = `<span class="hint">加载失败:${String(error)}</span>`
+  }
+}
+
 async function pickWallpaper(kind: WallpaperKind): Promise<void> {
   try {
     const result = await API.appearance.pickSource(kind)
@@ -441,6 +474,7 @@ function openWallpaperEditor(kind: WallpaperKind, sourcePath: string): void {
       kind,
       img,
       ratio: null,
+      effect: 'none',
       crop: { x: 0, y: 0, w, h },
       position: { x: 0.5, y: 0.5 },
       outputMime,
@@ -705,6 +739,16 @@ function bindWallpaperEditor(): void {
       setCropRatio(ratio === 0 ? null : ratio)
     })
   })
+  const effectBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('#we-effects .btn'))
+  effectBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (editorState === null) return
+      const effect = btn.dataset.effect === 'beads' ? 'beads' : 'none'
+      effectBtns.forEach((b) => b.classList.remove('active'))
+      btn.classList.add('active')
+      editorState.effect = effect
+    })
+  })
 }
 
 async function applyWallpaperEditor(): Promise<void> {
@@ -716,15 +760,46 @@ async function applyWallpaperEditor(): Promise<void> {
   const ctx = out.getContext('2d')
   if (ctx === null) return
   ctx.drawImage(e.img, e.crop.x, e.crop.y, e.crop.w, e.crop.h, 0, 0, out.width, out.height)
+  // 拼豆像素化滤镜:缩到格子尺寸再最近邻放大 + 珠点高光。
+  if (e.effect === 'beads') {
+    applyBeadsEffect(out)
+  }
   const mime = e.outputMime === 'image/jpeg' ? 'image/jpeg' : 'image/png'
   const dataUrl = out.toDataURL(mime, 0.92)
   try {
     await API.appearance.saveWallpaper(e.kind, dataUrl, e.position)
     closeWallpaperEditor()
     await loadAppearance()
-    S.toast(`${KIND_NAME[e.kind]}壁纸已更新`, 'ok')
+    S.toast(`${KIND_NAME[e.kind]}壁纸已更新${e.effect === 'beads' ? '(拼豆)' : ''}`, 'ok')
   } catch (error) {
     S.toast(`保存壁纸失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+  }
+}
+
+/** 拼豆像素化:像素格平均色 + 最近邻放大 + 珠点高光。 */
+function applyBeadsEffect(canvas: HTMLCanvasElement): void {
+  const cell = 40
+  const tw = Math.max(1, Math.round(canvas.width / cell))
+  const th = Math.max(1, Math.round(canvas.height / cell))
+  const small = document.createElement('canvas')
+  small.width = tw
+  small.height = th
+  const sctx = small.getContext('2d')
+  if (sctx === null) return
+  sctx.drawImage(canvas, 0, 0, tw, th)
+  const ctx = canvas.getContext('2d')
+  if (ctx === null) return
+  ctx.imageSmoothingEnabled = false
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(small, 0, 0, canvas.width, canvas.height)
+  // 珠点高光(隔格小亮点)
+  ctx.fillStyle = 'rgba(255,255,255,0.09)'
+  for (let yy = 0; yy < th; yy += 2) {
+    for (let xx = 0; xx < tw; xx += 2) {
+      ctx.beginPath()
+      ctx.arc(xx * cell + cell * 0.22, yy * cell + cell * 0.22, cell * 0.14, 0, Math.PI * 2)
+      ctx.fill()
+    }
   }
 }
 
@@ -819,6 +894,22 @@ async function refreshWebhookEndpoint(): Promise<void> {
   }
 }
 
+// ---- 更新 ----
+
+async function loadUpdateInfo(): Promise<void> {
+  try {
+    const info = await API.updater.getInfo()
+    const hasUpdate = info.latest !== null &&
+      info.latest.split('.').map(Number).join('.') > info.current.split('.').map(Number).join('.')
+    $id('update-info').textContent = hasUpdate
+      ? `当前 v${info.current} → 发现新版本 v${info.latest}`
+      : `当前版本 v${info.current}${info.checkedAt > 0 ? ' · 已是最新' : ''}`
+    $id('btn-open-release').classList.toggle('hidden', !hasUpdate)
+  } catch {
+    // 忽略
+  }
+}
+
 // ---- 事件绑定 ----
 
 function bind(): void {
@@ -901,6 +992,25 @@ function bind(): void {
   input('tg-users').addEventListener('change', async () => {
     await API.telegram.setConfig({ allowedUserIds: input('tg-users').value.trim() })
   })
+
+  // 更新
+  $id('btn-check-update').addEventListener('click', async () => {
+    $id('update-info').textContent = '正在检查更新…'
+    try {
+      const info = await API.updater.check()
+      const hasUpdate = info.latest !== null &&
+        info.latest.split('.').map(Number).join('.') > info.current.split('.').map(Number).join('.')
+      $id('update-info').textContent = hasUpdate
+        ? `发现新版本 v${info.latest}(当前 v${info.current})`
+        : `已是最新版本 v${info.current}`
+      $id('btn-open-release').classList.toggle('hidden', !hasUpdate)
+      if (hasUpdate) S.toast(`发现新版本 v${info.latest}`, 'ok')
+    } catch (error) {
+      $id('update-info').textContent = '检查失败,请检查网络'
+      S.toast(`检查更新失败:${String(error)}`, 'error')
+    }
+  })
+  $id('btn-open-release').addEventListener('click', () => void API.updater.openRelease())
 
   // 外观
   $id('btn-wall-window').addEventListener('click', () => void pickWallpaper('window'))

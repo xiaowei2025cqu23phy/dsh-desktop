@@ -18,6 +18,7 @@ import { QQBotAdapter } from './qq-bot'
 import { RemoteCommandProcessor } from './remote-commands'
 import { ScreensaverController } from './screensaver'
 import { TelegramBotAdapter } from './telegram-bot'
+import { UpdateChecker } from './updater'
 import { AppTray } from './tray'
 import { registerIpc } from './ipc'
 import { createMainWindow } from './windows'
@@ -64,7 +65,8 @@ if (!gotLock) {
     const gateway = new RemoteGateway(config, harness, events, commands)
     const qqBot = new QQBotAdapter(config, commands)
     const telegramBot = new TelegramBotAdapter(config, commands)
-    registerIpc({ config, harness, models, screensaver, appearance, gateway, qqBot, telegramBot })
+    const updater = new UpdateChecker()
+    registerIpc({ config, harness, models, screensaver, appearance, gateway, qqBot, telegramBot, updater })
 
     if (isScreensaverLaunch()) {
       // 系统屏保模式:只启动屏保窗口,不创建主窗口与托盘。
