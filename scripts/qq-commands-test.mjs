@@ -6,7 +6,7 @@
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { parseCommand, parseTaskOptions, parseApprovalButtonData, findEventUserId } = require('../dist/main/qq-commands.js')
+const { parseCommand, parseTaskOptions, parseApprovalButtonData, findEventUserId, findEventGroupOpenid } = require('../dist/main/qq-commands.js')
 
 let failures = 0
 function check(name, actual, expected) {
@@ -104,6 +104,10 @@ check('按钮-非对象', parseApprovalButtonData(42), null)
 check('点击者 openid', findEventUserId({ resolved: { user_id: 'OPENID_1', button_data: 'x' } }), 'OPENID_1')
 check('点击者 缺失', findEventUserId({ resolved: { button_data: 'x' } }), '')
 check('点击者 非对象', findEventUserId('str'), '')
+check('群 openid', findEventGroupOpenid({ detail: { group_openid: 'GROUP_9', button_data: 'x' } }), 'GROUP_9')
+check('群 openid 嵌套', findEventGroupOpenid({ detail: { resolved: { group_openid: 'GROUP_9' } } }), 'GROUP_9')
+check('群 openid 缺失', findEventGroupOpenid({ resolved: { user_id: 'U' } }), '')
+check('群 openid 非对象', findEventGroupOpenid(7), '')
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)
