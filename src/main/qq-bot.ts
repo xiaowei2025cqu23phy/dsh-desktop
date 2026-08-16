@@ -54,6 +54,7 @@ export class QQBotAdapter {
   setConfig(patch: Partial<QQBotConfig>): QQBotConfig {
     const next = this.config.update('qq', patch)
     this.processor.defaultTarget = next.defaultTarget ?? ''
+    this.processor.setAutoChat('qq', next.autoChat === true)
     void this.restart()
     return next
   }
@@ -71,6 +72,7 @@ export class QQBotAdapter {
     if (this.started) return
     const config = this.getConfig()
     this.processor.defaultTarget = config.defaultTarget ?? ''
+    this.processor.setAutoChat('qq', config.autoChat === true)
     if (!config.enabled || config.appId.trim() === '' || config.appSecret.trim() === '') {
       console.log('[qq-bot] 未配置或未启用,跳过')
       return

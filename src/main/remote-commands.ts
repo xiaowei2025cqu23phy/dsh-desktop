@@ -70,12 +70,20 @@ export class RemoteCommandProcessor {
   private pendingApprovals = new Map<string, PendingApproval>()
   private pendingQuestions = new Map<string, PendingQuestion>()
   private push: PushFn | null = null
+  /** 开启「默认对话模式」的通道:非指令消息自动进入纯对话(无需先发「进入」)。 */
+  private autoChatChannels = new Set<string>()
 
   constructor(private harness: HarnessManager) {}
 
   /** 注入主动推送实现(QQ / Telegram 等支持主动消息的通道)。 */
   setPush(push: PushFn): void {
     this.push = push
+  }
+
+  /** 开关某通道的默认对话模式。 */
+  setAutoChat(channel: string, enabled: boolean): void {
+    if (enabled) this.autoChatChannels.add(channel)
+    else this.autoChatChannels.delete(channel)
   }
 
   /**
@@ -126,7 +134,18 @@ export class RemoteCommandProcessor {
       const command = parseCommand(content)
       if (command.kind === 'unknown') {
         const ctx = this.chatContexts.get(key)
-        reply = ctx !== undefined ? await this.cmdChatMessage(key, content) : this.fullHelp()
+        if (ctx !== undefined) {
+          reply = await this.cmdChatMessage(key, content)
+        } else if (this.autoChatChannels.has(channel)) {
+          // 默认对话模式:非指令消息自动进入纯对话并发送。
+          const entered = await this.cmdEnter(key, '')
+          const autoCtx = this.chatContexts.get(key)
+          reply = autoCtx !== undefined
+            ? `${entered}\n\n${await this.cmdChatMessage(key, content)}`
+            : entered
+        } else {
+          reply = this.fullHelp()
+        }
       } else {
         reply = await this.executeCommand(command, key)
       }
@@ -162,7 +181,9 @@ export class RemoteCommandProcessor {
       '  例:任务 目录:D:/work/proj 编译并运行测试',
       '',
       '💬 对话模式(连续对话)',
-      '进入 <工作区名/目录> — 开始对话',
+      '进入 — 纯对话(不绑定工作区/目录,一般不动文件)',
+      '  例:进入',
+      '进入 <工作区名/目录> — 在该工作区对话',
       '  例:进入 qqbot',
       '  例:进入 D:/work/proj',
       '进入后直接发消息,自动在该工作区连续对话:',
@@ -424,20 +445,22 @@ export class RemoteCommandProcessor {
   /** 通道级默认工作区/目录(QQ 配置;其他通道留空)。 */
   defaultTarget = ''
 
-  /** 进入工作区对话模式。 */
+  /** 进入对话模式;target 为空 = 纯对话(不绑定工作区/目录)。 */
   private async cmdEnter(key: string, target: string): Promise<string> {
-    if (target === '') return '请指定工作区,例如:进入 qqbot(目录路径也可以)'
     const client = this.harness.client()
     try {
       let workspaceId: string | null = null
       let cwd: string | null = null
-      if (/[\\/]/.test(target)) {
+      let label = target
+      if (target === '') {
+        label = '(纯对话,不绑定工作区)'
+      } else if (/[\\/]/.test(target)) {
         cwd = target
       } else {
         const workspaces = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string }> }>('workspace.list')
         const found = (workspaces.items ?? []).find((w) => w.title === target || w.workspaceId === target || w.path === target)
         if (found === undefined) {
-          return `未找到工作区「${target}」,发送「工作区」查看列表`
+          return `未找到工作区「${target}」,发送「工作区」查看列表(或直接「进入」开始纯对话)`
         }
         workspaceId = found.workspaceId
         cwd = found.path ?? null
@@ -447,12 +470,20 @@ export class RemoteCommandProcessor {
       else if (cwd !== null) payload.cwd = cwd
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
       this.sessionOwners.set(created.sessionId, this.ownerFromKey(key))
-      this.chatContexts.set(key, { sessionId: created.sessionId, label: target })
-      return [
-        `已进入工作区「${target}」对话模式 ✓`,
-        `会话: ${created.sessionId}`,
-        '现在直接发消息即可对话(无需指令前缀),发送「退出」结束对话模式。',
-      ].join('\n')
+      this.chatContexts.set(key, { sessionId: created.sessionId, label })
+      const lines = target === ''
+        ? [
+            '已进入对话模式 ✓(纯对话,不绑定工作区)',
+            `会话: ${created.sessionId}`,
+            '现在直接发消息即可对话(无需指令前缀),发送「退出」结束对话模式。',
+            '提示:纯对话会话未绑定工作区,agent 一般不动文件;若它仍请求文件操作,可用「拒绝」拦截。',
+          ]
+        : [
+            `已进入工作区「${target}」对话模式 ✓`,
+            `会话: ${created.sessionId}`,
+            '现在直接发消息即可对话(无需指令前缀),发送「退出」结束对话模式。',
+          ]
+      return lines.join('\n')
     } catch (error) {
       return `进入失败:${error instanceof Error ? error.message : String(error)}`
     }

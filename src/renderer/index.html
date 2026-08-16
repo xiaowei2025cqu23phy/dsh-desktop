@@ -127,6 +127,10 @@
           <label for="qq-target">默认工作区/目录(任务未指定时使用)</label>
           <input id="qq-target" type="text" placeholder="例如 qqbot 或 D:\work\qqbot" />
         </div>
+        <label class="check-row">
+          <input id="qq-autochat" type="checkbox" />
+          默认对话模式(非指令消息直接进入纯对话,无需先发「进入」)
+        </label>
         <p class="hint">启用后可在 QQ 私聊机器人发送指令:帮助 / 状态 / 会话 / 任务 &lt;描述&gt; / 停止 / 模型</p>
         <div id="qq-status" class="hint"></div>
       </section>
@@ -145,6 +149,10 @@
           <label for="tg-users">允许的用户 ID(逗号分隔,留空=允许所有)</label>
           <input id="tg-users" type="text" placeholder="例如 123456789, 987654321" />
         </div>
+        <label class="check-row">
+          <input id="tg-autochat" type="checkbox" />
+          默认对话模式(非指令消息直接进入纯对话,无需先发「进入」)
+        </label>
         <p class="hint">与 QQ 机器人共用同一套指令集与对话模式;支持主动推送(审批/提问通知即时送达)。</p>
         <div id="tg-status" class="hint"></div>
       </section>

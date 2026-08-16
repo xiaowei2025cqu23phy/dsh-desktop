@@ -84,6 +84,8 @@ export interface QQBotConfig {
    * 填目录路径(含 / 或 \)按 cwd 处理,否则按工作区标题/ID 匹配。
    */
   defaultTarget: string
+  /** 默认对话模式:非指令消息自动进入纯对话(无需先发「进入」)。 */
+  autoChat: boolean
 }
 
 export interface TelegramConfig {
@@ -93,6 +95,8 @@ export interface TelegramConfig {
   token: string
   /** 允许使用的用户 ID(逗号分隔;空 = 允许所有)。 */
   allowedUserIds: string
+  /** 默认对话模式:非指令消息自动进入纯对话(无需先发「进入」)。 */
+  autoChat: boolean
 }
 
 export interface UpdaterConfig {
@@ -149,11 +153,13 @@ const DEFAULTS: AppConfig = {
     appId: '',
     appSecret: '',
     defaultTarget: '',
+    autoChat: false,
   },
   telegram: {
     enabled: false,
     token: '',
     allowedUserIds: '',
+    autoChat: false,
   },
   updater: {
     autoCheck: true,
