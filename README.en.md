@@ -96,10 +96,12 @@ In **Settings → QQ Bot**, fill in the AppID/AppSecret from the [QQ Open Platfo
 | *(chat mode)* | Send messages directly to chat continuously in that workspace; `退出` ends it | `帮我看看项目里的 TODO` → … → `退出` |
 | `进展 <sessionId>` | Live task progress (status / tool stats / latest output) | `进展 session-xxxxxxxx` |
 | `停止 <sessionId>` / `打开 <sessionId>` | Stop a task / view session content | `停止 session-xxxxxxxx` |
+| `允许` / `拒绝` | **Approval replies**: allow/reject a pending permission request (add a session id when several are pending) | `允许`、`拒绝 session-xxxxxxxx` |
+| `选 <number>` | **Question replies**: answer an agent question (multi-select `选 1 3`, custom `选 自定义:…`, batch `#2 选 1`) | `选 2` |
 
 Typical flow: `工作区` to list → `进入 qqbot` → chat freely → `退出`.
 
-Built on [@tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs) (WebSocket gateway); protocol references: [QQ Open Platform API v2](https://bot.q.qq.com/wiki/develop/api-v2/) and the [Agent QQBot guide](https://bot.q.qq.com/wiki/agent-qqbot/). QQ official bots are **passive-reply** only: they answer after you message them and cannot push proactively; long replies are split automatically.
+Built on [@tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs) (WebSocket gateway); protocol references: [QQ Open Platform API v2](https://bot.q.qq.com/wiki/develop/api-v2/) and the [Agent QQBot guide](https://bot.q.qq.com/wiki/agent-qqbot/). QQ official bots are mainly **passive-reply**, but within 48h of a user interaction they support **proactive push**; long replies are split automatically. When the agent needs **approval or an answer, a notification is pushed immediately** (QQ within the interaction window, and Telegram), and if the push fails, pending items are still appended to the next reply as a reminder. The phone PWA shows approval/question cards inline so you can allow/deny or answer in one tap.
 
 ## Development
 

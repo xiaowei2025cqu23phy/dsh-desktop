@@ -157,10 +157,12 @@ npm start        # 构建并启动桌面端
 | *(对话模式)* | 进入后直接发消息即可连续对话,自动发往该工作区会话,无需指令前缀;`退出` 结束 | `帮我看看项目里的 TODO` → … → `退出` |
 | `进展 <会话id>` | 任务实时进展(状态/工具统计/最新输出) | `进展 session-xxxxxxxx` |
 | `停止 <会话id>` / `打开 <会话id>` | 停止任务 / 查看会话内容 | `停止 session-xxxxxxxx` |
+| `允许` / `拒绝` | **审批应答**:agent 请求权限时允许/拒绝(多个待审批时带会话 id) | `允许`、`拒绝 session-xxxxxxxx` |
+| `选 <编号>` | **选择题应答**:回答 agent 提问(多选 `选 1 3`,自定义 `选 自定义:…`,多题批次 `#2 选 1`) | `选 2` |
 
 典型流程:`工作区` 查看列表 → `进入 qqbot` → 连续对话 → `退出`。
 
-基于 [@tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs)(WebSocket 长连接),协议参考 [QQ 开放平台 API v2 文档](https://bot.q.qq.com/wiki/develop/api-v2/)(消息收发/消息类型/事件订阅)与 [Agent QQBot 接入指南](https://bot.q.qq.com/wiki/agent-qqbot/)。QQ 官方机器人为**被动回复**模式:只能在你发消息后回复,不能主动推送;长回复自动分段。
+基于 [@tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs)(WebSocket 长连接),协议参考 [QQ 开放平台 API v2 文档](https://bot.q.qq.com/wiki/develop/api-v2/)(消息收发/消息类型/事件订阅)与 [Agent QQBot 接入指南](https://bot.q.qq.com/wiki/agent-qqbot/)。QQ 官方机器人以**被动回复**为主,但与机器人交互后 48 小时内支持**主动推送**;长回复自动分段。**agent 需要审批/提问时会主动推送通知**(QQ 交互窗口内与 Telegram 均可即时送达),推送失败时待办仍会附加在下次消息的回复末尾提醒。手机端同样支持审批:会话中出现审批/提问卡片,一键允许/拒绝或作答。
 
 ## 开发
 
