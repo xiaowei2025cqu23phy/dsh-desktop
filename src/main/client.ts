@@ -46,8 +46,31 @@ export function isHarnessError(error: unknown): error is HarnessError {
 /** Mux 流回调;返回 false 表示消费方要求断开。 */
 export type MuxFrameHandler = (frame: ServerRequest) => boolean | void
 
+/** /api/respond 的应答回执(服务端是否接受该应答)。 */
+export interface RpcReceipt {
+  accepted: boolean
+  reason?: string
+}
+
 export class HarnessClient {
   constructor(readonly baseUrl: string) {}
+
+  /**
+   * 应答服务端请求(审批 / 提问等 server-request 帧)。
+   * result 需携带原帧的 rpcId 对应的 value,原样透传给 harness 的 /api/respond。
+   */
+  async respond(rpcId: string, result: { ok: true; value: unknown }, timeoutMs = 15000): Promise<RpcReceipt> {
+    const response = await fetch(`${this.baseUrl}/api/respond`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'client-response', rpcId, result }),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!response.ok) {
+      throw new HarnessError('http-' + String(response.status), `HTTP ${response.status} on /api/respond`)
+    }
+    return await response.json() as RpcReceipt
+  }
 
   /** 探测目标地址是否为可用的 dsh harness(用轻量的 host.describe,避免会话列表冷启动慢)。 */
   async probe(timeoutMs = 8000): Promise<boolean> {

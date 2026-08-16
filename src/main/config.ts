@@ -95,6 +95,11 @@ export interface TelegramConfig {
   allowedUserIds: string
 }
 
+export interface UpdaterConfig {
+  /** 启动后自动检查新版本。 */
+  autoCheck: boolean
+}
+
 export interface AppConfig {
   harness: HarnessConfig
   screensaver: ScreensaverConfig
@@ -102,6 +107,7 @@ export interface AppConfig {
   remote: RemoteConfig
   qq: QQBotConfig
   telegram: TelegramConfig
+  updater: UpdaterConfig
   window: { width: number; height: number }
 }
 
@@ -148,6 +154,9 @@ const DEFAULTS: AppConfig = {
     enabled: false,
     token: '',
     allowedUserIds: '',
+  },
+  updater: {
+    autoCheck: true,
   },
   window: { width: 1280, height: 800 },
 }
