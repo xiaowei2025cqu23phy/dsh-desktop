@@ -33,7 +33,7 @@ interface QQBotLike {
   start: () => Promise<void>
   stop: () => void
   sendText: (target: unknown, text: string) => Promise<unknown>
-  sendTextWithKeyboard: (target: unknown, content: string, keyboard: unknown) => Promise<unknown>
+  sendMarkdown: (target: unknown, content: string, opts?: { keyboard?: unknown }) => Promise<unknown>
   acknowledgeInteraction: (interactionId: string, code?: number, data?: unknown) => Promise<unknown>
 }
 
@@ -229,7 +229,8 @@ export class QQBotAdapter {
   ): Promise<boolean> {
     try {
       if (meta !== undefined && meta.kind === 'approval') {
-        await bot.sendTextWithKeyboard(target, text, buildApprovalKeyboard(meta.sessionId, meta.approvalId))
+        // QQ 按钮键盘只随 markdown 消息(msg_type=2)渲染,纯文本消息不显示键盘。
+        await bot.sendMarkdown(target, text, { keyboard: buildApprovalKeyboard(meta.sessionId, meta.approvalId) })
       } else {
         for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
           await bot.sendText(target, text.slice(index, index + MAX_MESSAGE_LENGTH))
@@ -250,7 +251,7 @@ export class QQBotAdapter {
   ): Promise<void> {
     try {
       if (meta !== undefined && meta.kind === 'approval') {
-        await bot.sendTextWithKeyboard(target, text, buildApprovalKeyboard(meta.sessionId, meta.approvalId))
+        await bot.sendMarkdown(target, text, { keyboard: buildApprovalKeyboard(meta.sessionId, meta.approvalId) })
       } else {
         for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
           await bot.sendText(target, text.slice(index, index + MAX_MESSAGE_LENGTH))
