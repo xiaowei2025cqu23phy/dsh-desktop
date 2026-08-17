@@ -67,7 +67,16 @@ export type PushFn = (
   channel: string,
   userId: string,
   text: string,
-  meta?: { kind: 'approval'; sessionId: string; approvalId: string },
+  meta?: {
+    kind: 'approval'
+    sessionId: string
+    approvalId: string
+  } | {
+    kind: 'question'
+    sessionId: string
+    /** 单选单问题批次:可渲染选项按钮的问题。 */
+    question: { id: string; question: string; options: string[] }
+  },
   /** 推送目标(群=群 id;私聊=用户 openid);缺失时通道按 userId 回退。 */
   target?: { scope: string; targetId: string },
 ) => void
@@ -591,7 +600,7 @@ export class RemoteCommandProcessor {
           questions,
           answers: new Map(),
         })
-        this.notifyOwner(sessionId, this.formatQuestion(sessionId, questions, 0))
+        this.notifyOwner(sessionId, this.formatQuestion(sessionId, questions, 0), this.questionMeta(sessionId, questions))
         break
       }
       case 'question/resolved': {
@@ -734,6 +743,43 @@ export class RemoteCommandProcessor {
     }
   }
 
+  /**
+   * 按钮回答选择题(单选单问题批次,由机器人通道按钮点击调用)。
+   * 校验发起者身份;提交后返回给用户的结果文本。
+   */
+  async respondQuestion(
+    channel: string,
+    userId: string,
+    sessionId: string,
+    questionId: string,
+    optionIndex: number,
+  ): Promise<string> {
+    const pending = this.findPendingQuestion({ channel, userId }, sessionId)
+    if (pending === null) return '该提问已处理或已过期。'
+    const question = pending.questions.find((q) => q.id === questionId)
+    if (question === undefined) return '找不到该问题。'
+    if (question.multiSelect === true || question.options === undefined) return '该问题不支持按钮回答,请用「选 N」回复。'
+    const option = question.options[optionIndex]
+    if (option === undefined) return '选项编号无效。'
+    const answers = pending.questions.map((q) =>
+      q.id === questionId ? { id: q.id, selected: [option.label] } : { id: q.id, selected: [] },
+    )
+    const client = this.harness.client()
+    try {
+      const receipt = await client.respond(pending.rpcId, {
+        ok: true,
+        value: { sessionId: pending.sessionId, answer: { answers } },
+      })
+      this.pendingQuestions.delete(pending.sessionId)
+      if (!receipt.accepted) {
+        return `回答未被接受:${receipt.reason ?? '未知原因'}`
+      }
+      return `✓ 已选择:${option.label}`
+    } catch (error) {
+      return `提交失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
   // ---- 内部 ----
 
   /** 从 `${channel}:${userId}` 拆出归属(通道名不含冒号,userId 为 openid/数字)。 */
@@ -756,8 +802,9 @@ export class RemoteCommandProcessor {
   }
 
   /** 查该用户最近的待回答提问。 */
-  private findPendingQuestion(owner: SessionOwner): PendingQuestion | null {
+  private findPendingQuestion(owner: SessionOwner, sessionId?: string): PendingQuestion | null {
     for (const pending of this.pendingQuestions.values()) {
+      if (sessionId !== undefined && sessionId !== '' && pending.sessionId !== sessionId) continue
       const o = this.sessionOwners.get(pending.sessionId)
       if (o !== undefined && o.channel === owner.channel && o.userId === owner.userId) return pending
     }
@@ -768,11 +815,23 @@ export class RemoteCommandProcessor {
   private notifyOwner(
     sessionId: string,
     text: string,
-    meta?: { kind: 'approval'; sessionId: string; approvalId: string },
+    meta?: { kind: 'approval'; sessionId: string; approvalId: string } | { kind: 'question'; sessionId: string; question: { id: string; question: string; options: string[] } },
   ): void {
     if (this.push === null) return
     const owner = this.sessionOwners.get(sessionId)
     if (owner !== undefined) this.push(owner.channel, owner.userId, text, meta, owner.pushTarget)
+  }
+
+  /** 单选单问题批次 → 生成可渲染选项按钮的 meta(多选/多题保持文本指令)。 */
+  private questionMeta(sessionId: string, questions: AskUserQuestionItem[]): { kind: 'question'; sessionId: string; question: { id: string; question: string; options: string[] } } | undefined {
+    if (questions.length !== 1) return undefined
+    const q = questions[0]
+    if (q.multiSelect === true || q.options === undefined || q.options.length === 0 || q.options.length > 5) return undefined
+    return {
+      kind: 'question',
+      sessionId,
+      question: { id: q.id, question: q.question, options: q.options.map((o) => o.label) },
+    }
   }
 
   /** 审批通知文本。 */
