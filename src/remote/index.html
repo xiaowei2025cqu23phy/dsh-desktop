@@ -126,6 +126,25 @@
       </div>
     </div>
 
+    <!-- 文件夹浏览(只读:工作区/预设根目录内) -->
+    <div id="view-fs" class="sheet hidden">
+      <header class="sheet-head">
+        <h2>📂 文件夹</h2>
+        <button id="btn-fs-close" class="btn btn-ghost">✕</button>
+      </header>
+      <div id="fs-crumb" class="fs-crumb"></div>
+      <div id="fs-list" class="fs-list"><p class="empty">加载中…</p></div>
+    </div>
+
+    <!-- 文件预览 -->
+    <div id="view-fspreview" class="sheet hidden">
+      <header class="sheet-head">
+        <h2 id="fsp-title">文件</h2>
+        <button id="btn-fsp-close" class="btn btn-ghost">✕</button>
+      </header>
+      <pre id="fsp-content" class="fsp-content"></pre>
+    </div>
+
     <!-- 设置弹层 -->
     <div id="view-settings" class="sheet hidden">
       <header class="sheet-head">
@@ -148,6 +167,11 @@
         <div class="field">
           <label>手机壁纸(点击切换)</label>
           <div id="set-wallpapers" class="wallpaper-grid"><p class="empty">加载中…</p></div>
+        </div>
+        <div class="field">
+          <label>预设工作区根目录(手机端仅可在这些目录下新建文件夹工作区)</label>
+          <div id="preset-roots" class="value-text"><p class="empty">加载中…</p></div>
+          <button id="btn-preset-add" class="btn">📂 浏览文件夹添加</button>
         </div>
         <div class="field">
           <label>定时任务</label>

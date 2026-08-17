@@ -135,6 +135,9 @@ interface DesktopApi {
     pairUrl(): Promise<string>
     qrDataUrl(): Promise<string | null>
   }
+  dialog: {
+    pickDirectories(): Promise<string[]>
+  }
   qq: {
     getConfig(): Promise<QQConfigView>
     setConfig(patch: object): Promise<QQConfigView>

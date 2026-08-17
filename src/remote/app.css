@@ -296,6 +296,40 @@ textarea { resize: vertical; }
 .check-row input { width: 18px; height: 18px; flex: 0 0 auto; }
 .value-text { color: var(--text-dim); font-size: 13px; word-break: break-all; line-height: 1.6; }
 
+/* ---- 文件夹浏览 / 文件预览 ---- */
+.fs-crumb {
+  flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  font-size: 13px; overflow-x: auto; white-space: nowrap;
+}
+.crumb-btn {
+  background: transparent; border: none; color: var(--accent-2);
+  font-size: 13px; padding: 2px 4px; border-radius: 6px; flex: 0 0 auto;
+}
+.crumb-btn:active { background: var(--bg-3); }
+.crumb-sep { color: var(--text-dim); flex: 0 0 auto; }
+.crumb-drive { color: var(--text); flex: 0 0 auto; }
+.fs-list { flex: 1; overflow-y: auto; padding: 8px 6px; }
+.fs-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 10px; border-radius: 8px; cursor: pointer; font-size: 14px;
+}
+.fs-row:active { background: var(--bg-3); }
+.fs-icon { flex: 0 0 auto; font-size: 15px; }
+.fs-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.sched-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; margin-bottom: 6px;
+  background: var(--bg-3); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; color: var(--text);
+}
+.sched-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fsp-content {
+  flex: 1; overflow: auto; margin: 0; padding: 14px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-all; color: var(--text);
+}
+
 /* ---- Toast ---- */
 #toast-host { position: fixed; bottom: 76px; left: 50%; transform: translateX(-50%); z-index: 90; display: flex; flex-direction: column; gap: 6px; align-items: center; }
 .toast { background: var(--bg-3); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; padding: 8px 14px; font-size: 13px; max-width: 86vw; transition: opacity 0.3s; }
