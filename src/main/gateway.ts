@@ -286,6 +286,14 @@ export class RemoteGateway {
       this.json(res, 403, { error: `method not allowed: ${body.method}` })
       return
     }
+    // 会话 cwd 只能落在工作区或预设根内(预设根本身可直接作为工作区)。
+    if (body.method === 'session.create') {
+      const payload = body.payload as { cwd?: unknown }
+      if (typeof payload.cwd === 'string' && payload.cwd.trim() !== '' && !(await this.fsAllowed(payload.cwd))) {
+        this.json(res, 403, { error: 'cwd not allowed: 仅限工作区或预设根目录' })
+        return
+      }
+    }
     const timeoutMs = SLOW_METHODS.has(body.method) ? 120000 : 30000
     try {
       const value = await this.harness.client().rpc(body.method, body.payload, timeoutMs)
