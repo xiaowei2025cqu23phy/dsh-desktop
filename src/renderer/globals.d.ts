@@ -85,7 +85,16 @@ interface TelegramConfigView {
   report: boolean
 }
 
+interface BotPromptConfigView {
+  taskPrompt: string
+  chatPrompt: string
+}
+
 interface DesktopApi {
+  bot: {
+    getConfig(): Promise<BotPromptConfigView>
+    setConfig(patch: { taskPrompt?: string; chatPrompt?: string }): Promise<BotPromptConfigView>
+  }
   harness: {
     getStatus(): Promise<HarnessStatus>
     getConfig(): Promise<unknown>

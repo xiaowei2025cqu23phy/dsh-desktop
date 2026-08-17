@@ -326,5 +326,31 @@ function makeHarness(log) {
   check('操作按钮-非发起者拒绝', r4.includes('无权'), true)
 }
 
+// ---- 提示词注入(任务=助手,对话=朋友)与对话会话持久化 ----
+{
+  // 假 config:记录 chatSessions 更新
+  const stored = {}
+  const fakeConfig = {
+    get: () => ({ bot: { taskPrompt: '助手提示', chatPrompt: '朋友提示' }, chatSessions: stored }),
+    update: (key, value) => { if (key === 'chatSessions') { Object.keys(stored).forEach((k) => delete stored[k]); Object.assign(stored, value) } return undefined },
+  }
+  const log = []
+  const processor = new RemoteCommandProcessor(makeHarness(log), fakeConfig)
+  // 对话模式消息应注入朋友提示词
+  await processor.handleText('telegram', '42', '进入', undefined)
+  await processor.handleText('telegram', '42', '今天天气如何', undefined)
+  const chatPrompt = log.find(([kind, m, p]) => kind === 'rpc' && m === 'session.prompt')
+  check('对话注入朋友提示词', chatPrompt[2].content[0].text.includes('朋友提示'), true)
+  // 任务注入助手提示词
+  log.length = 0
+  await processor.handleText('telegram', '42', '任务 写报告', undefined)
+  const taskPrompt = log.find(([kind, m, p]) => kind === 'rpc' && m === 'session.prompt')
+  check('任务注入助手提示词', taskPrompt[2].content[0].text.includes('助手提示'), true)
+  // 对话会话持久化:新实例恢复同一会话
+  const processor2 = new RemoteCommandProcessor(makeHarness([]), fakeConfig)
+  const reply2 = await processor2.handleText('telegram', '42', '继续聊', undefined)
+  check('持久化-恢复对话会话', reply2.includes('✓ 已发送'), true)
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

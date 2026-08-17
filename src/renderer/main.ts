@@ -861,6 +861,9 @@ async function loadQQConfig(): Promise<void> {
     input('qq-target').value = config.defaultTarget ?? ''
     input('qq-autochat').checked = config.autoChat === true
     input('qq-report').checked = config.report === true
+    const botConfig = await API.bot.getConfig()
+    ($id('bot-task-prompt') as HTMLTextAreaElement).value = botConfig.taskPrompt
+    ($id('bot-chat-prompt') as HTMLTextAreaElement).value = botConfig.chatPrompt
     const started = await API.qq.status()
     $id('qq-status').textContent = started ? '✓ 已连接 QQ' : (config.enabled && config.appId ? '连接中/失败,查看日志' : '')
   } catch {
@@ -999,6 +1002,14 @@ function bind(): void {
   input('qq-report').addEventListener('change', async () => {
     await API.qq.setConfig({ report: input('qq-report').checked })
     S.toast(input('qq-report').checked ? '已开启主动汇报(完成/失败/审批/提问)' : '已关闭主动汇报', 'ok')
+  })
+  $id('bot-task-prompt').addEventListener('change', async () => {
+    await API.bot.setConfig({ taskPrompt: ($id('bot-task-prompt') as HTMLTextAreaElement).value.trim() })
+    S.toast('工作模式提示词已保存', 'ok')
+  })
+  $id('bot-chat-prompt').addEventListener('change', async () => {
+    await API.bot.setConfig({ chatPrompt: ($id('bot-chat-prompt') as HTMLTextAreaElement).value.trim() })
+    S.toast('对话模式提示词已保存', 'ok')
   })
 
   // QQ 扫码登录
