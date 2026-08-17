@@ -12,6 +12,7 @@
 
 import type { HarnessManager } from './harness'
 import type { ServerRequest } from './client'
+import type { ConfigStore } from './config'
 import { parseCommand, parseTaskOptions, type QQCommand } from './qq-commands'
 
 /** 单条回复长度上限(超长由通道分段)。 */
@@ -94,11 +95,38 @@ export class RemoteCommandProcessor {
   /** 会话最近一次汇报时间(去重:同一会话的完成/失败在窗口内只报一次)。 */
   private lastTurnReports = new Map<string, { done: number; fail: number }>()
 
-  constructor(private harness: HarnessManager) {}
+  constructor(private harness: HarnessManager, private config?: ConfigStore) {
+    // 恢复持久化的对话会话(重启后继续同一对话)。
+    if (config !== undefined) {
+      for (const [key, entry] of Object.entries(config.get().chatSessions ?? {})) {
+        this.chatContexts.set(key, { sessionId: entry.sessionId, label: entry.label })
+      }
+    }
+  }
 
   /** 注入主动推送实现(QQ / Telegram 等支持主动消息的通道)。 */
   setPush(push: PushFn): void {
     this.push = push
+  }
+
+  /** 对话会话持久化:创建/退出对话时同步到配置,重启后恢复同一会话。 */
+  private persistChat(key: string): void {
+    if (this.config === undefined) return
+    const ctx = this.chatContexts.get(key)
+    if (ctx === undefined) {
+      const next = { ...this.config.get().chatSessions }
+      delete next[key]
+      this.config.update('chatSessions', next)
+      return
+    }
+    this.config.update('chatSessions', { ...this.config.get().chatSessions, [key]: { sessionId: ctx.sessionId, label: ctx.label } })
+  }
+
+  /** 注入模式提示词:工作=助手,对话=朋友(桌面端可自定义;空则不注入)。 */
+  private withModePrompt(mode: 'task' | 'chat', text: string): string {
+    const prompt = this.config?.get().bot[mode === 'task' ? 'taskPrompt' : 'chatPrompt']?.trim() ?? ''
+    if (prompt === '') return text
+    return `[模式设定]\n${prompt}\n\n[消息]\n${text}`
   }
 
   /** 开关某通道的默认对话模式。 */
@@ -496,7 +524,7 @@ export class RemoteCommandProcessor {
       await client.rpc('session.prompt', {
         sessionId: created.sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: taskText }],
+        content: [{ type: 'text', text: this.withModePrompt('task', taskText) }],
       })
       return `任务已启动 ✓\n会话: ${created.sessionId}\n描述: ${taskText.slice(0, 80)}\n发送「进展 ${created.sessionId}」查看进展`
     } catch (error) {
@@ -537,6 +565,7 @@ export class RemoteCommandProcessor {
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
       this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget })
       this.chatContexts.set(key, { sessionId: created.sessionId, label })
+      this.persistChat(key)
       const lines = target === ''
         ? [
             '已进入对话模式 ✓(纯对话,不绑定工作区)',
@@ -559,6 +588,7 @@ export class RemoteCommandProcessor {
     const ctx = this.chatContexts.get(key)
     if (ctx === undefined) return '当前不在对话模式。'
     this.chatContexts.delete(key)
+    this.persistChat(key)
     return `已退出工作区「${ctx.label}」对话模式。会话 ${ctx.sessionId} 保留在后台,可发「打开 ${ctx.sessionId}」继续查看。`
   }
 
@@ -570,7 +600,7 @@ export class RemoteCommandProcessor {
       await client.rpc('session.prompt', {
         sessionId: ctx.sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text }],
+        content: [{ type: 'text', text: this.withModePrompt('chat', text) }],
       })
       return `✓ 已发送到「${ctx.label}」(会话 ${ctx.sessionId})\n发「进展 ${ctx.sessionId}」查看进度,「退出」结束对话。`
     } catch (error) {

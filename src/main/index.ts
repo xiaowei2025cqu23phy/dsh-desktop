@@ -61,7 +61,7 @@ if (!gotLock) {
     const events = new EventHub(harness)
     events.subscribe((frame) => screensaver.forwardFrame(frame))
     // 统一远程命令核心(QQ / Telegram / Webhook 共用)。
-    const commands = new RemoteCommandProcessor(harness)
+    const commands = new RemoteCommandProcessor(harness, config)
     let telegramBot: TelegramBotAdapter | null = null
     let qqBot: QQBotAdapter | null = null
     // 审批/提问等交互帧转发给命令核心(应答走 /api/respond,与 PWA 同一路径)。

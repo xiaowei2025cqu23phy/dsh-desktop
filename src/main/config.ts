@@ -113,6 +113,13 @@ export interface UpdaterConfig {
   autoCheck: boolean
 }
 
+export interface BotPromptConfig {
+  /** 工作模式(任务/指令)提示词:agent 以助手身份工作。空 = 不注入。 */
+  taskPrompt: string
+  /** 对话模式提示词:agent 以朋友身份聊天。空 = 不注入。 */
+  chatPrompt: string
+}
+
 export interface AppConfig {
   harness: HarnessConfig
   screensaver: ScreensaverConfig
@@ -122,6 +129,9 @@ export interface AppConfig {
   telegram: TelegramConfig
   updater: UpdaterConfig
   window: { width: number; height: number }
+  /** 机器人对话模式持久化:channel:userId → 固定对话会话(重启后继续同一会话)。 */
+  chatSessions: Record<string, { sessionId: string; label: string }>
+  bot: BotPromptConfig
 }
 
 const DEFAULTS: AppConfig = {
@@ -177,6 +187,11 @@ const DEFAULTS: AppConfig = {
     autoCheck: true,
   },
   window: { width: 1280, height: 800 },
+  chatSessions: {},
+  bot: {
+    taskPrompt: '你是一个专业、高效的 AI 助手。执行任务时请条理清晰、直接给出可用的结果,必要时说明关键步骤。',
+    chatPrompt: '你现在是用户的朋友。请用轻松、亲切、口语化的语气聊天,像朋友一样自然,不要过于正式。',
+  },
 }
 
 export class ConfigStore {

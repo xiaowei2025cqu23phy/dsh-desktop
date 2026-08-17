@@ -151,6 +151,14 @@
           <input id="qq-report" type="checkbox" />
           主动汇报(任务完成/失败、审批、提问时主动推送;审批带「允许/拒绝」按钮)
         </label>
+        <div class="field">
+          <label for="bot-task-prompt">工作模式提示词(任务/指令时,agent 以助手身份工作;留空 = 不注入)</label>
+          <textarea id="bot-task-prompt" rows="2" placeholder="你是一个专业、高效的 AI 助手…"></textarea>
+        </div>
+        <div class="field">
+          <label for="bot-chat-prompt">对话模式提示词(聊天时,agent 以朋友身份;留空 = 不注入)</label>
+          <textarea id="bot-chat-prompt" rows="2" placeholder="你现在是用户的朋友,请用轻松亲切的语气…"></textarea>
+        </div>
         <p class="hint">启用后可在 QQ 私聊机器人发送指令:帮助 / 状态 / 会话 / 任务 &lt;描述&gt; / 停止 / 模型</p>
         <div id="qq-status" class="hint"></div>
       </section>

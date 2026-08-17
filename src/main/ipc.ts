@@ -93,6 +93,13 @@ export function registerIpc(deps: IpcDeps): void {
     ipcMain.handle('telegram:status', () => telegramBot.isStarted())
   }
 
+  // ---- 机器人提示词(工作=助手 / 对话=朋友,桌面端自定义) ----
+  ipcMain.handle('bot:getConfig', () => deps.config.get().bot)
+  ipcMain.handle('bot:setConfig', (_event, patch: { taskPrompt?: string; chatPrompt?: string }) => {
+    deps.config.update('bot', patch)
+    return deps.config.get().bot
+  })
+
   // ---- 外观 ----
   ipcMain.handle('appearance:getConfig', () => deps.appearance.getConfig())
   ipcMain.handle('appearance:pickSource', async (_event, kind: string) => {

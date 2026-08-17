@@ -64,6 +64,10 @@ const api = {
     setConfig: (patch: object) => ipcRenderer.invoke('telegram:setConfig', patch),
     status: () => ipcRenderer.invoke('telegram:status'),
   },
+  bot: {
+    getConfig: () => ipcRenderer.invoke('bot:getConfig'),
+    setConfig: (patch: { taskPrompt?: string; chatPrompt?: string }) => ipcRenderer.invoke('bot:setConfig', patch),
+  },
   appearance: {
     getConfig: () => ipcRenderer.invoke('appearance:getConfig'),
     pickSource: (kind: 'window' | 'phone' | 'screensaver') => ipcRenderer.invoke('appearance:pickSource', kind),
