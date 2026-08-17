@@ -8,6 +8,7 @@ export type QQCommand =
   | { kind: 'sessions' }
   | { kind: 'workspaces' }
   | { kind: 'models' }
+  | { kind: 'model'; query: string }
   | { kind: 'cancel'; sessionId: string }
   | { kind: 'open'; sessionId: string }
   | { kind: 'progress'; sessionId: string }
@@ -46,6 +47,10 @@ export function parseCommand(content: string): QQCommand {
   }
   if (parts[0] === '任务' || parts[0] === 'run' || parts[0] === '执行') {
     return { kind: 'run', description: content.trim().slice(parts[0].length).trim() }
+  }
+  // 模型切换:模型 <模型名/前缀>(需在对话/会话上下文中)
+  if (parts[0] === '模型' || parts[0] === 'model' || parts[0] === '切换模型') {
+    return { kind: 'model', query: content.trim().slice(parts[0].length).trim() }
   }
   if (parts[0] === '允许' || parts[0] === '同意' || parts[0] === '批准' || parts[0] === 'approve' || parts[0] === 'allow') {
     return { kind: 'allow', sessionId: parts[1] ?? '' }

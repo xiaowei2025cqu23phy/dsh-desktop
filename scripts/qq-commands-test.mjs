@@ -28,6 +28,9 @@ check('status', parseCommand('status'), { kind: 'status' })
 check('会话', parseCommand('会话'), { kind: 'sessions' })
 check('工作区', parseCommand('工作区'), { kind: 'workspaces' })
 check('模型', parseCommand('模型'), { kind: 'models' })
+check('模型 切换', parseCommand('模型 deepseek-v4'), { kind: 'model', query: 'deepseek-v4' })
+check('model', parseCommand('model gpt-5.6'), { kind: 'model', query: 'gpt-5.6' })
+check('切换模型', parseCommand('切换模型 豆包'), { kind: 'model', query: '豆包' })
 
 // 带参指令
 check('停止', parseCommand('停止 session-abc'), { kind: 'cancel', sessionId: 'session-abc' })
