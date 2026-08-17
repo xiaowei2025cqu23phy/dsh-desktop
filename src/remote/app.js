@@ -24,6 +24,7 @@
     approvalCards: {},    // `${sessionId}:${approvalId}` -> DOM 元素
     questions: {},        // sessionId -> { rpcId, sessionId, questions }
     questionCards: {},    // sessionId -> DOM 元素
+    fsPath: '',           // 文件夹浏览当前路径('' = 根列表)
   }
 
   var S = {
@@ -717,6 +718,16 @@
     head.appendChild(count)
     head.appendChild(arrow)
     if (ws) {
+      var browse = document.createElement('button')
+      browse.className = 'row-act'
+      browse.textContent = '📂'
+      browse.title = '浏览工作区文件夹'
+      browse.addEventListener('click', function (event) {
+        event.stopPropagation()
+        closeSidebar()
+        openFsBrowser(ws.path, null)
+      })
+      head.appendChild(browse)
       var del = document.createElement('button')
       del.className = 'row-act'
       del.textContent = '🗑'
@@ -1114,6 +1125,205 @@
     })
   }
 
+  // ---- 文件夹浏览(只读:工作区/预设根目录内) ----
+  var fsPickMode = null   // null = 浏览;'addRoot' = 从浏览中挑选添加预设根
+
+  function openFsBrowser(path, pickMode) {
+    fsPickMode = pickMode || null
+    state.fsPath = path || ''
+    openSheet($('view-fs'))
+    loadFsList()
+  }
+
+  function closeFsBrowser() {
+    closeSheet($('view-fs'))
+    fsPickMode = null
+  }
+
+  function loadFsList() {
+    var host = $('fs-list')
+    host.innerHTML = '<p class="empty">加载中…</p>'
+    renderFsCrumb()
+    apiAction('fs.list', { path: state.fsPath }).then(function (data) {
+      if (Array.isArray(data.roots)) renderFsRoots(data.roots)
+      else renderFsEntries(data)
+    }).catch(function (err) {
+      host.innerHTML = '<p class="empty">加载失败:' + S.escapeHtml(err.message) + '</p>'
+    })
+  }
+
+  function renderFsCrumb() {
+    var crumb = $('fs-crumb')
+    crumb.innerHTML = ''
+    var root = document.createElement('button')
+    root.className = 'crumb-btn'
+    root.textContent = '根'
+    root.addEventListener('click', function () { state.fsPath = ''; loadFsList() })
+    crumb.appendChild(root)
+    if (state.fsPath === '') return
+    var parts = state.fsPath.split(/[\\/]/).filter(function (p) { return p !== '' })
+    var acc = ''
+    parts.forEach(function (part, i) {
+      var sepEl = document.createElement('span')
+      sepEl.className = 'crumb-sep'
+      sepEl.textContent = ' / '
+      crumb.appendChild(sepEl)
+      // 第一段是盘符(如 D:),不可点击。
+      if (i === 0 && /^[A-Za-z]:$/.test(part)) {
+        var drive = document.createElement('span')
+        drive.className = 'crumb-drive'
+        drive.textContent = part
+        crumb.appendChild(drive)
+        acc = part
+        return
+      }
+      acc = acc === '' ? part : acc + '\\' + part
+      var btn = document.createElement('button')
+      btn.className = 'crumb-btn'
+      btn.textContent = part
+      btn.addEventListener('click', function () { state.fsPath = acc; loadFsList() })
+      crumb.appendChild(btn)
+    })
+  }
+
+  function fmtSize(n) {
+    if (n < 1024) return n + ' B'
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+    return (n / 1024 / 1024).toFixed(1) + ' MB'
+  }
+
+  function renderFsRoots(roots) {
+    var host = $('fs-list')
+    host.innerHTML = ''
+    if (roots.length === 0) {
+      host.innerHTML = '<p class="empty">没有可浏览的根目录(先在电脑端「设置 → 远程访问」配置预设根,或建立工作区)</p>'
+      return
+    }
+    roots.forEach(function (r) {
+      var row = document.createElement('div')
+      row.className = 'fs-row'
+      var icon = document.createElement('span')
+      icon.className = 'fs-icon'
+      icon.textContent = '📁'
+      var name = document.createElement('span')
+      name.className = 'fs-name'
+      name.textContent = r.name + '  (' + r.path + ')'
+      row.appendChild(icon)
+      row.appendChild(name)
+      row.addEventListener('click', function () { state.fsPath = r.path; loadFsList() })
+      host.appendChild(row)
+    })
+  }
+
+  function renderFsEntries(data) {
+    var host = $('fs-list')
+    host.innerHTML = ''
+    if (fsPickMode === 'addRoot') {
+      var tip = document.createElement('p')
+      tip.className = 'empty'
+      tip.textContent = '挑一个文件夹点「＋根」,将其设为预设工作区根目录(仅这些目录下可在手机端新建文件夹工作区)'
+      host.appendChild(tip)
+    }
+    var entries = data.entries || []
+    if (entries.length === 0) {
+      var empty = document.createElement('p')
+      empty.className = 'empty'
+      empty.textContent = '(空目录)'
+      host.appendChild(empty)
+    }
+    entries.forEach(function (e) {
+      var row = document.createElement('div')
+      row.className = 'fs-row'
+      var icon = document.createElement('span')
+      icon.className = 'fs-icon'
+      icon.textContent = e.isDir ? '📁' : '📄'
+      var name = document.createElement('span')
+      name.className = 'fs-name'
+      name.textContent = e.isDir ? e.name : e.name + '  ' + fmtSize(e.size)
+      row.appendChild(icon)
+      row.appendChild(name)
+      if (e.isDir) {
+        var addRoot = document.createElement('button')
+        addRoot.className = 'row-act'
+        addRoot.textContent = '＋根'
+        addRoot.title = '添加为预设工作区根目录'
+        addRoot.addEventListener('click', function (ev) {
+          ev.stopPropagation()
+          addPresetRoot(e.path)
+        })
+        row.appendChild(addRoot)
+        row.addEventListener('click', function () { state.fsPath = e.path; loadFsList() })
+      } else {
+        row.addEventListener('click', function () { openFsPreview(e.path, e.name) })
+      }
+      host.appendChild(row)
+    })
+    if (data.truncated) {
+      var more = document.createElement('p')
+      more.className = 'empty'
+      more.textContent = '(仅显示前 200 项)'
+      host.appendChild(more)
+    }
+  }
+
+  function openFsPreview(path, name) {
+    $('fsp-title').textContent = name
+    $('fsp-content').textContent = '加载中…'
+    openSheet($('view-fspreview'))
+    apiAction('fs.read', { path: path }).then(function (data) {
+      $('fsp-content').textContent = data.text || '(空文件)'
+    }).catch(function (err) {
+      $('fsp-content').textContent = '预览失败:' + err.message
+    })
+  }
+
+  function addPresetRoot(path) {
+    apiAction('fs.addRoot', { path: path }).then(function () {
+      S.toast('已添加预设工作区根目录', 'ok')
+      if (fsPickMode === 'addRoot') {
+        closeFsBrowser()
+        loadPresetRoots()
+      }
+    }).catch(function (err) {
+      S.toast('添加失败:' + err.message, 'error')
+    })
+  }
+
+  // ---- 预设工作区根目录管理(PWA 端) ----
+  function loadPresetRoots() {
+    var host = $('preset-roots')
+    host.innerHTML = '<p class="empty">加载中…</p>'
+    apiAction('fs.list', { path: '' }).then(function (data) {
+      var roots = (data.roots || []).filter(function (r) { return r.isPreset })
+      if (roots.length === 0) {
+        host.innerHTML = '<p class="empty">(未配置预设根;可在电脑端「设置 → 远程访问」用文件资源管理器选择,或点下方按钮浏览添加)</p>'
+        return
+      }
+      host.innerHTML = ''
+      roots.forEach(function (r) {
+        var row = document.createElement('div')
+        row.className = 'sched-row'
+        var info = document.createElement('span')
+        info.textContent = r.name + '  ' + r.path
+        var del = document.createElement('button')
+        del.className = 'row-act'
+        del.textContent = '✕'
+        del.title = '从预设根移除(不删除文件夹)'
+        del.addEventListener('click', function () {
+          apiAction('fs.removeRoot', { path: r.path }).then(function () {
+            S.toast('已移除', 'ok')
+            loadPresetRoots()
+          }).catch(function (err) { S.toast('移除失败:' + err.message, 'error') })
+        })
+        row.appendChild(info)
+        row.appendChild(del)
+        host.appendChild(row)
+      })
+    }).catch(function (err) {
+      host.innerHTML = '<p class="empty">加载失败:' + S.escapeHtml(err.message) + '</p>'
+    })
+  }
+
   // ---- 连接流程 ----
   function connect() {
     var server = $('conn-server').value.trim().replace(/\/+$/, '')
@@ -1265,10 +1475,17 @@
       }).catch(function () { $('set-models').textContent = '(未连接)' })
       loadWallpapers()
       loadScheduled()
+      loadPresetRoots()
       openSheet($('view-settings'))
     })
     $('btn-settings-close').addEventListener('click', function () { closeSheet($('view-settings')) })
     $('btn-sched-add').addEventListener('click', addScheduled)
+    $('btn-preset-add').addEventListener('click', function () {
+      closeSheet($('view-settings'))
+      openFsBrowser('', 'addRoot')
+    })
+    $('btn-fs-close').addEventListener('click', closeFsBrowser)
+    $('btn-fsp-close').addEventListener('click', function () { closeSheet($('view-fspreview')) })
     $('opt-temp-cache').addEventListener('change', function () {
       state.tempCache = $('opt-temp-cache').checked
       localStorage.setItem('dsh-temp-cache', state.tempCache ? '1' : '0')

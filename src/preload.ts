@@ -51,6 +51,9 @@ const api = {
     pairUrl: () => ipcRenderer.invoke('remote:pairUrl'),
     qrDataUrl: () => ipcRenderer.invoke('remote:qrDataUrl'),
   },
+  dialog: {
+    pickDirectories: () => ipcRenderer.invoke('dialog:pickDirectories'),
+  },
   qq: {
     getConfig: () => ipcRenderer.invoke('qq:getConfig'),
     setConfig: (patch: object) => ipcRenderer.invoke('qq:setConfig', patch),

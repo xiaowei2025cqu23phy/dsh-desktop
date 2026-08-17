@@ -83,7 +83,7 @@ Enable it in **Settings → Remote Access**. The desktop app starts a LAN gatewa
 1. Connect the phone to the same Wi-Fi and scan the **QR code** in the settings panel (or open `http://<PC-IP>:3082` in a browser).
 2. The PWA fills in the address and token automatically; add it to the home screen to use it like an app.
 
-Phone features: session list / history / real-time streaming chat / stop tasks; one-click task runner (description + workspace + model); workspace list & creation; security: Bearer token + RPC allowlist (the phone cannot change settings, read secrets, or touch the filesystem), LAN only.
+Phone features: session list / history / real-time streaming chat / stop tasks; one-click task runner (description + workspace + model); workspace list & creation; **folder browsing** (📂 on each workspace, tap a file to preview text ≤64KB); **phone-side settings** — manage preset workspace roots (view / remove / browse-to-add), phone wallpaper, scheduled tasks, restart Harness. Security: Bearer token + RPC allowlist + file-browse allowlist (workspaces/preset roots only, 403 otherwise), LAN only.
 
 ## QQ Bot Remote Control (optional)
 

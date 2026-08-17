@@ -985,6 +985,28 @@ function bind(): void {
     await API.remote.setConfig({ presetWorkspaceRoots: roots })
     S.toast('预设工作区根目录已保存', 'ok')
   })
+  $id('btn-preset-pick').addEventListener('click', async () => {
+    const picked = await API.dialog.pickDirectories()
+    if (picked.length === 0) return
+    const el = $id('remote-preset-roots') as HTMLTextAreaElement
+    const existing = el.value.split('\n').map((s) => s.trim()).filter((s) => s !== '')
+    const seen = new Set(existing)
+    let added = 0
+    for (const p of picked) {
+      if (!seen.has(p)) {
+        seen.add(p)
+        existing.push(p)
+        added++
+      }
+    }
+    if (added === 0) {
+      S.toast('所选目录已在列表中', 'ok')
+      return
+    }
+    el.value = existing.join('\n')
+    await API.remote.setConfig({ presetWorkspaceRoots: existing })
+    S.toast(`已添加 ${added} 个预设根目录`, 'ok')
+  })
 
   // QQ 机器人
   input('qq-enabled').addEventListener('change', async () => {

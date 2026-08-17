@@ -2,7 +2,7 @@
  * IPC 装配:把 harness / models / screensaver 的能力暴露给渲染进程。
  */
 
-import { BrowserWindow, ipcMain, shell } from 'electron'
+import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
 import { extname } from 'node:path'
 import type { AppearanceManager } from './appearance'
@@ -74,6 +74,19 @@ export function registerIpc(deps: IpcDeps): void {
     ipcMain.handle('remote:lanAddresses', () => gateway.lanAddresses())
     ipcMain.handle('remote:pairUrl', () => gateway.pairUrl())
     ipcMain.handle('remote:qrDataUrl', () => gateway.qrDataUrl())
+    // 用系统文件资源管理器挑选预设工作区根目录(多选)。
+    ipcMain.handle('dialog:pickDirectories', async (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const options: Electron.OpenDialogOptions = {
+        title: '选择预设工作区根目录',
+        buttonLabel: '添加',
+        properties: ['openDirectory', 'multiSelections'],
+      }
+      const result = win === null
+        ? await dialog.showOpenDialog(options)
+        : await dialog.showOpenDialog(win, options)
+      return result.canceled ? [] : result.filePaths
+    })
   }
 
   // ---- QQ 机器人 ----

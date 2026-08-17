@@ -405,6 +405,22 @@ export class RemoteGateway {
       this.json(res, 200, { ok: true, roots: this.listPresetSubdirs() })
       return
     }
+    if (body.action === 'fs.list') {
+      await this.serveFsList(res, body as { path?: unknown })
+      return
+    }
+    if (body.action === 'fs.read') {
+      await this.serveFsRead(res, body as { path?: unknown })
+      return
+    }
+    if (body.action === 'fs.addRoot') {
+      await this.serveFsAddRoot(res, body as { path?: unknown })
+      return
+    }
+    if (body.action === 'fs.removeRoot') {
+      this.serveFsRemoveRoot(res, body as { path?: unknown })
+      return
+    }
     if (body.action === 'workspace.createNew') {
       await this.createPresetWorkspace(res, body as { action?: string; root?: unknown; name?: unknown })
       return
@@ -499,6 +515,157 @@ export class RemoteGateway {
       roots.push(normalized)
     }
     return roots
+  }
+
+  // ---- 手机端文件夹浏览与预设根管理(只读白名单:工作区路径 + 预设根) ----
+
+  /** 目标路径是否在某个工作区路径或预设根目录之下。 */
+  private async fsAllowed(target: string): Promise<boolean> {
+    if (target === '') return false
+    const normalized = resolve(target)
+    let roots = this.presetRoots()
+    try {
+      const client = this.harness.client()
+      const ws = await client.rpc<{ items: Array<{ path?: string }> }>('workspace.list', {}, 20000)
+      roots = [...(ws.items ?? []).map((w) => w.path).filter((p): p is string => typeof p === 'string'), ...roots]
+    } catch {
+      // workspace.list 失败时仍允许预设根下的路径。
+    }
+    for (const root of roots) {
+      const r = resolve(root)
+      if (normalized === r || normalized.startsWith(r + sep)) return true
+    }
+    return false
+  }
+
+  /** 可浏览的根:工作区路径 + 预设根(去重,标记是否预设根)。 */
+  private async fsRoots(): Promise<Array<{ path: string; name: string; isPreset: boolean }>> {
+    const seen = new Set<string>()
+    const roots: Array<{ path: string; name: string; isPreset: boolean }> = []
+    const preset = new Set(this.presetRoots())
+    try {
+      const client = this.harness.client()
+      const ws = await client.rpc<{ items: Array<{ path?: string }> }>('workspace.list', {}, 20000)
+      for (const w of ws.items ?? []) {
+        if (typeof w.path !== 'string') continue
+        const r = resolve(w.path)
+        if (seen.has(r)) continue
+        seen.add(r)
+        roots.push({ path: r, name: basename(r), isPreset: preset.has(r) })
+      }
+    } catch {
+      // workspace.list 失败:仍列出预设根。
+    }
+    for (const raw of this.presetRoots()) {
+      if (seen.has(raw)) continue
+      seen.add(raw)
+      roots.push({ path: raw, name: basename(raw), isPreset: true })
+    }
+    return roots
+  }
+
+  /** 列出目录内容(单层;目录在前,文件带大小,最多 200 项)。 */
+  private async serveFsList(res: ServerResponse, body: { path?: unknown }): Promise<void> {
+    const path = typeof body.path === 'string' ? body.path.trim() : ''
+    if (path === '') {
+      this.json(res, 200, { ok: true, path: '', roots: await this.fsRoots() })
+      return
+    }
+    if (!(await this.fsAllowed(path))) {
+      this.json(res, 403, { error: 'path not allowed' })
+      return
+    }
+    if (!existsSync(path)) {
+      this.json(res, 404, { error: '目录不存在' })
+      return
+    }
+    try {
+      if (!statSync(path).isDirectory()) {
+        this.json(res, 400, { error: 'not a directory' })
+        return
+      }
+      const entries = readdirSync(path, { withFileTypes: true })
+      const list: Array<{ name: string; path: string; isDir: boolean; size: number }> = []
+      for (const entry of entries) {
+        const full = join(path, entry.name)
+        if (entry.isDirectory()) {
+          list.push({ name: entry.name, path: full, isDir: true, size: 0 })
+        } else if (entry.isFile()) {
+          let size = 0
+          try { size = statSync(full).size } catch { size = 0 }
+          list.push({ name: entry.name, path: full, isDir: false, size })
+        }
+      }
+      list.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1))
+      this.json(res, 200, { ok: true, path, entries: list.slice(0, 200), truncated: list.length > 200 })
+    } catch (error) {
+      this.json(res, 500, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  /** 读取文本文件内容用于预览(≤64KB)。 */
+  private async serveFsRead(res: ServerResponse, body: { path?: unknown }): Promise<void> {
+    const path = typeof body.path === 'string' ? body.path.trim() : ''
+    if (!(await this.fsAllowed(path))) {
+      this.json(res, 403, { error: 'path not allowed' })
+      return
+    }
+    if (!existsSync(path)) {
+      this.json(res, 404, { error: '文件不存在' })
+      return
+    }
+    try {
+      if (!statSync(path).isFile()) {
+        this.json(res, 400, { error: 'not a file' })
+        return
+      }
+      const size = statSync(path).size
+      if (size > 64 * 1024) {
+        this.json(res, 400, { error: `文件过大(${Math.round(size / 1024)}KB),仅支持 64KB 以内` })
+        return
+      }
+      this.json(res, 200, { ok: true, path, name: basename(path), size, text: readFileSync(path, 'utf8') })
+    } catch (error) {
+      this.json(res, 500, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  /** 把目录添加为预设工作区根(仅限可浏览目录;去重)。 */
+  private async serveFsAddRoot(res: ServerResponse, body: { path?: unknown }): Promise<void> {
+    const path = typeof body.path === 'string' ? body.path.trim() : ''
+    if (!(await this.fsAllowed(path))) {
+      this.json(res, 403, { error: 'path not allowed' })
+      return
+    }
+    try {
+      if (!statSync(path).isDirectory()) {
+        this.json(res, 400, { error: 'not a directory' })
+        return
+      }
+    } catch {
+      this.json(res, 403, { error: 'path not allowed' })
+      return
+    }
+    const current = this.config.get().remote.presetWorkspaceRoots ?? []
+    const normalized = resolve(path)
+    if (!current.some((p) => resolve(p) === normalized)) {
+      this.config.update('remote', { presetWorkspaceRoots: [...current, normalized] })
+    }
+    const roots = (this.config.get().remote.presetWorkspaceRoots ?? [])
+      .filter((p): p is string => typeof p === 'string')
+      .map((p) => resolve(p))
+    this.json(res, 200, { ok: true, roots })
+  }
+
+  /** 从预设根列表移除(仅移除注册,不删除目录)。 */
+  private serveFsRemoveRoot(res: ServerResponse, body: { path?: unknown }): void {
+    const path = typeof body.path === 'string' ? body.path.trim() : ''
+    const current = this.config.get().remote.presetWorkspaceRoots ?? []
+    const normalized = resolve(path)
+    const next = current.filter((p) => resolve(p) !== normalized)
+    this.config.update('remote', { presetWorkspaceRoots: next })
+    const roots = next.filter((p): p is string => typeof p === 'string').map((p) => resolve(p))
+    this.json(res, 200, { ok: true, roots })
   }
 
   /**
