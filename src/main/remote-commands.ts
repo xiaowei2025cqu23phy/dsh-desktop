@@ -96,6 +96,8 @@ export class RemoteCommandProcessor {
   private reportChannels = new Set<string>()
   /** 会话最近一次汇报时间(去重:同一会话的完成/失败在窗口内只报一次)。 */
   private lastTurnReports = new Map<string, { done: number; fail: number }>()
+  /** 对话会话等待回复推送:发送消息后注册,回合结束把 agent 回复推给发起者。 */
+  private chatReplies = new Map<string, { channel: string; userId: string; pushTarget?: { scope: string; targetId: string }; ts: number }>()
 
   constructor(private harness: HarnessManager, private config?: ConfigStore) {
     // 恢复持久化的对话会话(重启后继续同一对话)。
@@ -604,6 +606,16 @@ export class RemoteCommandProcessor {
         mode: 'queue',
         content: [{ type: 'text', text: this.withModePrompt('chat', text) }],
       })
+      // 注册回复推送:回合结束后把 agent 的回复主动推给发起者(对话体验)。
+      const owner = this.sessionOwners.get(ctx.sessionId)
+      if (owner !== undefined && owner.kind === 'chat') {
+        this.chatReplies.set(ctx.sessionId, {
+          channel: owner.channel,
+          userId: owner.userId,
+          pushTarget: owner.pushTarget,
+          ts: Date.now(),
+        })
+      }
       return `✓ 已发送到「${ctx.label}」(会话 ${ctx.sessionId})\n发「进展 ${ctx.sessionId}」查看进度,「退出」结束对话。`
     } catch (error) {
       return `发送失败:${error instanceof Error ? error.message : String(error)}`
@@ -675,11 +687,14 @@ export class RemoteCommandProcessor {
   private handleSessionEvent(payload: Record<string, unknown>): void {
     const sessionId = String(payload.sessionId ?? '')
     const owner = this.sessionOwners.get(sessionId)
-    if (owner === undefined || !this.reportChannels.has(owner.channel)) return
-    // 对话会话不推送回合结束汇报(聊天自然进行,报"任务完成"会很怪)。
-    if (owner.kind === 'chat') return
-    if (!isRecord(payload.event)) return
+    if (owner === undefined || !isRecord(payload.event)) return
     if (payload.event.type !== 'turn/end') return
+    // 对话会话:回合结束后推送 agent 回复(而不是"任务完成"汇报)。
+    if (owner.kind === 'chat') {
+      this.pushChatReply(sessionId)
+      return
+    }
+    if (!this.reportChannels.has(owner.channel)) return
     const data = isRecord(payload.event.data) ? payload.event.data : {}
     const reason = isRecord(data.reason) ? data.reason : {}
     const detail = reason.error ?? reason.failure
@@ -701,6 +716,36 @@ export class RemoteCommandProcessor {
       ? `❌ 任务失败(会话 ${sessionId})${message !== '' ? `\n${message.slice(0, 200)}` : ''}\n发送「打开 ${sessionId}」查看详情`
       : `✅ 任务完成(会话 ${sessionId})\n发送「打开 ${sessionId}」查看结果`
     if (this.push !== null) this.push(owner.channel, owner.userId, text, undefined, owner.pushTarget)
+  }
+
+  /** 对话回合结束:拉取最新 agent 回复并推送给发起者(对话体验闭环)。 */
+  private pushChatReply(sessionId: string): void {
+    const pending = this.chatReplies.get(sessionId)
+    if (pending === undefined || this.push === null) return
+    // 5 分钟内有效;超时视为用户已离开,不再推送。
+    if (Date.now() - pending.ts > 5 * 60 * 1000) {
+      this.chatReplies.delete(sessionId)
+      return
+    }
+    this.chatReplies.delete(sessionId)
+    const client = this.harness.client()
+    void client.rpc<{ events: Array<{ event?: { type?: string; data?: { content?: unknown } } }> }>(
+      'session.history', { sessionId, maxMessages: 2 }, 30000,
+    ).then((data) => {
+      const events = data.events ?? []
+      let reply = ''
+      for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i].event
+        if (ev?.type === 'assistant/message' && Array.isArray(ev.data?.content)) {
+          const text = (ev.data.content as Array<{ text?: string }>).map((b) => b.text ?? '').join('')
+          if (text.trim() !== '') { reply = text; break }
+        }
+      }
+      if (reply === '') reply = '(对方没有回复内容)'
+      this.push!(pending.channel, pending.userId, `💬 ${reply.slice(0, 1500)}`, undefined, pending.pushTarget)
+    }).catch(() => {
+      // 拉取失败:静默,用户可发「进展」查看。
+    })
   }
 
   /** 允许/拒绝审批(指令入口):outcome 为 'allowed-once' | 'rejected'。 */

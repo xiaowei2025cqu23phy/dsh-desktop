@@ -361,6 +361,32 @@ function makeHarness(log) {
     payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'ok' } } } },
   })
   check('对话回合不推完成汇报', pushes3.length, 0)
+  // 对话回复推送:发消息后回合结束,推 agent 回复文本
+  const log4 = []
+  const pushes4 = []
+  const processor4 = new RemoteCommandProcessor({
+    client: () => ({
+      async rpc(method, payload) {
+        log4.push([method, payload])
+        if (method === 'session.create') return { sessionId: 'session-test-1' }
+        if (method === 'session.history') {
+          return { events: [{ event: { type: 'assistant/message', data: { content: [{ type: 'text', text: '你好呀朋友!' }] } } }] }
+        }
+        return {}
+      },
+      async respond() { return { accepted: true } },
+    }),
+  })
+  processor4.setPush((channel, userId, text) => pushes4.push([channel, userId, text]))
+  await processor4.handleText('telegram', '42', '进入', undefined)
+  await processor4.handleText('telegram', '42', '在吗', undefined)
+  processor4.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-chat2', method: 'session/event',
+    payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'ok' } } } },
+  })
+  // 回复推送是异步的(session.history 后 push)
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  check('对话回复推送', pushes4.length === 1 && pushes4[0][2].includes('你好呀朋友'), true)
 }
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
