@@ -607,8 +607,13 @@ export class RemoteCommandProcessor {
         content: [{ type: 'text', text: this.withModePrompt('chat', text) }],
       })
       // 注册回复推送:回合结束后把 agent 的回复主动推给发起者(对话体验)。
-      const owner = this.sessionOwners.get(ctx.sessionId)
-      if (owner !== undefined && owner.kind === 'chat') {
+      // 重启后恢复的对话会话可能没有归属记录,这里补登记。
+      let owner = this.sessionOwners.get(ctx.sessionId)
+      if (owner === undefined) {
+        owner = { ...this.ownerFromKey(key), kind: 'chat' }
+        this.sessionOwners.set(ctx.sessionId, owner)
+      }
+      if (owner.kind === 'chat') {
         this.chatReplies.set(ctx.sessionId, {
           channel: owner.channel,
           userId: owner.userId,
