@@ -447,5 +447,40 @@ function makeHarness(log) {
   check('模型切换-需对话模式', r3.includes('先发「进入」'), true)
 }
 
+// ---- 定时任务:添加/触发/取消 ----
+{
+  const stored = { scheduledTasks: [] }
+  const fakeConfig = {
+    get: () => ({ bot: { taskPrompt: '助手', chatPrompt: '朋友' }, chatSessions: {}, scheduledTasks: stored.scheduledTasks }),
+    update: (key, value) => { if (key === 'scheduledTasks') stored.scheduledTasks = value },
+  }
+  const pushes = []
+  const log = []
+  const processor = new RemoteCommandProcessor(makeHarness(log), fakeConfig)
+  processor.setPush((channel, userId, text) => pushes.push([channel, userId, text]))
+  // 添加
+  const added = await processor.handleText('telegram', '42', '定时 1分钟 检查更新', undefined)
+  check('定时-添加成功', added.includes('定时任务已添加'), true)
+  check('定时-持久化', stored.scheduledTasks.length, 1)
+  // 触发(把 nextAt 改到过去)
+  stored.scheduledTasks[0].nextAt = Date.now() - 1000
+  await processor.tickScheduled()
+  check('定时-触发通知', pushes.some((p) => p[2].includes('定时任务已触发')), true)
+  check('定时-触发后执行任务', log.some(([k, m]) => k === 'rpc' && m === 'session.prompt'), true)
+  check('定时-一次性任务已删除', stored.scheduledTasks.length, 0)
+  // 每日任务保留并顺延
+  await processor.handleText('telegram', '42', '定时 每天23:59 打卡', undefined)
+  stored.scheduledTasks[0].nextAt = Date.now() - 1000
+  await processor.tickScheduled()
+  check('定时-每日任务保留', stored.scheduledTasks.length, 1)
+  check('定时-每日顺延', stored.scheduledTasks[0].nextAt > Date.now(), true)
+  // 列表/取消
+  const list = await processor.handleText('telegram', '42', '定时列表', undefined)
+  check('定时-列表', list.includes('每天 23:59'), true)
+  const removed = await processor.handleText('telegram', '42', '取消定时 1', undefined)
+  check('定时-取消', removed.includes('已取消'), true)
+  check('定时-取消后空', stored.scheduledTasks.length, 0)
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

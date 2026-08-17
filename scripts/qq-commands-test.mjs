@@ -6,7 +6,7 @@
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { parseCommand, parseTaskOptions, parseApprovalButtonData, findEventUserId, findEventGroupOpenid, parseQuestionButtonData, parseActionButtonData } = require('../dist/main/qq-commands.js')
+const { parseCommand, parseTaskOptions, parseApprovalButtonData, findEventUserId, findEventGroupOpenid, parseQuestionButtonData, parseActionButtonData, parseSchedDelay } = require('../dist/main/qq-commands.js')
 
 let failures = 0
 function check(name, actual, expected) {
@@ -121,6 +121,16 @@ check('操作按钮-打开', parseActionButtonData('dsh-action|open|session-a'),
 check('操作按钮-嵌套', parseActionButtonData({ resolved: { button_data: 'dsh-action|stop|s1' } }), { action: 'stop', sessionId: 's1' })
 check('操作按钮-非法动作', parseActionButtonData('dsh-action|delete|s1'), null)
 check('操作按钮-其他前缀', parseActionButtonData('dsh-approve|s1|a1|rejected'), null)
+check('定时解析-分钟', parseSchedDelay('10分钟'), { kind: 'once', delayMs: 600000 })
+check('定时解析-m', parseSchedDelay('5m'), { kind: 'once', delayMs: 300000 })
+check('定时解析-小时', parseSchedDelay('2小时'), { kind: 'once', delayMs: 7200000 })
+check('定时解析-天', parseSchedDelay('1天'), { kind: 'once', delayMs: 86400000 })
+check('定时解析-每天', parseSchedDelay('每天9:00'), { kind: 'daily', hours: 9, minutes: 0 })
+check('定时解析-非法', parseSchedDelay('随便'), null)
+check('定时-添加', parseCommand('定时 10分钟 检查更新'), { kind: 'sched', action: 'add', delay: { kind: 'once', delayMs: 600000 }, description: '检查更新' })
+check('定时-每天添加', parseCommand('定时 每天9:00 写日报'), { kind: 'sched', action: 'add', delay: { kind: 'daily', hours: 9, minutes: 0 }, description: '写日报' })
+check('定时-列表', parseCommand('定时列表'), { kind: 'sched', action: 'list' })
+check('定时-取消', parseCommand('取消定时 2'), { kind: 'sched', action: 'remove', index: 1 })
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

@@ -18,7 +18,45 @@ export type QQCommand =
   | { kind: 'allow'; sessionId: string }
   | { kind: 'reject'; sessionId: string }
   | { kind: 'select'; text: string }
+  | { kind: 'sched'; action: 'add'; delay: SchedDelay; description: string }
+  | { kind: 'sched'; action: 'list' }
+  | { kind: 'sched'; action: 'remove'; index: number }
   | { kind: 'unknown'; text: string }
+
+/** 定时任务的调度表达(解析结果)。 */
+export type SchedDelay =
+  | { kind: 'once'; delayMs: number }
+  | { kind: 'daily'; hours: number; minutes: number }
+
+/**
+ * 解析定时表达式:
+ * - `10分钟` / `10m` / `2小时` / `1天` → 一次性延迟
+ * - `每天9:00` → 每日循环
+ */
+export function parseSchedDelay(expr: string): SchedDelay | null {
+  const text = expr.trim().toLowerCase()
+  const once = /^(\d+)\s*(分钟|分|min|m|小时|时|h|天|d)$/.exec(text)
+  if (once !== null) {
+    const n = Number(once[1])
+    const unit = once[2]
+    const ms = unit === '分钟' || unit === '分' || unit === 'min' || unit === 'm'
+      ? n * 60 * 1000
+      : unit === '小时' || unit === '时' || unit === 'h'
+        ? n * 60 * 60 * 1000
+        : n * 24 * 60 * 60 * 1000
+    if (ms > 0) return { kind: 'once', delayMs: ms }
+    return null
+  }
+  const daily = /^每天\s*(\d{1,2}):(\d{2})$/.exec(text)
+  if (daily !== null) {
+    const hours = Number(daily[1])
+    const minutes = Number(daily[2])
+    if (hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59) {
+      return { kind: 'daily', hours, minutes }
+    }
+  }
+  return null
+}
 
 export function parseCommand(content: string): QQCommand {
   const lower = content.trim().toLowerCase()
@@ -51,6 +89,29 @@ export function parseCommand(content: string): QQCommand {
   // 模型切换:模型 <模型名/前缀>(需在对话/会话上下文中)
   if (parts[0] === '模型' || parts[0] === 'model' || parts[0] === '切换模型') {
     return { kind: 'model', query: content.trim().slice(parts[0].length).trim() }
+  }
+  // 定时任务:定时 <表达式> <描述> / 定时列表 / 取消定时 <编号>
+  const schedText = content.trim()
+  if (schedText === '定时列表' || schedText === '定时 列表' || schedText === 'schedule list') {
+    return { kind: 'sched', action: 'list' }
+  }
+  if (parts[0] === '取消定时' || parts[0] === '删除定时') {
+    const idx = Number(parts[1])
+    if (Number.isInteger(idx) && idx >= 1) return { kind: 'sched', action: 'remove', index: idx - 1 }
+    return { kind: 'unknown', text: content.trim() }
+  }
+  if (parts[0] === '定时' || parts[0] === 'schedule' || parts[0] === '定时任务') {
+    const rest = content.trim().slice(parts[0].length).trim()
+    if (rest === '' || rest === '列表' || rest === 'list') return { kind: 'sched', action: 'list' }
+    const cancelMatch = /^(取消|删除|remove)\s+(\d+)$/.exec(rest)
+    if (cancelMatch !== null) return { kind: 'sched', action: 'remove', index: Number(cancelMatch[2]) - 1 }
+    const exprMatch = /^(\S+)\s+([\s\S]+)$/.exec(rest)
+    if (exprMatch !== null) {
+      const delay = parseSchedDelay(exprMatch[1])
+      if (delay !== null) return { kind: 'sched', action: 'add', delay, description: exprMatch[2].trim() }
+      return { kind: 'unknown', text: content.trim() }
+    }
+    return { kind: 'unknown', text: content.trim() }
   }
   if (parts[0] === '允许' || parts[0] === '同意' || parts[0] === '批准' || parts[0] === 'approve' || parts[0] === 'allow') {
     return { kind: 'allow', sessionId: parts[1] ?? '' }
