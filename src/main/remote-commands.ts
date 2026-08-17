@@ -82,6 +82,8 @@ export class RemoteCommandProcessor {
   private autoChatChannels = new Set<string>()
   /** 开启「主动汇报」的通道:机器人发起的任务完成/失败时主动推送。 */
   private reportChannels = new Set<string>()
+  /** 会话最近一次汇报时间(去重:同一会话的完成/失败在窗口内只报一次)。 */
+  private lastTurnReports = new Map<string, { done: number; fail: number }>()
 
   constructor(private harness: HarnessManager) {}
 
@@ -607,7 +609,7 @@ export class RemoteCommandProcessor {
     }
   }
 
-  /** 会话事件汇报:turn/end 时向发起者推送完成/失败通知。 */
+  /** 会话事件汇报:turn/end 时向发起者推送完成/失败通知(同会话 5 分钟内去重)。 */
   private handleSessionEvent(payload: Record<string, unknown>): void {
     const sessionId = String(payload.sessionId ?? '')
     const owner = this.sessionOwners.get(sessionId)
@@ -622,7 +624,16 @@ export class RemoteCommandProcessor {
       : typeof reason.message === 'string'
         ? reason.message
         : ''
-    const text = reason.kind === 'error'
+    const failed = reason.kind === 'error'
+    // 去重:同一会话的完成/失败汇报 5 分钟内只推一次(多轮任务不重复刷屏)。
+    const now = Date.now()
+    const record = this.lastTurnReports.get(sessionId) ?? { done: 0, fail: 0 }
+    const last = failed ? record.fail : record.done
+    if (now - last < 5 * 60 * 1000) return
+    if (failed) record.fail = now
+    else record.done = now
+    this.lastTurnReports.set(sessionId, record)
+    const text = failed
       ? `❌ 任务失败(会话 ${sessionId})${message !== '' ? `\n${message.slice(0, 200)}` : ''}\n发送「打开 ${sessionId}」查看详情`
       : `✅ 任务完成(会话 ${sessionId})\n发送「打开 ${sessionId}」查看结果`
     if (this.push !== null) this.push(owner.channel, owner.userId, text, undefined, owner.pushTarget)
