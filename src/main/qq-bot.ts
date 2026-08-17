@@ -9,7 +9,6 @@
 
 import { app } from 'electron'
 import { createRequire } from 'node:module'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ConfigStore, QQBotConfig } from './config'
 import { ACTION_BUTTON_PREFIX, APPROVE_BUTTON_PREFIX, findEventGroupOpenid, findEventUserId, parseActionButtonData, parseApprovalButtonData, parseQuestionButtonData, QUESTION_BUTTON_PREFIX } from './qq-commands'
@@ -50,30 +49,7 @@ export class QQBotAdapter {
   constructor(
     private config: ConfigStore,
     private processor: RemoteCommandProcessor,
-  ) {
-    this.welcomedPath = join(app.getPath('userData'), 'qq-welcomed.json')
-    this.welcomed = this.loadWelcomed()
-  }
-
-  /** 从持久化文件加载"已欢迎"用户/群。 */
-  private loadWelcomed(): Set<string> {
-    try {
-      if (!existsSync(this.welcomedPath)) return new Set()
-      const raw = JSON.parse(readFileSync(this.welcomedPath, 'utf8').replace(/^\uFEFF/, '')) as unknown
-      const list = Array.isArray(raw) ? (raw as string[]).filter((s) => typeof s === 'string') : []
-      return new Set(list)
-    } catch {
-      return new Set()
-    }
-  }
-
-  private persistWelcomed(): void {
-    try {
-      writeFileSync(this.welcomedPath, JSON.stringify([...this.welcomed]))
-    } catch (error) {
-      console.error('[qq-bot] 保存已欢迎记录失败:', error)
-    }
-  }
+  ) {}
 
   getConfig(): QQBotConfig {
     return this.config.get().qq
