@@ -862,8 +862,10 @@ async function loadQQConfig(): Promise<void> {
     input('qq-autochat').checked = config.autoChat === true
     input('qq-report').checked = config.report === true
     const botConfig = await API.bot.getConfig()
-    ($id('bot-task-prompt') as HTMLTextAreaElement).value = botConfig.taskPrompt
-    ($id('bot-chat-prompt') as HTMLTextAreaElement).value = botConfig.chatPrompt
+    const taskPromptEl = $id('bot-task-prompt') as HTMLTextAreaElement
+    taskPromptEl.value = botConfig.taskPrompt
+    const chatPromptEl = $id('bot-chat-prompt') as HTMLTextAreaElement
+    chatPromptEl.value = botConfig.chatPrompt
     const started = await API.qq.status()
     $id('qq-status').textContent = started ? '✓ 已连接 QQ' : (config.enabled && config.appId ? '连接中/失败,查看日志' : '')
   } catch {
