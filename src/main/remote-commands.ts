@@ -722,7 +722,7 @@ export class RemoteCommandProcessor {
     if (ctx === undefined) return this.fullHelp()
     const client = this.harness.client()
     try {
-      const owner = this.sessionOwners.get(ctx.sessionId)
+      let owner = this.sessionOwners.get(ctx.sessionId)
       // 工作区会话 = 助手模式提示词;纯对话 = 朋友模式提示词。
       const mode = owner !== undefined && owner.kind === 'task' ? 'task' : 'chat'
       await client.rpc('session.prompt', {
@@ -732,7 +732,6 @@ export class RemoteCommandProcessor {
       })
       // 注册回复推送:回合结束后把 agent 的回复主动推给发起者(对话体验)。
       // 重启后恢复的对话会话可能没有归属记录,这里补登记。
-      let owner = this.sessionOwners.get(ctx.sessionId)
       if (owner === undefined) {
         owner = { ...this.ownerFromKey(key), kind: 'chat' }
         this.sessionOwners.set(ctx.sessionId, owner)
