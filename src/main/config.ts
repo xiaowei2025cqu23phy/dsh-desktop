@@ -232,6 +232,10 @@ export class ConfigStore {
       if (config.appearance.screensaver.path === null && typeof legacy.screensaverWallpaper === 'string') {
         config.appearance.screensaver.path = legacy.screensaverWallpaper
       }
+      // 兼容损坏的数组分区(旧 bug 把数组存成 {0:...} 对象)。
+      if (config.scheduledTasks !== null && typeof config.scheduledTasks === 'object' && !Array.isArray(config.scheduledTasks)) {
+        config.scheduledTasks = Object.values(config.scheduledTasks as Record<string, never>)
+      }
       return config
     } catch (error) {
       console.error('[config] 配置文件解析失败,使用默认值:', String(error))
@@ -258,9 +262,13 @@ export class ConfigStore {
     return this.config
   }
 
-  /** 合并指定分区后持久化。 */
+  /** 合并指定分区后持久化。数组分区(如 scheduledTasks)整体替换。 */
   update<K extends keyof AppConfig>(section: K, patch: Partial<AppConfig[K]>): AppConfig[K] {
-    this.config[section] = this.merge(this.config[section], patch)
+    if (Array.isArray(patch)) {
+      this.config[section] = patch as never
+    } else {
+      this.config[section] = this.merge(this.config[section], patch)
+    }
     this.save()
     return this.config[section]
   }

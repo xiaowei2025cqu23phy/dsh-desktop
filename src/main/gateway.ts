@@ -18,6 +18,7 @@ import { app, nativeImage } from 'electron'
 import type { ConfigStore } from './config'
 import type { EventHub } from './event-hub'
 import type { HarnessManager } from './harness'
+import { parseSchedDelay } from './qq-commands'
 import type { RemoteCommandProcessor } from './remote-commands'
 
 export interface RemoteConfig {
@@ -192,6 +193,10 @@ export class RemoteGateway {
       if (req.method === 'POST' && path === '/api/respond') {
         // 审批/提问应答:转发到 harness 的 /api/respond(带 token 认证)。
         await this.handleRespond(url, req, res)
+        return
+      }
+      if (req.method === 'GET' && path === '/api/tasks') {
+        this.serveTaskList(url, req, res)
         return
       }
       if (req.method === 'POST' && path === '/api/action') {
@@ -419,7 +424,34 @@ export class RemoteGateway {
       this.json(res, 200, { ok: true })
       return
     }
+    if (body.action === 'sched.add') {
+      const expr = typeof (body as { expr?: unknown }).expr === 'string' ? (body as { expr: string }).expr.trim() : ''
+      const description = typeof (body as { description?: unknown }).description === 'string' ? (body as { description: string }).description.trim() : ''
+      const delay = parseSchedDelay(expr)
+      if (delay === null || description === '') {
+        this.json(res, 400, { error: 'expr or description invalid(如:10分钟 / 每天9:00)' })
+        return
+      }
+      const result = this.commands?.addScheduled('pwa', 'desktop', delay, description)
+      this.json(res, 200, { ok: true, message: result })
+      return
+    }
+    if (body.action === 'sched.remove') {
+      const index = typeof (body as { index?: unknown }).index === 'number' ? (body as { index: number }).index : -1
+      const ok = this.commands?.removeScheduled(index) === true
+      this.json(res, ok ? 200 : 400, ok ? { ok: true } : { error: 'invalid index' })
+      return
+    }
     this.json(res, 403, { error: `action not allowed: ${String(body.action)}` })
+  }
+
+  /** 定时任务列表(PWA 查看)。 */
+  private serveTaskList(url: URL, req: IncomingMessage, res: ServerResponse): void {
+    if (!this.authorized(url, req)) {
+      this.json(res, 401, { error: 'unauthorized' })
+      return
+    }
+    this.json(res, 200, { ok: true, items: this.commands?.listScheduled() ?? [] })
   }
 
   /** 预设根目录及其直接子目录(手机端"新建工作区"的可选路径)。 */

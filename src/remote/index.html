@@ -148,6 +148,15 @@
           <label>手机壁纸(点击切换)</label>
           <div id="set-wallpapers" class="wallpaper-grid"><p class="empty">加载中…</p></div>
         </div>
+        <div class="field">
+          <label>定时任务</label>
+          <div class="field-row">
+            <input id="sched-expr" type="text" placeholder="表达式:10分钟 / 每天9:00" />
+            <input id="sched-desc" type="text" placeholder="任务描述" />
+          </div>
+          <button id="btn-sched-add" class="btn btn-block">⏰ 添加定时任务</button>
+          <div id="sched-list" class="value-text"></div>
+        </div>
         <label class="check-row">
           <input id="opt-temp-cache" type="checkbox" />
           临时会话仅缓存本机(不随历史保留)

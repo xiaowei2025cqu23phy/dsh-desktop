@@ -21,6 +21,8 @@ export type QQCommand =
   | { kind: 'sched'; action: 'add'; delay: SchedDelay; description: string }
   | { kind: 'sched'; action: 'list' }
   | { kind: 'sched'; action: 'remove'; index: number }
+  | { kind: 'ls'; path: string }
+  | { kind: 'cat'; path: string }
   | { kind: 'unknown'; text: string }
 
 /** 定时任务的调度表达(解析结果)。 */
@@ -126,6 +128,13 @@ export function parseCommand(content: string): QQCommand {
   const numberedSelect = /^#(\d+)\s+(选|选择|select)\s*(.*)$/.exec(content.trim())
   if (numberedSelect !== null) {
     return { kind: 'select', text: `#${numberedSelect[1]} ${numberedSelect[3].trim()}`.trim() }
+  }
+  // 目录浏览:目录 <路径> / 文件 <路径>
+  if (parts[0] === '目录' || parts[0] === 'ls' || parts[0] === '列目录') {
+    return { kind: 'ls', path: content.trim().slice(parts[0].length).trim() }
+  }
+  if (parts[0] === '文件' || parts[0] === 'cat' || parts[0] === '查看文件') {
+    return { kind: 'cat', path: content.trim().slice(parts[0].length).trim() }
   }
   return { kind: 'unknown', text: content.trim() }
 }

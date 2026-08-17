@@ -1041,6 +1041,58 @@
     })
   }
 
+  // ---- 定时任务 ----
+  function loadScheduled() {
+    var host = $('sched-list')
+    fetch(state.server + '/api/tasks?token=' + encodeURIComponent(state.token), { signal: AbortSignal.timeout(10000) })
+      .then(function (r) { return r.json() })
+      .then(function (data) {
+        var items = data.items || []
+        if (items.length === 0) {
+          host.innerHTML = '(暂无定时任务)'
+          return
+        }
+        host.innerHTML = ''
+        items.forEach(function (t, i) {
+          var row = document.createElement('div')
+          row.className = 'sched-row'
+          var info = document.createElement('span')
+          info.textContent = (i + 1) + '. ' + t.when + ' — ' + t.description
+          var del = document.createElement('button')
+          del.className = 'row-act'
+          del.textContent = '✕'
+          del.addEventListener('click', function () {
+            apiAction('sched.remove', { index: i }).then(function () {
+              S.toast('已取消定时任务', 'ok')
+              loadScheduled()
+            }).catch(function (err) { S.toast('取消失败:' + err.message, 'error') })
+          })
+          row.appendChild(info)
+          row.appendChild(del)
+          host.appendChild(row)
+        })
+      }).catch(function () {
+        host.innerHTML = '(加载失败)'
+      })
+  }
+
+  function addScheduled() {
+    var expr = $('sched-expr').value.trim()
+    var desc = $('sched-desc').value.trim()
+    if (expr === '' || desc === '') {
+      S.toast('请填写表达式和任务描述', 'error')
+      return
+    }
+    apiAction('sched.add', { expr: expr, description: desc }).then(function (data) {
+      S.toast(data.message || '已添加', 'ok')
+      $('sched-expr').value = ''
+      $('sched-desc').value = ''
+      loadScheduled()
+    }).catch(function (err) {
+      S.toast('添加失败:' + err.message, 'error')
+    })
+  }
+
   // ---- 连接流程 ----
   function connect() {
     var server = $('conn-server').value.trim().replace(/\/+$/, '')
@@ -1190,9 +1242,11 @@
         $('set-models').textContent = names.join('\n') || '(未配置)'
       }).catch(function () { $('set-models').textContent = '(未连接)' })
       loadWallpapers()
+      loadScheduled()
       openSheet($('view-settings'))
     })
     $('btn-settings-close').addEventListener('click', function () { closeSheet($('view-settings')) })
+    $('btn-sched-add').addEventListener('click', addScheduled)
     $('opt-temp-cache').addEventListener('change', function () {
       state.tempCache = $('opt-temp-cache').checked
       localStorage.setItem('dsh-temp-cache', state.tempCache ? '1' : '0')
