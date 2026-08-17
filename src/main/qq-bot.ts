@@ -201,16 +201,6 @@ export class QQBotAdapter {
     }
   }
 
-  /** 首次交互时向该用户/群补推指令集(连接时还没有登记对象的场景)。 */
-  private welcomeIfNew(userId: string, target: { scope: string; targetId: string } | undefined): void {
-    const bot = this.bot
-    if (bot === null) return
-    const key = target !== undefined ? `${target.scope}:${target.targetId}` : userId
-    if (this.welcomed.has(key)) return
-    this.welcomed.add(key)
-    void this.pushHelpTo(bot, target ?? this.userTargets.get(userId)?.target, this.processor.fullHelp())
-  }
-
   private async pushHelpTo(bot: QQBotLike, target: PushTarget | undefined, help: string): Promise<void> {
     if (target === undefined) return
     try {
