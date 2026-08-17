@@ -115,5 +115,16 @@ if (fsRoot) {
   check('越权根列表-403', r.status, 403)
 }
 
+// 6. 会话 cwd 白名单:越权 cwd 创建会话被拒(合法 cwd 不测,避免污染会话列表)
+const deniedCreate = await fetch(base + '/api/rpc', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+  body: JSON.stringify({ method: 'session.create', payload: { cwd: process.env.SystemRoot || 'C:/Windows' } }),
+}).then(async (res) => ({ status: res.status, body: await res.json() }))
+check('会话越权 cwd-403', deniedCreate.status, 403)
+check('会话越权 cwd-错误信息', typeof deniedCreate.body.error === 'string' && deniedCreate.body.error.indexOf('cwd not allowed') === 0, true)
+// 无 cwd 的 session.create(默认目录)不应被拦 —— 直接拒绝会污染 harness?不会创建,因为白名单校验只拦 cwd。
+// 这里只验证校验逻辑不误伤:不调用,避免创建真实会话。
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

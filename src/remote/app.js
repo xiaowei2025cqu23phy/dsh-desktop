@@ -16,8 +16,10 @@
     msgLog: [],           // [{ kind: 'user'|'assistant'|'tool'|'system', text }]
     es: null,
     workspaces: [],       // [{ workspaceId, path, title, sessions: [] }]
+    presetRoots: [],      // [{ path, name }] 预设工作区根(可直接作为工作区)
     currentWsId: null,
     currentWsPath: null,
+    currentWsRoot: null,  // 当前选中的预设根(作为工作区使用)
     running: false,
     tempCache: localStorage.getItem('dsh-temp-cache') === '1',
     approvals: {},        // sessionId -> [{ rpcId, sessionId, approvalId, toolName, reason }]
@@ -544,6 +546,12 @@
     state.sessionId = sessionId
     state.currentWsPath = cwd || state.currentWsPath
     state.currentWsId = findWorkspaceId(state.currentWsPath)
+    state.currentWsRoot = null
+    if (state.currentWsId === null) {
+      for (var i = 0; i < state.presetRoots.length; i++) {
+        if (state.presetRoots[i].path === state.currentWsPath) state.currentWsRoot = state.currentWsPath
+      }
+    }
     clearChat()
     $('chat-title').textContent = '会话'
     setChatStatus('加载中…', '')
@@ -580,6 +588,7 @@
   function newSession() {
     var payload = {}
     if (state.currentWsId) payload.workspaceId = state.currentWsId
+    else if (state.currentWsRoot) payload.cwd = state.currentWsRoot
     apiRpc('session.create', payload).then(function (created) {
       openSession(created.sessionId, state.currentWsPath)
       loadSidebar()
@@ -638,11 +647,14 @@
       apiRpc('workspace.list', {}),
       apiRpc('session.list', {}),
       fetch(state.server + '/api/info?token=' + encodeURIComponent(state.token), { signal: AbortSignal.timeout(10000) }).then(function (r) { return r.json() }).catch(function () { return {} }),
+      apiAction('fs.list', { path: '' }).then(function (d) { return d.roots || [] }).catch(function () { return [] }),
     ]).then(function (results) {
       var wsData = results[0]
       var sessData = results[1]
       var info = results[2] || {}
       var workspaces = wsData.items || []
+      var presetRoots = results[3].filter(function (r) { return r.isPreset })
+      state.presetRoots = presetRoots
       // 隐藏:子代理会话(origin)、未发生的空会话(blank)、已归档会话。
       var archived = new Set(wsData.archivedSessionIds || [])
       var sessions = (sessData.items || []).filter(function (s) {
@@ -658,15 +670,19 @@
         ws.sessions = []
         byPath[ws.path] = ws
       })
+      presetRoots.forEach(function (root) { root.sessions = [] })
+      var rootByPath = {}
+      presetRoots.forEach(function (root) { rootByPath[root.path] = root })
       var unmatched = []
       rest.forEach(function (s) {
         var ws = byPath[s.cwd]
         if (ws) ws.sessions.push(s)
+        else if (rootByPath[s.cwd]) rootByPath[s.cwd].sessions.push(s)
         else unmatched.push(s)
       })
       state.workspaces = workspaces
       state.currentWsId = findWorkspaceId(state.currentWsPath) || state.currentWsId
-      renderSidebar(unmatched, botChats)
+      renderSidebar(unmatched, botChats, presetRoots)
     }).catch(function (err) {
       list.innerHTML = '<p class="empty">加载失败:' + S.escapeHtml(err.message) + '</p>'
     })
@@ -676,7 +692,7 @@
     return (s.projections && s.projections.values && s.projections.values.title) || '新会话'
   }
 
-  function renderSidebar(unmatched, botChats) {
+  function renderSidebar(unmatched, botChats, presetRoots) {
     var list = $('workspace-list')
     list.innerHTML = ''
     var frag = document.createDocumentFragment()
@@ -690,13 +706,121 @@
     state.workspaces.forEach(function (ws, i) {
       frag.appendChild(wsGroupElement(ws.title || ws.path, ws, ws.sessions, unmatched.length === 0 && i === 0))
     })
-    if (state.workspaces.length === 0 && unmatched.length === 0) {
+    // 预设工作区根本身也可作为工作区(新建会话/任务直接落在根目录)。
+    if (presetRoots && presetRoots.length > 0) {
+      presetRoots.forEach(function (root, i) {
+        frag.appendChild(presetRootGroupElement(root, unmatched.length === 0 && state.workspaces.length === 0 && i === 0))
+      })
+    }
+    if (state.workspaces.length === 0 && unmatched.length === 0 && (!presetRoots || presetRoots.length === 0)) {
       var empty = document.createElement('p')
       empty.className = 'empty'
       empty.textContent = '还没有工作区,点上方「新建工作区」添加'
       frag.appendChild(empty)
     }
     list.appendChild(frag)
+  }
+
+  function sessionRowElement(s, cwd) {
+    var row = document.createElement('div')
+    row.className = 'session-row' + (s.sessionId === state.sessionId ? ' current' : '')
+    row._sid = s.sessionId
+    var t = document.createElement('span')
+    t.className = 'session-title' + (s.blank ? ' blank' : '')
+    t.textContent = sessionTitle(s)
+    row.appendChild(t)
+    if (s.running) {
+      var b = document.createElement('span')
+      b.className = 'session-badge'
+      b.textContent = '运行中'
+      row.appendChild(b)
+    }
+    var archive = document.createElement('button')
+    archive.className = 'row-act'
+    archive.textContent = '🗄'
+    archive.title = '归档会话'
+    archive.addEventListener('click', function (event) {
+      event.stopPropagation()
+      archiveSession(s.sessionId)
+    })
+    row.appendChild(archive)
+    row.addEventListener('click', function () { openSession(s.sessionId, s.cwd || cwd) })
+    return row
+  }
+
+  /** 预设工作区根组:根本身作为工作区使用(新建会话/浏览/移除)。 */
+  function presetRootGroupElement(root, openDefault) {
+    var group = document.createElement('div')
+    group.className = 'ws-group'
+
+    var head = document.createElement('div')
+    head.className = 'ws-item' + (openDefault ? ' open' : '')
+    var title = document.createElement('span')
+    title.className = 'ws-name'
+    title.textContent = '📁 ' + root.name
+    var count = document.createElement('span')
+    count.className = 'ws-count'
+    count.textContent = String((root.sessions || []).length)
+    var arrow = document.createElement('span')
+    arrow.className = 'ws-arrow'
+    arrow.textContent = '›'
+    head.appendChild(title)
+    head.appendChild(count)
+    head.appendChild(arrow)
+    var browse = document.createElement('button')
+    browse.className = 'row-act'
+    browse.textContent = '📂'
+    browse.title = '浏览文件夹'
+    browse.addEventListener('click', function (event) {
+      event.stopPropagation()
+      closeSidebar()
+      openFsBrowser(root.path, null)
+    })
+    head.appendChild(browse)
+    var del = document.createElement('button')
+    del.className = 'row-act'
+    del.textContent = '✕'
+    del.title = '移除预设根(不删除文件夹)'
+    del.addEventListener('click', function (event) {
+      event.stopPropagation()
+      apiAction('fs.removeRoot', { path: root.path }).then(function () {
+        S.toast('已移除预设根', 'ok')
+        loadSidebar()
+      }).catch(function (err) { S.toast('移除失败:' + err.message, 'error') })
+    })
+    head.appendChild(del)
+
+    var body = document.createElement('div')
+    body.className = 'ws-body' + (openDefault ? ' open' : '')
+    ;(root.sessions || []).forEach(function (s) {
+      body.appendChild(sessionRowElement(s, root.path))
+    })
+    if (!root.sessions || root.sessions.length === 0) {
+      var empty = document.createElement('p')
+      empty.className = 'empty'
+      empty.textContent = '暂无会话'
+      body.appendChild(empty)
+    }
+    var newBtn = document.createElement('button')
+    newBtn.className = 'btn btn-block'
+    newBtn.textContent = '＋ 在此新建会话'
+    newBtn.title = '以该目录为工作目录新建会话'
+    newBtn.addEventListener('click', function () {
+      state.currentWsId = null
+      state.currentWsRoot = root.path
+      state.currentWsPath = root.path
+      closeSidebar()
+      newSession()
+    })
+    body.appendChild(newBtn)
+
+    head.addEventListener('click', function () {
+      var open = head.classList.toggle('open')
+      body.classList.toggle('open', open)
+    })
+    group.appendChild(head)
+    group.appendChild(body)
+    return group
   }
 
   function wsGroupElement(name, ws, sessions, openDefault) {
@@ -748,30 +872,7 @@
       body.appendChild(empty)
     } else {
       sessions.forEach(function (s) {
-        var row = document.createElement('div')
-        row.className = 'session-row' + (s.sessionId === state.sessionId ? ' current' : '')
-        row._sid = s.sessionId
-        var t = document.createElement('span')
-        t.className = 'session-title' + (s.blank ? ' blank' : '')
-        t.textContent = sessionTitle(s)
-        row.appendChild(t)
-        if (s.running) {
-          var b = document.createElement('span')
-          b.className = 'session-badge'
-          b.textContent = '运行中'
-          row.appendChild(b)
-        }
-        var archive = document.createElement('button')
-        archive.className = 'row-act'
-        archive.textContent = '🗄'
-        archive.title = '归档会话'
-        archive.addEventListener('click', function (event) {
-          event.stopPropagation()
-          archiveSession(s.sessionId)
-        })
-        row.appendChild(archive)
-        row.addEventListener('click', function () { openSession(s.sessionId, s.cwd) })
-        body.appendChild(row)
+        body.appendChild(sessionRowElement(s, ws ? ws.path : undefined))
       })
     }
 
@@ -948,6 +1049,16 @@
         if (selectedId && item.workspaceId === selectedId) o.selected = true
         select.appendChild(o)
       })
+      // 预设工作区根本身也可作为工作区(任务落在根目录)。
+      return apiAction('fs.list', { path: '' }).then(function (d) {
+        (d.roots || []).filter(function (r) { return r.isPreset }).forEach(function (root) {
+          var o = document.createElement('option')
+          o.value = 'cwd:' + root.path
+          o.textContent = '📁 预设根:' + root.name
+          if (state.currentWsRoot === root.path) o.selected = true
+          select.appendChild(o)
+        })
+      }).catch(function () { /* 预设根列表不可用时忽略 */ })
     })
   }
 
@@ -980,13 +1091,14 @@
       S.toast('请填写任务描述', 'error')
       return
     }
-    var workspaceId = $('task-workspace').value
+    var workspaceValue = $('task-workspace').value
     var modelValue = $('task-model').value
     var statusEl = $('task-status')
     statusEl.textContent = '正在创建会话…'
     statusEl.className = 'conn-status'
     var payload = {}
-    if (workspaceId !== '') payload.workspaceId = workspaceId
+    if (workspaceValue.indexOf('cwd:') === 0) payload.cwd = workspaceValue.slice(4)
+    else if (workspaceValue !== '') payload.workspaceId = workspaceValue
     apiRpc('session.create', payload).then(function (created) {
       var sessionId = created.sessionId
       if (modelValue !== '') {
@@ -1005,7 +1117,7 @@
       statusEl.textContent = '任务已启动 ✓'
       statusEl.className = 'conn-status ok'
       closeSheet($('view-task'))
-      openSession(sessionId)
+      openSession(sessionId, payload.cwd || undefined)
       loadSidebar()
     }).catch(function (err) {
       statusEl.textContent = '启动失败:' + err.message
