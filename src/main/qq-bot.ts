@@ -35,6 +35,9 @@ interface QQBotLike {
   sendText: (target: unknown, text: string) => Promise<unknown>
   sendMarkdown: (target: unknown, content: string, opts?: { keyboard?: unknown }) => Promise<unknown>
   acknowledgeInteraction: (interactionId: string, code?: number, data?: unknown) => Promise<unknown>
+  messageApi: {
+    sendC2CStreamMessage: (creds: { appId: string; clientSecret: string }, openid: string, req: unknown) => Promise<unknown>
+  }
 }
 
 export class QQBotAdapter {
@@ -42,6 +45,8 @@ export class QQBotAdapter {
   private started = false
   /** userId(openid)→ 主动推送目标(登记自最近一次交互)。 */
   private userTargets = new Map<string, { target: PushTarget; ts: number }>()
+  /** 流式对话会话(userId → 状态;QQ 私聊打字机效果)。 */
+  private streamSessions = new Map<string, { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; seq: number }>()
   /** 扫码登录流程状态。 */
   private onboardAbort: AbortController | null = null
   private onboardProgress: OnboardProgress | null = null
@@ -184,6 +189,82 @@ export class QQBotAdapter {
   }
 
   // ---- 内部 ----
+
+  // ---- 流式对话输出(QQ 私聊打字机) ----
+
+  /** 回合文本增量:累积并按节流冲刷到 stream_messages(is_wakeup 主动流式)。 */
+  onChatDelta(channel: string, userId: string, delta: string, target?: { scope: string; targetId: string }): void {
+    if (channel !== 'qq' || target === undefined || target.scope !== 'c2c') return
+    const bot = this.bot
+    if (bot === null) return
+    let session = this.streamSessions.get(userId)
+    if (session === undefined) {
+      session = { streamMsgId: '', index: 0, buffer: '', timer: null, seq: 1 }
+      this.streamSessions.set(userId, session)
+    }
+    session.buffer += delta
+    if (session.timer === null && session.buffer.length >= 12) {
+      void this.flushStream(bot, userId, target, session, false)
+    } else if (session.timer === null) {
+      session.timer = setTimeout(() => {
+        session.timer = null
+        void this.flushStream(bot, userId, target, session, false)
+      }, 350)
+    }
+  }
+
+  /** 回合结束:冲刷剩余内容并发送结束分片(input_state=10)。 */
+  onChatEnd(channel: string, userId: string, target?: { scope: string; targetId: string }): void {
+    if (channel !== 'qq' || target === undefined || target.scope !== 'c2c') return
+    const bot = this.bot
+    if (bot === null) return
+    const session = this.streamSessions.get(userId)
+    if (session === undefined) return
+    if (session.timer !== null) {
+      clearTimeout(session.timer)
+      session.timer = null
+    }
+    void (async () => {
+      if (session.buffer !== '') await this.flushStream(bot, userId, target, session, false)
+      await this.flushStream(bot, userId, target, session, true)
+      this.streamSessions.delete(userId)
+    })()
+  }
+
+  private async flushStream(
+    bot: QQBotLike,
+    userId: string,
+    target: { scope: string; targetId: string },
+    session: { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; seq: number },
+    done: boolean,
+  ): Promise<void> {
+    const config = this.getConfig()
+    const creds = { appId: config.appId.trim(), clientSecret: config.appSecret.trim() }
+    const body: Record<string, unknown> = {
+      input_mode: 'replace',
+      input_state: done ? 10 : 1,
+      index: session.index,
+      content_type: 'text',
+      content_raw: session.buffer,
+      is_wakeup: true,
+      msg_seq: session.seq++,
+    }
+    if (session.streamMsgId !== '') body.stream_msg_id = session.streamMsgId
+    try {
+      const response = await bot.messageApi.sendC2CStreamMessage(creds, target.targetId, body) as { stream_msg_id?: unknown }
+      session.index += 1
+      if (typeof response.stream_msg_id === 'string') session.streamMsgId = response.stream_msg_id
+      if (done) session.buffer = ''
+    } catch (error) {
+      console.error('[qq-bot] 流式发送失败(回合结束整段兜底):', error)
+      this.streamSessions.delete(userId)
+      // 兜底:整段文本用普通消息发送。
+      if (session.buffer !== '') {
+        await bot.sendText(target, session.buffer.slice(0, MAX_MESSAGE_LENGTH)).catch(() => {})
+      }
+    }
+  }
+
 
   /** 主动推送(审批/提问带内联键盘按钮;超窗或失败静默降级,回复提醒兜底)。
    *  target 提供时直接推送到该目标;群场景优先推群(需机器人开通
