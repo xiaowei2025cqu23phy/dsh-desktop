@@ -43,9 +43,6 @@ export class QQBotAdapter {
   private started = false
   /** userId(openid)→ 主动推送目标(登记自最近一次交互)。 */
   private userTargets = new Map<string, { target: PushTarget; ts: number }>()
-  /** 已推送过指令集的用户/群(持久化:第一次连接才发,重启后不再重复)。 */
-  private welcomed: Set<string>
-  private readonly welcomedPath: string
   /** 扫码登录流程状态。 */
   private onboardAbort: AbortController | null = null
   private onboardProgress: OnboardProgress | null = null
@@ -177,8 +174,6 @@ export class QQBotAdapter {
       bot.on('ready', () => {
         this.started = true
         console.log('[qq-bot] QQ 机器人已连接')
-        // 连接成功后,向已交互过的用户/群推送指令集(断线重连场景)。
-        this.broadcastHelp()
       })
       bot.on('message', (_ctx, msg) => {
         void this.handleMessage(msg).catch((error) => {
@@ -213,34 +208,6 @@ export class QQBotAdapter {
   }
 
   // ---- 内部 ----
-
-  /** 连接成功后向已交互过的用户/群推送指令集(仅第一次连接;已持久化)。 */
-  private broadcastHelp(): void {
-    const bot = this.bot
-    if (bot === null) return
-    const help = this.processor.fullHelp()
-    let changed = false
-    for (const [key, entry] of this.userTargets) {
-      if (this.welcomed.has(key)) continue
-      this.welcomed.add(key)
-      changed = true
-      void this.pushHelpTo(bot, entry.target, help)
-    }
-    if (changed) this.persistWelcomed()
-  }
-
-  private async pushHelpTo(bot: QQBotLike, target: PushTarget | undefined, help: string): Promise<void> {
-    if (target === undefined) return
-    try {
-      const lines = ['🤖 DeepSeek Harness Desktop 机器人已连接', '━━━━━━━━━━━━━━━━', '', ...help.split('\n')]
-      const text = lines.join('\n')
-      for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
-        await bot.sendText(target, text.slice(index, index + MAX_MESSAGE_LENGTH))
-      }
-    } catch (error) {
-      console.error('[qq-bot] 指令集推送失败:', error)
-    }
-  }
 
   /** 主动推送(审批/提问带内联键盘按钮;超窗或失败静默降级,回复提醒兜底)。
    *  target 提供时直接推送到该目标;群场景优先推群(需机器人开通

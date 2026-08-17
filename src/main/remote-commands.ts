@@ -315,11 +315,18 @@ export class RemoteCommandProcessor {
   private async cmdSessions(): Promise<string> {
     const client = this.harness.client()
     try {
-      const list = await client.rpc<{ items: Array<{ sessionId: string; title?: string | null; running?: boolean; blank?: boolean }> }>('session.list', {}, 20000)
-      const items = (list.items ?? []).slice(0, 5)
+      const [list, ws] = await Promise.all([
+        client.rpc<{ items: Array<{ sessionId: string; title?: string | null; running?: boolean; blank?: boolean }> }>('session.list', {}, 20000),
+        client.rpc<{ archivedSessionIds?: string[] }>('workspace.list', {}, 20000),
+      ])
+      const archived = new Set(ws.archivedSessionIds ?? [])
+      // 隐藏:未发生的空会话(blank)与已归档会话。
+      const items = (list.items ?? [])
+        .filter((s) => !s.blank && !archived.has(s.sessionId))
+        .slice(0, 5)
       if (items.length === 0) return '暂无会话'
       return items.map((s) =>
-        `${s.running ? '▶' : ' '} ${(s.title ?? s.sessionId).slice(0, 30)}${s.blank ? ' (空)' : ''}\n  ${s.sessionId}`,
+        `${s.running ? '▶' : ' '} ${(s.title ?? s.sessionId).slice(0, 30)}\n  ${s.sessionId}`,
       ).join('\n')
     } catch (error) {
       return `查询失败:${error instanceof Error ? error.message : String(error)}`
