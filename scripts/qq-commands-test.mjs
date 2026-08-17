@@ -6,7 +6,7 @@
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { parseCommand, parseTaskOptions, parseApprovalButtonData, findEventUserId, findEventGroupOpenid, parseQuestionButtonData } = require('../dist/main/qq-commands.js')
+const { parseCommand, parseTaskOptions, parseApprovalButtonData, findEventUserId, findEventGroupOpenid, parseQuestionButtonData, parseActionButtonData } = require('../dist/main/qq-commands.js')
 
 let failures = 0
 function check(name, actual, expected) {
@@ -112,6 +112,12 @@ check('提问按钮-解析', parseQuestionButtonData('dsh-question|session-a|q1|
 check('提问按钮-嵌套', parseQuestionButtonData({ resolved: { button_data: 'dsh-question|s1|q2|0' } }), { sessionId: 's1', questionId: 'q2', optionIndex: 0 })
 check('提问按钮-非法索引', parseQuestionButtonData('dsh-question|s1|q1|x'), null)
 check('提问按钮-其他前缀', parseQuestionButtonData('dsh-approve|s1|a1|allowed-once'), null)
+check('操作按钮-停止', parseActionButtonData('dsh-action|stop|session-a'), { action: 'stop', sessionId: 'session-a' })
+check('操作按钮-进展', parseActionButtonData('dsh-action|progress|session-a'), { action: 'progress', sessionId: 'session-a' })
+check('操作按钮-打开', parseActionButtonData('dsh-action|open|session-a'), { action: 'open', sessionId: 'session-a' })
+check('操作按钮-嵌套', parseActionButtonData({ resolved: { button_data: 'dsh-action|stop|s1' } }), { action: 'stop', sessionId: 's1' })
+check('操作按钮-非法动作', parseActionButtonData('dsh-action|delete|s1'), null)
+check('操作按钮-其他前缀', parseActionButtonData('dsh-approve|s1|a1|rejected'), null)
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

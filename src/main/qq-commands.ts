@@ -88,6 +88,44 @@ export const APPROVE_BUTTON_PREFIX = 'dsh-approve|'
 /** 提问(选择题)按钮 data 前缀。 */
 export const QUESTION_BUTTON_PREFIX = 'dsh-question|'
 
+/** 任务操作按钮 data 前缀(停止/进展/打开)。 */
+export const ACTION_BUTTON_PREFIX = 'dsh-action|'
+
+/** 任务操作按钮点击的解析结果。 */
+export interface ActionButtonData {
+  action: 'stop' | 'progress' | 'open'
+  sessionId: string
+}
+
+/**
+ * 在 INTERACTION_CREATE 的 data 里递归查找任务操作按钮 data 并解析。
+ * 格式:dsh-action|<stop|progress|open>|<sessionId>
+ */
+export function parseActionButtonData(data: unknown): ActionButtonData | null {
+  if (typeof data === 'string') {
+    if (!data.startsWith(ACTION_BUTTON_PREFIX)) return null
+    const parts = data.split('|')
+    if (parts.length !== 3 || parts[0] !== 'dsh-action') return null
+    const action = parts[1]
+    if (action !== 'stop' && action !== 'progress' && action !== 'open') return null
+    return { action, sessionId: parts[2] }
+  }
+  if (data === null || typeof data !== 'object') return null
+  const record = data as Record<string, unknown>
+  if (record.resolved !== null && typeof record.resolved === 'object') {
+    const resolved = record.resolved as Record<string, unknown>
+    if (typeof resolved.button_data === 'string') {
+      const parsed = parseActionButtonData(resolved.button_data)
+      if (parsed !== null) return parsed
+    }
+  }
+  for (const value of Object.values(record)) {
+    const found = parseActionButtonData(value)
+    if (found !== null) return found
+  }
+  return null
+}
+
 /** 提问键盘按钮点击的解析结果。 */
 export interface QuestionButtonData {
   sessionId: string

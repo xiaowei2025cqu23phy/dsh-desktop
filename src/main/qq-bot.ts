@@ -11,7 +11,7 @@ import { app } from 'electron'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { ConfigStore, QQBotConfig } from './config'
-import { QUESTION_BUTTON_PREFIX, APPROVE_BUTTON_PREFIX, findEventGroupOpenid, findEventUserId, parseApprovalButtonData, parseQuestionButtonData } from './qq-commands'
+import { ACTION_BUTTON_PREFIX, APPROVE_BUTTON_PREFIX, findEventGroupOpenid, findEventUserId, parseActionButtonData, parseApprovalButtonData, parseQuestionButtonData, QUESTION_BUTTON_PREFIX } from './qq-commands'
 import { startOnboard, type OnboardProgress } from './qq-onboard'
 import type { RemoteCommandProcessor } from './remote-commands'
 
@@ -280,7 +280,8 @@ export class QQBotAdapter {
     if (interactionId === '') return
     const approval = parseApprovalButtonData(raw.data)
     const question = parseQuestionButtonData(raw.data)
-    if (approval === null && question === null) {
+    const action = parseActionButtonData(raw.data)
+    if (approval === null && question === null && action === null) {
       await bot.acknowledgeInteraction(interactionId, 1, {}).catch(() => {})
       return
     }
@@ -294,8 +295,10 @@ export class QQBotAdapter {
     let result: string
     if (approval !== null) {
       result = await this.processor.respondApproval('qq', userId, approval.sessionId, approval.approvalId, approval.decision)
+    } else if (question !== null) {
+      result = await this.processor.respondQuestion('qq', userId, question.sessionId, question.questionId, question.optionIndex)
     } else {
-      result = await this.processor.respondQuestion('qq', userId, question!.sessionId, question!.questionId, question!.optionIndex)
+      result = await this.processor.handleButtonAction('qq', userId, action!.sessionId, action!.action)
     }
     await bot.acknowledgeInteraction(interactionId, 0, {}).catch(() => {})
     // 应答结果回发:群按钮点击回发群里,私聊点击回发私聊;都定位不到时用登记回退。
@@ -325,6 +328,14 @@ export class QQBotAdapter {
     this.registerPushTarget(userId, record.replyTarget)
     const reply = await this.processor.handleText('qq', userId, content, this.pushTargetOf(record.replyTarget))
     await this.reply(bot, record.replyTarget, reply)
+    // 任务启动回复附带操作按钮(停止/进展/打开),像 PWA 一样一键操作。
+    const sessionMatch = /任务已启动 ✓\n会话: (session-[0-9a-f-]+)/.exec(reply)
+    if (sessionMatch !== null) {
+      const target = this.pushTargetOf(record.replyTarget) ?? this.userTargets.get(userId)?.target
+      if (target !== undefined) {
+        await bot.sendMarkdown(target, '⚡ 任务已启动,选择操作', { keyboard: buildActionKeyboard(sessionMatch[1]) }).catch(() => {})
+      }
+    }
   }
 
   /** 从 replyTarget 提取主动推送目标(群=群 id,私聊=用户 openid;去掉 msgId)。 */
@@ -422,4 +433,30 @@ function buildQuestionKeyboard(sessionId: string, question: { id: string; questi
     group_id: 'dsh-question',
   }))
   return { content: { rows: [{ buttons }] } }
+}
+
+/** 任务操作内联键盘(停止/进展/打开)。 */
+function buildActionKeyboard(sessionId: string): unknown {
+  const btn = (id: string, label: string, visited: string, style: number, action: 'stop' | 'progress' | 'open'): unknown => ({
+    id,
+    render_data: { label, visited_label: visited, style },
+    action: {
+      type: 1,
+      data: `${ACTION_BUTTON_PREFIX}${action}|${sessionId}`,
+      permission: { type: 2 },
+      click_limit: 1,
+    },
+    group_id: 'dsh-action',
+  })
+  return {
+    content: {
+      rows: [{
+        buttons: [
+          btn('stop', '⏹ 停止', '已停止', 0, 'stop'),
+          btn('progress', '📋 进展', '已查询', 1, 'progress'),
+          btn('open', '📖 打开', '已打开', 1, 'open'),
+        ],
+      }],
+    },
+  }
 }
