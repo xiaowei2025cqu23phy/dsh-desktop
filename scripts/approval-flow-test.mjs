@@ -159,7 +159,7 @@ function makeHarness(log) {
   check('裸进入-纯对话', entered.startsWith('已进入对话模式 ✓(纯对话'), true)
   check('裸进入-无工作区参数', log.some(([kind, method, payload]) => kind === 'rpc' && method === 'session.create' && JSON.stringify(payload) === '{}'), true)
   const reply = await processor.handleText('telegram', '7', '你好')
-  check('纯对话发消息', reply.startsWith('✓ 已发送'), true)
+  check('纯对话发消息-静默', reply, '')
 }
 
 // ---- 默认对话模式(autoChat) ----
@@ -169,10 +169,10 @@ function makeHarness(log) {
   processor.setAutoChat('telegram', true)
   const first = await processor.handleText('telegram', '8', '你好呀')
   check('autoChat-自动进入纯对话', first.includes('已进入对话模式'), true)
-  check('autoChat-消息已发送', first.includes('✓ 已发送'), true)
+  check('autoChat-首条仅进入提示', first.includes('✓ 已发送'), false)
   const second = await processor.handleText('telegram', '8', '再聊一句')
   check('autoChat-复用会话不重复进入', second.includes('已进入对话模式'), false)
-  check('autoChat-第二句直接发送', second.startsWith('✓ 已发送'), true)
+  check('autoChat-第二句静默', second, '')
   // 指令仍优先于对话
   const cmd = await processor.handleText('telegram', '8', '状态')
   check('autoChat-指令优先', cmd.includes('harness:'), true)
@@ -349,7 +349,7 @@ function makeHarness(log) {
   // 对话会话持久化:新实例恢复同一会话
   const processor2 = new RemoteCommandProcessor(makeHarness([]), fakeConfig)
   const reply2 = await processor2.handleText('telegram', '42', '继续聊', undefined)
-  check('持久化-恢复对话会话', reply2.includes('✓ 已发送'), true)
+  check('持久化-恢复对话会话', reply2, '')
   // 对话会话的 turn/end 不推送"任务完成"汇报
   const pushes3 = []
   const processor3 = new RemoteCommandProcessor(makeHarness([]))

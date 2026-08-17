@@ -621,7 +621,8 @@ export class RemoteCommandProcessor {
           ts: Date.now(),
         })
       }
-      return `✓ 已发送到「${ctx.label}」(会话 ${ctx.sessionId})\n发「进展 ${ctx.sessionId}」查看进度,「退出」结束对话。`
+      // 对话模式静默:不回复"已发送"确认(避免噪音;真实回复回合结束自动推送)。
+      return ''
     } catch (error) {
       return `发送失败:${error instanceof Error ? error.message : String(error)}`
     }
@@ -746,7 +747,8 @@ export class RemoteCommandProcessor {
           if (text.trim() !== '') { reply = text; break }
         }
       }
-      if (reply === '') reply = '(对方没有回复内容)'
+      // 拉不到内容就不打扰用户(可发「进展」或手机端查看)。
+      if (reply === '') return
       this.push!(pending.channel, pending.userId, `💬 ${reply.slice(0, 1500)}`, undefined, pending.pushTarget)
     }).catch(() => {
       // 拉取失败:静默,用户可发「进展」查看。
