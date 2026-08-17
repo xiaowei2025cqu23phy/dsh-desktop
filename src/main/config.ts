@@ -132,6 +132,16 @@ export interface AppConfig {
   /** 机器人对话模式持久化:channel:userId → 固定对话会话(重启后继续同一会话)。 */
   chatSessions: Record<string, { sessionId: string; label: string }>
   bot: BotPromptConfig
+  /** 定时任务(桌面端调度,重启保留)。 */
+  scheduledTasks: Array<{
+    id: string
+    channel: string
+    userId: string
+    pushTarget?: { scope: string; targetId: string } | null
+    description: string
+    delay: { kind: 'once'; delayMs: number } | { kind: 'daily'; hours: number; minutes: number }
+    nextAt: number
+  }>
 }
 
 const DEFAULTS: AppConfig = {
@@ -188,6 +198,7 @@ const DEFAULTS: AppConfig = {
   },
   window: { width: 1280, height: 800 },
   chatSessions: {},
+  scheduledTasks: [],
   bot: {
     taskPrompt: '你是一个专业、高效的 AI 助手。执行任务时请条理清晰、直接给出可用的结果,必要时说明关键步骤。',
     chatPrompt: '你现在是用户的朋友。请用轻松、亲切、口语化的语气聊天,像朋友一样自然,不要过于正式。',

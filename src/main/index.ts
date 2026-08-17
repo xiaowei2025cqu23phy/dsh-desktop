@@ -146,6 +146,13 @@ if (!gotLock) {
       }, 20000)
     }
 
+    // 定时任务调度(每 30 秒检查一次到期任务)。
+    setInterval(() => {
+      void commands.tickScheduled().catch((error) => {
+        console.error('[sched] 定时任务执行失败:', error)
+      })
+    }, 30000)
+
     let quitCleanupDone = false
     app.on('before-quit', (event) => {
       console.log('[main] before-quit')

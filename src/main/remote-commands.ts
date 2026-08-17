@@ -298,6 +298,13 @@ export class RemoteCommandProcessor {
       '多问题批次:#<题号> 选 <编号>',
       '  例:#2 选 1',
       '',
+      '⏰ 定时任务',
+      '定时 <表达式> <描述> — 到点自动执行(助手模式)',
+      '  例:定时 10分钟 检查更新',
+      '  例:定时 每天9:00 写日报',
+      '定时列表 — 查看已添加的定时任务',
+      '取消定时 <编号> — 取消指定定时任务',
+      '',
       '💡 模式提示词:任务=专业助手,对话=朋友(桌面端可自定义,留空不注入)',
       '💡 典型流程:先「工作区」看列表 → 「进入 qqbot」→ 连续对话 → 「退出」',
     ].join('\n')
@@ -321,6 +328,10 @@ export class RemoteCommandProcessor {
         return this.cmdModels()
       case 'model':
         return this.cmdModelSwitch(key, command.query)
+      case 'sched':
+        if (command.action === 'list') return this.cmdSchedList()
+        if (command.action === 'remove') return this.cmdSchedRemove(command.index)
+        return this.cmdSchedAdd(key, command.delay, command.description, pushTarget)
       case 'cancel':
         return this.cmdCancel(command.sessionId)
       case 'open':
@@ -483,6 +494,85 @@ export class RemoteCommandProcessor {
     if (action === 'stop') return this.cmdCancel(sessionId)
     if (action === 'progress') return this.cmdProgress(sessionId)
     return this.cmdOpen(sessionId)
+  }
+
+  // ---- 定时任务 ----
+
+  private async cmdSchedList(): Promise<string> {
+    const tasks = this.config?.get().scheduledTasks ?? []
+    if (tasks.length === 0) return '暂无定时任务。添加:定时 <表达式> <描述>(如:定时 10分钟 检查更新 / 定时 每天9:00 写日报)'
+    return tasks.map((t, i) => {
+      const when = t.delay.kind === 'once' ? `一次性 ${Math.round(t.delay.delayMs / 60000)} 分钟后` : `每天 ${String(t.delay.hours).padStart(2, '0')}:${String(t.delay.minutes).padStart(2, '0')}`
+      return `${i + 1}. ${when} — ${t.description.slice(0, 40)}`
+    }).join('\n')
+  }
+
+  private async cmdSchedRemove(index: number): Promise<string> {
+    const tasks = this.config?.get().scheduledTasks ?? []
+    if (index < 0 || index >= tasks.length) return '编号无效,发「定时列表」查看'
+    const removed = tasks[index]
+    this.saveTasks(tasks.filter((_, i) => i !== index))
+    return `已取消定时任务:${removed.description.slice(0, 40)}`
+  }
+
+  private async cmdSchedAdd(
+    key: string,
+    delay: { kind: 'once'; delayMs: number } | { kind: 'daily'; hours: number; minutes: number },
+    description: string,
+    pushTarget?: { scope: string; targetId: string },
+  ): Promise<string> {
+    if (description === '') return '用法:定时 <表达式> <描述>(如:定时 10分钟 检查更新;定时 每天9:00 写日报)'
+    const owner = this.ownerFromKey(key)
+    const tasks = this.config?.get().scheduledTasks ?? []
+    const task = {
+      id: `sched-${Date.now()}`,
+      channel: owner.channel,
+      userId: owner.userId,
+      pushTarget,
+      description,
+      delay,
+      nextAt: this.nextFireTime(delay, Date.now()),
+    }
+    this.saveTasks([...tasks, task])
+    const when = delay.kind === 'once'
+      ? `${Math.round(delay.delayMs / 60000)} 分钟后`
+      : `每天 ${String(delay.hours).padStart(2, '0')}:${String(delay.minutes).padStart(2, '0')}`
+    return `⏰ 定时任务已添加:${when} 执行「${description.slice(0, 50)}」\n发「定时列表」查看,「取消定时 <编号>」取消`
+  }
+
+  private saveTasks(tasks: Array<{ id: string; channel: string; userId: string; pushTarget?: { scope: string; targetId: string } | null; description: string; delay: { kind: 'once'; delayMs: number } | { kind: 'daily'; hours: number; minutes: number }; nextAt: number }>): void {
+    this.config?.update('scheduledTasks', tasks)
+  }
+
+  /** 计算下次触发时间。 */
+  private nextFireTime(delay: { kind: 'once'; delayMs: number } | { kind: 'daily'; hours: number; minutes: number }, from: number): number {
+    if (delay.kind === 'once') return from + delay.delayMs
+    const next = new Date(from)
+    next.setHours(delay.hours, delay.minutes, 0, 0)
+    if (next.getTime() <= from) next.setDate(next.getDate() + 1)
+    return next.getTime()
+  }
+
+  /** 定时器 tick(宿主每 30 秒调用):触发到期任务。 */
+  async tickScheduled(): Promise<void> {
+    const tasks = this.config?.get().scheduledTasks ?? []
+    if (tasks.length === 0) return
+    const now = Date.now()
+    const due = tasks.filter((t) => t.nextAt <= now)
+    if (due.length === 0) return
+    const remaining = tasks.filter((t) => t.nextAt > now)
+    for (const task of due) {
+      // 触发通知 + 执行任务(助手模式;完成汇报走既有机制)。
+      if (this.push !== null) {
+        this.push(task.channel, task.userId, `⏰ 定时任务已触发:${task.description.slice(0, 60)}`, undefined, task.pushTarget ?? undefined)
+      }
+      const key = `${task.channel}:${task.userId}`
+      await this.cmdRun(key, task.description, task.pushTarget ?? undefined).catch(() => '')
+      if (task.delay.kind === 'daily') {
+        remaining.push({ ...task, nextAt: this.nextFireTime(task.delay, now) })
+      }
+    }
+    this.saveTasks(remaining)
   }
 
   private async cmdCancel(sessionId: string): Promise<string> {
