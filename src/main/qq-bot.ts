@@ -42,6 +42,8 @@ export class QQBotAdapter {
   private started = false
   /** userId(openid)→ 主动推送目标(登记自最近一次交互)。 */
   private userTargets = new Map<string, { target: PushTarget; ts: number }>()
+  /** 已推送过指令集的用户/群(避免重复刷屏)。 */
+  private welcomed = new Set<string>()
   /** 扫码登录流程状态。 */
   private onboardAbort: AbortController | null = null
   private onboardProgress: OnboardProgress | null = null
@@ -150,6 +152,8 @@ export class QQBotAdapter {
       bot.on('ready', () => {
         this.started = true
         console.log('[qq-bot] QQ 机器人已连接')
+        // 连接成功后,向已交互过的用户/群推送指令集(断线重连场景)。
+        this.broadcastHelp()
       })
       bot.on('message', (_ctx, msg) => {
         void this.handleMessage(msg).catch((error) => {
@@ -180,9 +184,45 @@ export class QQBotAdapter {
     }
     this.started = false
     this.userTargets.clear()
+    this.welcomed.clear()
   }
 
   // ---- 内部 ----
+
+  /** 连接成功后向已交互过的用户/群推送指令集(欢迎语 + 完整指令)。 */
+  private broadcastHelp(): void {
+    const bot = this.bot
+    if (bot === null) return
+    const help = this.processor.fullHelp()
+    for (const [key, entry] of this.userTargets) {
+      if (this.welcomed.has(key)) continue
+      this.welcomed.add(key)
+      void this.pushHelpTo(bot, entry.target, help)
+    }
+  }
+
+  /** 首次交互时向该用户/群补推指令集(连接时还没有登记对象的场景)。 */
+  private welcomeIfNew(userId: string, target: { scope: string; targetId: string } | undefined): void {
+    const bot = this.bot
+    if (bot === null) return
+    const key = target !== undefined ? `${target.scope}:${target.targetId}` : userId
+    if (this.welcomed.has(key)) return
+    this.welcomed.add(key)
+    void this.pushHelpTo(bot, target ?? this.userTargets.get(userId)?.target, this.processor.fullHelp())
+  }
+
+  private async pushHelpTo(bot: QQBotLike, target: PushTarget | undefined, help: string): Promise<void> {
+    if (target === undefined) return
+    try {
+      const lines = ['🤖 DeepSeek Harness Desktop 机器人已连接', '━━━━━━━━━━━━━━━━', '', ...help.split('\n')]
+      const text = lines.join('\n')
+      for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
+        await bot.sendText(target, text.slice(index, index + MAX_MESSAGE_LENGTH))
+      }
+    } catch (error) {
+      console.error('[qq-bot] 指令集推送失败:', error)
+    }
+  }
 
   /** 主动推送(审批/提问带内联键盘按钮;超窗或失败静默降级,回复提醒兜底)。
    *  target 提供时直接推送到该目标;群场景优先推群(需机器人开通
@@ -326,6 +366,7 @@ export class QQBotAdapter {
     if (content === '') return
     const userId = this.senderId(record)
     this.registerPushTarget(userId, record.replyTarget)
+    this.welcomeIfNew(userId, this.pushTargetOf(record.replyTarget))
     const reply = await this.processor.handleText('qq', userId, content, this.pushTargetOf(record.replyTarget))
     await this.reply(bot, record.replyTarget, reply)
     // 任务启动回复附带操作按钮(停止/进展/打开),像 PWA 一样一键操作。
