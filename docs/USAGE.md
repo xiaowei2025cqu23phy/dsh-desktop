@@ -212,6 +212,13 @@ This guide walks you through the desktop client end to end: installation, config
 - **Q:屏保不自动触发?** A:确认「启用空闲检测」已勾选、空闲分钟数合理;鼠标/键盘活动会重置空闲计时。
 - **Q:手机连不上?** A:确认手机与电脑同一 WiFi、网关已启用、端口未被防火墙拦截;重新扫码。
 - **Q:QQ 机器人没反应?** A:确认状态为「✓ 已连接」;私聊需先通过平台开通;检查 AppID/AppSecret 是否正确。
+- **Q:任务报「Stream ended without finish_reason」(TRANSPORT 错误)?** A:常见于**第三方中转站(代理)**:中转站等待上游模型返回超时,或上游连接被意外中断。本项目会对该错误**自动重试一次**(同会话仅一次);仍失败请按优先级排查:
+  1. **超时配置(最常见)**:中转站通常有「连接超时/读取超时」两个阈值,请求可能刚打到上游就断。把调用方的 read_timeout 调大(建议 ≥120 秒;OpenAI 官方库可设 `httpx.Timeout(300.0, connect=10.0)`)。
+  2. **关闭流式做二分法**:把 `"stream": true` 改为 `false`。若非流式正常而流式报错,基本可确定是中转站到上游的**流式通道不稳定**(网络抖动或网关限制);必须用流式时可切换中转站线路或改用 WebSocket 协议。
+  3. **检查 max_tokens 是否过大**:接近模型上限(如 8192)时,中转站的硬性输出截断可能未发完 `finish_reason` 就掐断。先设为 500 测试,正常后逐步调大。
+  4. **排查内容安全拦截**:部分中转站接入外部审核,触发风控时上游直接 Reset 连接而不返回标准结束符。把输入改成最简单的 `hi` 对比:若 `hi` 正常而复杂 prompt 报错,则是提示词命中敏感词,需修改提示词或联系中转客服。
+  5. **网络层面(惊群效应)**:延迟接近 1 秒(TCP 重传超时)时检查到中转站的延迟/丢包(ping、mtr);延迟 >200ms 可开启中转站「跨境加速」或切换更近节点。
+  6. **终极确认**:开启中转站 debug 模式查看原始响应;若返回 `{"error":"upstream timeout"}`,直接联系客服申请提高 Upstream Read Timeout 白名单阈值。
 - **Q:换电脑/重装后壁纸和配置还在吗?** A:在,它们保存在 `%APPDATA%/DeepSeek Harness Desktop`,卸载不会删除。
 
 **English**
@@ -221,6 +228,13 @@ This guide walks you through the desktop client end to end: installation, config
 - **Q: The screensaver does not trigger?** A: Make sure "Idle detection" is enabled and the idle minutes are reasonable; mouse/keyboard activity resets the idle timer.
 - **Q: The phone cannot connect?** A: Verify the phone and PC are on the same Wi-Fi, the gateway is enabled, and the port is not blocked by a firewall; scan the QR code again.
 - **Q: The QQ bot does not respond?** A: Confirm the status shows "✓ Connected"; private chat must be enabled on the platform; double-check AppID/AppSecret.
+- **Q: A task fails with "Stream ended without finish_reason" (TRANSPORT error)?** A: Very common with **third-party relay/proxy providers**: the relay timed out waiting for the upstream model, or the upstream connection was cut. The app **auto-retries once** per session; if it still fails, debug in this order:
+  1. **Timeout config (most likely)**: relays usually have separate connect/read timeouts — the request may be cut right after reaching upstream. Raise the caller's read_timeout (≥120s; with the official OpenAI lib use `httpx.Timeout(300.0, connect=10.0)`).
+  2. **Binary search by disabling streaming**: set `"stream": true` → `false`. If non-streaming works but streaming errors, the relay→upstream **streaming channel** is unstable (jitter or gateway limits); switch relay lines or use WebSocket when streaming is required.
+  3. **max_tokens too large**: near the model limit (e.g. 8192), a relay's hard output cap may cut the stream before `finish_reason`. Test with 500 first, then raise gradually.
+  4. **Content-safety blocking**: some relays add external review — on a policy hit the upstream resets the connection without a normal terminator. Try the simplest input `hi` as a control: if `hi` works but your complex prompt errors, the prompt hit a sensitive-word filter — revise it or contact relay support.
+  5. **Network (thundering herd)**: a delay near 1s smells like TCP retransmission timeout — check latency/packet loss to the relay (ping, mtr); if latency >200ms, enable the relay's "cross-border acceleration" or switch to a nearer node.
+  6. **Final confirmation**: enable the relay's debug mode and inspect the raw response; if it returns `{"error":"upstream timeout"}`, ask support to raise the Upstream Read Timeout allowlist.
 - **Q: After reinstalling, are my wallpapers and config still there?** A: Yes — they live in `%APPDATA%/DeepSeek Harness Desktop` and uninstallation does not delete them.
 
 ---

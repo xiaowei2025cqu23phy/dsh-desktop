@@ -1181,13 +1181,13 @@ export class RemoteCommandProcessor {
         ? reason.message
         : ''
     const failed = reason.kind === 'error'
-    // TRANSPORT 中断(模型流错误,如中转站抖动):同会话自动重试一次。
-    if (failed && (reason.code === 'TRANSPORT' || (message !== '' && message.includes('finish_reason'))) &&
-        !this.retriedTransports.has(sessionId)) {
+    // TRANSPORT 中断(模型流错误,如中转站读取超时/流式通道不稳):同会话自动重试一次。
+    const isTransport = failed && (reason.code === 'TRANSPORT' || (message !== '' && message.includes('finish_reason')))
+    if (isTransport && !this.retriedTransports.has(sessionId)) {
       this.retriedTransports.add(sessionId)
       const description = this.taskDescriptions.get(sessionId)
       if (description !== undefined && this.push !== null) {
-        this.push(owner.channel, owner.userId, '⚠️ 任务因模型流中断,正在自动重试一次…', undefined, owner.pushTarget)
+        this.push(owner.channel, owner.userId, '⚠️ 任务因模型流中断,正在自动重试一次…(仍失败常见于中转站:上游读取超时/流式不稳/风控截断)', undefined, owner.pushTarget)
         void this.harness.client().rpc('session.prompt', {
           sessionId,
           mode: 'queue',
@@ -1205,7 +1205,11 @@ export class RemoteCommandProcessor {
     else record.done = now
     this.lastTurnReports.set(sessionId, record)
     const text = failed
-      ? `❌ 任务失败(会话 ${sessionId})${message !== '' ? `\n${message.slice(0, 200)}` : ''}\n发送「打开 ${sessionId}」查看详情`
+      ? `❌ 任务失败(会话 ${sessionId})${message !== '' ? `\n${message.slice(0, 200)}` : ''}` +
+        (isTransport
+          ? '\n🔧 常见于第三方中转站:上游读取超时/流式通道不稳/风控截断。排查顺序:调大 read_timeout(≥120s)→ 关闭流式测试 → 降低 max_tokens → 简化输入对比(详见 FAQ)'
+          : '') +
+        `\n发送「打开 ${sessionId}」查看详情`
       : `✅ 任务完成(会话 ${sessionId})\n发送「打开 ${sessionId}」查看结果`
     if (this.push !== null) this.push(owner.channel, owner.userId, text, undefined, owner.pushTarget)
   }

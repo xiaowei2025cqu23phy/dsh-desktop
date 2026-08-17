@@ -537,13 +537,15 @@ function makeHarness(log) {
   })
   check('重试-推送提示', pushes.some((p) => p[2].includes('自动重试')), true)
   check('重试-再次 prompt', log.filter(([m]) => m === 'session.prompt').length, 2)
-  // 第二次 TRANSPORT 不再重试(限一次)
+  // 第二次 TRANSPORT 不再重试(限一次),失败汇报附排查提示
   pushes.length = 0
   processor.handleInteractionFrame({
     type: 'server-request', rpcId: 'r-tr2', method: 'session/event',
     payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'error', code: 'TRANSPORT', error: { message: 'x' } } } } },
   })
   check('重试-只重试一次', pushes.some((p) => p[2].includes('自动重试')), false)
+  check('重试-失败汇报', pushes.some((p) => p[2].startsWith('❌ 任务失败')), true)
+  check('重试-排查提示', pushes.some((p) => p[2].includes('🔧') && p[2].includes('read_timeout')), true)
   // 导出
   const exported = await processor.exportSession('session-test-1')
   check('导出-markdown 含消息', exported.markdown.includes('你好') && exported.markdown.includes('嗨!'), true)
