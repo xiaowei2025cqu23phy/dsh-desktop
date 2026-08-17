@@ -122,6 +122,17 @@ export interface BotPromptConfig {
   character: string
 }
 
+export interface UsageConfig {
+  /** 费用倍率(1 = 官方价;自定义中转站可按实际价格调整)。 */
+  multiplier: number
+  /** 输入单价 ¥/百万 token(默认 DeepSeek 官方价)。 */
+  inputPricePerM: number
+  /** 输出单价 ¥/百万 token(默认 DeepSeek 官方价)。 */
+  outputPricePerM: number
+  /** 缓存命中单价 ¥/百万 token(默认 DeepSeek 官方价)。 */
+  cachePricePerM: number
+}
+
 export interface AppConfig {
   harness: HarnessConfig
   screensaver: ScreensaverConfig
@@ -144,6 +155,8 @@ export interface AppConfig {
     delay: { kind: 'once'; delayMs: number } | { kind: 'daily'; hours: number; minutes: number }
     nextAt: number
   }>
+  /** 用量与费用估算配置。 */
+  usage: UsageConfig
 }
 
 const DEFAULTS: AppConfig = {
@@ -205,6 +218,12 @@ const DEFAULTS: AppConfig = {
     taskPrompt: '你是一个专业、高效的 AI 助手。执行任务时请条理清晰、直接给出可用的结果,必要时说明关键步骤。',
     chatPrompt: '你现在是用户的朋友。请用轻松、亲切、口语化的语气聊天,像朋友一样自然,不要过于正式。',
     character: '',
+  },
+  usage: {
+    multiplier: 1,
+    inputPricePerM: 2,
+    outputPricePerM: 8,
+    cachePricePerM: 0.5,
   },
 }
 

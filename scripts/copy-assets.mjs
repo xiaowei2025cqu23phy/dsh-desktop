@@ -34,4 +34,9 @@ for (const name of readdirSync(remoteSourceDir)) {
 // PWA 图标:复用应用图标。
 copyFileSync(join(root, 'assets', 'icon.png'), join(remoteTargetDir, 'icon.png'))
 
+// 桌面宠物图(Gemini 生成):复制到 renderer 供 file:// 相对路径加载。
+mkdirSync(join(targetDir, 'assets'), { recursive: true })
+copyFileSync(join(root, 'assets', 'pet-whale.svg'), join(targetDir, 'assets', 'pet-whale.svg'))
+copied += 1
+
 console.log(`copy-assets: ${copied + 1} 个静态资源已复制(dist/renderer + dist/remote)`)

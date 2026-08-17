@@ -554,6 +554,21 @@ function makeHarness(log) {
   const usage = await processor.handleText('telegram', '42', '用量', undefined)
   check('用量-今日会话', usage.includes('今日会话:1 个'), true)
   check('用量-回合', usage.includes('回合'), true)
+  // 用量结构化:模型分组 + 费用估算(request/header 记录模型,usage 事件累计 token)
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-um', method: 'session/event',
+    payload: { sessionId: 's1', event: { type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4-pro' } } } } },
+  })
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-ut', method: 'session/event',
+    payload: { sessionId: 's1', event: { type: 'assistant/chunk', data: { chunk: { type: 'usage', usage: { inputTokens: 1000, outputTokens: 2000, cacheReadTokens: 100 } } } } },
+  })
+  const report = await processor.usageReport()
+  check('用量-模型分组', report.byModel.some((m) => m.provider === 'deepseek' && m.model === 'deepseek-v4-pro' && m.input === 1000 && m.output === 2000 && m.cache === 100), true)
+  check('用量-费用估算', report.cost.total > 0, true)
+  check('用量-倍率默认1', report.prices.multiplier, 1)
+  check('用量-费用计算', report.cost.total, (1000 / 1e6 * 2 + 2000 / 1e6 * 8 + 100 / 1e6 * 0.5))
+  check('用量-文本含费用', (await processor.handleText('telegram', '42', '用量', undefined)).includes('💰'), true)
 }
 
 // ---- 角色扮演:设定 → 对话注入角色设定 → 清除 ----

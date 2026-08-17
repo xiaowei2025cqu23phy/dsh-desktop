@@ -480,6 +480,15 @@ export class RemoteGateway {
       }
       return
     }
+    if (body.action === 'usage.get') {
+      try {
+        const report = await this.commands?.usageReport()
+        this.json(res, 200, { ok: true, report })
+      } catch (error) {
+        this.json(res, 502, { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
     this.json(res, 403, { error: `action not allowed: ${String(body.action)}` })
   }
 
