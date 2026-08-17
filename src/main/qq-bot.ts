@@ -214,7 +214,7 @@ export class QQBotAdapter {
     }
   }
 
-  /** 回合结束:冲刷剩余内容并发送结束分片(input_state=10)。 */
+  /** 回合结束:发送最终内容分片(input_state=10,内容即最终全文)。 */
   onChatEnd(channel: string, userId: string, target?: { scope: string; targetId: string }): void {
     if (channel !== 'qq' || target === undefined || target.scope !== 'c2c') return
     const bot = this.bot
@@ -226,7 +226,6 @@ export class QQBotAdapter {
       session.timer = null
     }
     void (async () => {
-      if (session.buffer !== '') await this.flushStream(bot, userId, target, session, false)
       await this.flushStream(bot, userId, target, session, true)
       this.streamSessions.delete(userId)
     })()
@@ -263,8 +262,8 @@ export class QQBotAdapter {
     } catch (error) {
       console.error('[qq-bot] 流式发送失败(回合结束整段兜底):', error)
       this.streamSessions.delete(userId)
-      // 兜底:整段文本用普通消息发送。
-      if (session.buffer !== '') {
+      // 仅首片失败才兜底整段(避免已流式显示后又补发全文造成重复)。
+      if (session.buffer !== '' && session.index === 0) {
         await bot.sendText(target, session.buffer.slice(0, MAX_MESSAGE_LENGTH)).catch(() => {})
       }
     } finally {
