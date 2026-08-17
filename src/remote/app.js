@@ -136,6 +136,7 @@
     $('chat-stream').querySelectorAll('.interaction-card').forEach(function (el) { el.remove() })
     state.approvalCards = {}
     state.questionCards = {}
+    $('btn-chat-export').classList.add('hidden')
     hideEmpty(false)
   }
 
@@ -239,6 +240,25 @@
     el.className = 'chat-status' + (cls === 'running' ? ' running' : '')
     state.running = cls === 'running'
     updateSteerButton()
+  }
+
+  /** 导出当前会话为 Markdown 并下载。 */
+  function exportSession() {
+    if (state.sessionId === null) return
+    apiAction('session.export', { sessionId: state.sessionId }).then(function (data) {
+      var blob = new Blob([data.markdown], { type: 'text/markdown;charset=utf-8' })
+      var url = URL.createObjectURL(blob)
+      var a = document.createElement('a')
+      a.href = url
+      a.download = 'session-' + state.sessionId.slice(0, 12) + '.md'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      S.toast('已导出 ' + (data.count || 0) + ' 条消息', 'ok')
+    }).catch(function (err) {
+      S.toast('导出失败:' + err.message, 'error')
+    })
   }
 
   /** 运行中显示「插入」按钮:可打断当前等待,插入新指令。 */
@@ -546,6 +566,7 @@
         handleFrame({ method: 'session/event', payload: { sessionId: sessionId, event: ev } })
       })
       setChatStatus(state.msgLog.length > 0 ? '已加载' : '空会话', '')
+      $('btn-chat-export').classList.remove('hidden')
       persistCache()
       // 恢复该会话未决的审批/提问卡片(切回会话时仍可应答)
       renderPendingCards(sessionId)
@@ -1206,6 +1227,7 @@
     // 聊天
     $('btn-chat-send').addEventListener('click', function () { sendMessage('queue') })
     $('btn-chat-steer').addEventListener('click', function () { sendMessage('steer') })
+    $('btn-chat-export').addEventListener('click', exportSession)
     $('chat-input').addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()

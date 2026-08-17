@@ -135,6 +135,9 @@ check('目录', parseCommand('目录 D:/work/proj'), { kind: 'ls', path: 'D:/wor
 check('ls', parseCommand('ls src'), { kind: 'ls', path: 'src' })
 check('文件', parseCommand('文件 D:/work/README.md'), { kind: 'cat', path: 'D:/work/README.md' })
 check('cat', parseCommand('cat src/a.ts'), { kind: 'cat', path: 'src/a.ts' })
+check('导出', parseCommand('导出 session-abc'), { kind: 'export', sessionId: 'session-abc' })
+check('用量', parseCommand('用量'), { kind: 'usage' })
+check('统计', parseCommand('统计'), { kind: 'usage' })
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

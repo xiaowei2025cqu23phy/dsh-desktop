@@ -442,6 +442,20 @@ export class RemoteGateway {
       this.json(res, ok ? 200 : 400, ok ? { ok: true } : { error: 'invalid index' })
       return
     }
+    if (body.action === 'session.export') {
+      const sessionId = typeof (body as { sessionId?: unknown }).sessionId === 'string' ? (body as { sessionId: string }).sessionId : ''
+      if (sessionId === '') {
+        this.json(res, 400, { error: 'sessionId required' })
+        return
+      }
+      try {
+        const result = await this.commands?.exportSession(sessionId)
+        this.json(res, 200, { ok: true, ...result })
+      } catch (error) {
+        this.json(res, 502, { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
     this.json(res, 403, { error: `action not allowed: ${String(body.action)}` })
   }
 

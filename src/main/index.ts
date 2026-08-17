@@ -81,6 +81,7 @@ if (!gotLock) {
       },
     })
     const gateway = new RemoteGateway(config, harness, events, commands)
+    commands.setExportDir(join(app.getPath('userData'), 'exports'))
     qqBot = new QQBotAdapter(config, commands)
     telegramBot = new TelegramBotAdapter(config, commands)
     const updater = new UpdateChecker()

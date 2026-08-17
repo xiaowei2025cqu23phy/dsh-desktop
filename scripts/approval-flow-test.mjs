@@ -504,5 +504,55 @@ function makeHarness(log) {
   require('node:fs').rmSync(tempDir, { recursive: true, force: true })
 }
 
+// ---- 会话导出 + 用量 + TRANSPORT 自动重试 ----
+{
+  const log = []
+  const pushes = []
+  const processor = new RemoteCommandProcessor({
+    client: () => ({
+      async rpc(method, payload) {
+        log.push([method, payload])
+        if (method === 'session.create') return { sessionId: 'session-test-1' }
+        if (method === 'session.history' && payload && payload.sessionId === 'session-test-1') {
+          return { events: [
+            { event: { type: 'user/message', data: { message: { content: [{ type: 'text', text: '你好' }] } } } },
+            { event: { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '嗨!' }] } } } },
+          ] }
+        }
+        if (method === 'session.list') {
+          return { items: [{ sessionId: 's1', updatedAt: Date.now(), projections: { values: { sessionStats: { turns: 3, llmMs: 120000 } } } }] }
+        }
+        return {}
+      },
+      async respond() { return { accepted: true } },
+    }),
+  })
+  processor.setPush((channel, userId, text) => pushes.push([channel, userId, text]))
+  processor.setReport('telegram', true)
+  await processor.handleText('telegram', '42', '任务 干活', undefined)
+  // TRANSPORT 失败 → 自动重试(同会话再次 prompt)
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-tr', method: 'session/event',
+    payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'error', code: 'TRANSPORT', error: { message: 'Stream ended without finish_reason' } } } } },
+  })
+  check('重试-推送提示', pushes.some((p) => p[2].includes('自动重试')), true)
+  check('重试-再次 prompt', log.filter(([m]) => m === 'session.prompt').length, 2)
+  // 第二次 TRANSPORT 不再重试(限一次)
+  pushes.length = 0
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-tr2', method: 'session/event',
+    payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'error', code: 'TRANSPORT', error: { message: 'x' } } } } },
+  })
+  check('重试-只重试一次', pushes.some((p) => p[2].includes('自动重试')), false)
+  // 导出
+  const exported = await processor.exportSession('session-test-1')
+  check('导出-markdown 含消息', exported.markdown.includes('你好') && exported.markdown.includes('嗨!'), true)
+  check('导出-条数', exported.count, 2)
+  // 用量
+  const usage = await processor.handleText('telegram', '42', '用量', undefined)
+  check('用量-今日会话', usage.includes('今日会话:1 个'), true)
+  check('用量-回合', usage.includes('回合'), true)
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

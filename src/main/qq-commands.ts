@@ -23,6 +23,8 @@ export type QQCommand =
   | { kind: 'sched'; action: 'remove'; index: number }
   | { kind: 'ls'; path: string }
   | { kind: 'cat'; path: string }
+  | { kind: 'export'; sessionId: string }
+  | { kind: 'usage' }
   | { kind: 'unknown'; text: string }
 
 /** 定时任务的调度表达(解析结果)。 */
@@ -68,6 +70,7 @@ export function parseCommand(content: string): QQCommand {
   if (lower === '状态' || lower === 'status') return { kind: 'status' }
   if (lower === '会话' || lower === 'sessions') return { kind: 'sessions' }
   if (lower === '工作区' || lower === 'workspaces') return { kind: 'workspaces' }
+  if (lower === '用量' || lower === 'usage' || lower === '统计') return { kind: 'usage' }
   if (lower === '模型' || lower === 'models') return { kind: 'models' }
   if (lower === '退出' || lower === '结束' || lower === 'exit' || lower === '退出对话') {
     return { kind: 'exit' }
@@ -135,6 +138,10 @@ export function parseCommand(content: string): QQCommand {
   }
   if (parts[0] === '文件' || parts[0] === 'cat' || parts[0] === '查看文件') {
     return { kind: 'cat', path: content.trim().slice(parts[0].length).trim() }
+  }
+  // 会话导出:导出 <会话id>
+  if (parts[0] === '导出' || parts[0] === 'export') {
+    return { kind: 'export', sessionId: parts[1] ?? '' }
   }
   return { kind: 'unknown', text: content.trim() }
 }
