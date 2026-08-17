@@ -310,5 +310,21 @@ function makeHarness(log) {
   check('提问按钮-多选无 meta', pushes.length === 1 && pushes[0][3] === undefined, true)
 }
 
+// ---- 任务操作按钮(停止/进展/打开) ----
+{
+  const log = []
+  const processor = new RemoteCommandProcessor(makeHarness(log))
+  await processor.handleText('telegram', '42', '任务 干活', undefined)
+  const r1 = await processor.handleButtonAction('telegram', '42', 'session-test-1', 'progress')
+  check('操作按钮-进展', r1.includes('最新输出') || r1.includes('会话'), true)
+  const r2 = await processor.handleButtonAction('telegram', '42', 'session-test-1', 'stop')
+  check('操作按钮-停止', r2.includes('已请求停止'), true)
+  const r3 = await processor.handleButtonAction('telegram', '42', 'session-test-1', 'open')
+  check('操作按钮-打开', r3.includes('会话'), true)
+  // 非发起者无权
+  const r4 = await processor.handleButtonAction('telegram', '99', 'session-test-1', 'stop')
+  check('操作按钮-非发起者拒绝', r4.includes('无权'), true)
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

@@ -354,6 +354,20 @@ export class RemoteCommandProcessor {
     }
   }
 
+  /**
+   * 任务操作按钮(停止/进展/打开),由机器人通道按钮点击调用。
+   * 校验发起者身份;返回给点击者的结果文本。
+   */
+  async handleButtonAction(channel: string, userId: string, sessionId: string, action: 'stop' | 'progress' | 'open'): Promise<string> {
+    const owner = this.sessionOwners.get(sessionId)
+    if (owner === undefined || owner.channel !== channel || owner.userId !== userId) {
+      return '该会话不是由你发起,无权操作。'
+    }
+    if (action === 'stop') return this.cmdCancel(sessionId)
+    if (action === 'progress') return this.cmdProgress(sessionId)
+    return this.cmdOpen(sessionId)
+  }
+
   private async cmdCancel(sessionId: string): Promise<string> {
     if (!/^session-/.test(sessionId)) return '请提供完整的会话 id(以 session- 开头)'
     try {
