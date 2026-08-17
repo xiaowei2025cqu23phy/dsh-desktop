@@ -103,6 +103,10 @@ export class RemoteCommandProcessor {
   private reportChannels = new Set<string>()
   /** 会话最近一次汇报时间(去重:同一会话的完成/失败在窗口内只报一次)。 */
   private lastTurnReports = new Map<string, { done: number; fail: number }>()
+  /** 任务会话的最近描述(TRANSPORT 中断自动重试用)。 */
+  private taskDescriptions = new Map<string, string>()
+  /** 已自动重试过 TRANSPORT 的会话(每个会话最多重试一次)。 */
+  private retriedTransports = new Set<string>()
   /** 对话会话等待回复推送:发送消息后注册,回合结束把 agent 回复推给发起者。 */
   private chatReplies = new Map<string, { channel: string; userId: string; pushTarget?: { scope: string; targetId: string }; ts: number }>()
   /** 流式输出通道(QQ 私聊打字机效果);缺失时回合计束后整段推送。 */
@@ -245,6 +249,8 @@ export class RemoteCommandProcessor {
       '📋 查询类',
       '状态 — 电脑与任务总览',
       '  例:状态',
+      '用量 — 今日会话/回合/模型耗时统计',
+      '  例:用量',
       '会话 — 最近 5 个会话',
       '  例:会话',
       '工作区 — 工作区列表',
@@ -287,6 +293,8 @@ export class RemoteCommandProcessor {
       '  例:停止 session-xxxxxxxx',
       '打开 <会话id> — 查看会话内容',
       '  例:打开 session-xxxxxxxx',
+      '导出 <会话id> — 导出会话为 Markdown(存到桌面端 exports/)',
+      '  例:导出 session-xxxxxxxx',
       '',
       '✅ 审批与提问(agent 需要你决定时)',
       '允许 — 允许当前待审批操作',
@@ -344,6 +352,10 @@ export class RemoteCommandProcessor {
         return this.cmdLs(command.path)
       case 'cat':
         return this.cmdCat(command.path)
+      case 'export':
+        return this.cmdExport(command.sessionId)
+      case 'usage':
+        return this.cmdUsage()
       case 'cancel':
         return this.cmdCancel(command.sessionId)
       case 'open':
@@ -561,6 +573,93 @@ export class RemoteCommandProcessor {
       return `📄 ${path}\n${text.slice(0, 1500)}`
     } catch (error) {
       return `读取失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  // ---- 会话导出 ----
+
+  private exportDir: string | null = null
+
+  /** 注入导出文件目录(桌面端 userData/exports)。 */
+  setExportDir(dir: string): void {
+    this.exportDir = dir
+  }
+
+  /** 生成会话 markdown(PWA 下载与命令端共用)。 */
+  async exportSession(sessionId: string): Promise<{ markdown: string; count: number }> {
+    const client = this.harness.client()
+    const data = await client.rpc<{ events: Array<{ event?: { type?: string; data?: { message?: { content?: unknown } } } }> }>(
+      'session.history', { sessionId, maxMessages: 200 }, 30000,
+    )
+    const lines: string[] = [`# 会话 ${sessionId}`]
+    let count = 0
+    for (const entry of data.events ?? []) {
+      const ev = entry.event
+      if (ev === undefined) continue
+      const content = ev.data?.message?.content
+      if (ev.type === 'user/message' && Array.isArray(content)) {
+        const text = content.map((b) => (b as { text?: string }).text ?? '').join('').trim()
+        if (text !== '') { lines.push(`\n## 👤 用户\n\n${text}`); count++ }
+      } else if (ev.type === 'assistant/message' && Array.isArray(content)) {
+        const text = content.map((b) => (b as { text?: string }).text ?? '').join('').trim()
+        if (text !== '') { lines.push(`\n## 🤖 AI\n\n${text}`); count++ }
+      }
+    }
+    return { markdown: lines.join('\n'), count }
+  }
+
+  private async cmdExport(sessionId: string): Promise<string> {
+    if (!/^session-/.test(sessionId)) return '用法:导出 <会话id>'
+    try {
+      const { markdown, count } = await this.exportSession(sessionId)
+      if (count === 0) return '该会话没有可导出的文本消息。'
+      let path = '(未配置导出目录)'
+      if (this.exportDir !== null) {
+        const { mkdirSync, writeFileSync } = require('node:fs') as typeof import('node:fs')
+        const { join } = require('node:path') as typeof import('node:path')
+        mkdirSync(this.exportDir, { recursive: true })
+        path = join(this.exportDir, `session-${sessionId.slice(8, 16)}-${Date.now()}.md`)
+        writeFileSync(path, markdown, 'utf8')
+      }
+      const preview = markdown.split('\n').filter((l) => !l.startsWith('#') && l.trim() !== '').slice(0, 6).join('\n')
+      return `📄 已导出会话 ${sessionId}\n共 ${count} 条消息\n文件:${path}\n\n${preview.slice(0, 400)}`
+    } catch (error) {
+      return `导出失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  // ---- 用量统计 ----
+
+  /** 用量统计:今日会话数 / 总回合 / 模型耗时。 */
+  private async cmdUsage(): Promise<string> {
+    const client = this.harness.client()
+    try {
+      const list = await client.rpc<{ items: Array<{ sessionId: string; updatedAt?: number; title?: string | null; projections?: { values?: { sessionStats?: { turns?: number; llmMs?: number } } } }> }>('session.list', {}, 20000)
+      const items = list.items ?? []
+      const now = new Date()
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+      const today = items.filter((s) => (s.updatedAt ?? 0) >= todayStart)
+      const all = items.filter((s) => (s.updatedAt ?? 0) > 0)
+      const sumTurns = (arr: Array<{ projections?: { values?: { sessionStats?: { turns?: number } } } }>) =>
+        arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.turns ?? 0), 0)
+      const sumLlms = (arr: Array<{ projections?: { values?: { sessionStats?: { llmMs?: number } } } }>) =>
+        arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.llmMs ?? 0), 0)
+      const fmt = (ms: number) => ms >= 60000 ? `${(ms / 60000).toFixed(1)} 分钟` : `${Math.round(ms / 1000)} 秒`
+      const lines = [
+        '📊 用量统计',
+        `今日会话:${today.length} 个(总 ${all.length} 个)`,
+        `今日回合:${sumTurns(today)} 次(累计 ${sumTurns(all)} 次)`,
+        `今日模型耗时:${fmt(sumLlms(today))}(累计 ${fmt(sumLlms(all))})`,
+      ]
+      if (today.length > 0) {
+        lines.push('', '今日会话:')
+        today.slice(0, 5).forEach((s) => {
+          lines.push(`  ${(s.title ?? s.sessionId.slice(0, 12)).slice(0, 30)}(${s.projections?.values?.sessionStats?.turns ?? 0} 回合)`)
+        })
+      }
+      return lines.join('\n')
+    } catch (error) {
+      return `查询失败:${error instanceof Error ? error.message : String(error)}`
     }
   }
 
@@ -785,6 +884,7 @@ export class RemoteCommandProcessor {
       else if (cwd !== null) payload.cwd = cwd
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
       this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
+      this.taskDescriptions.set(created.sessionId, taskText)
       await client.rpc('session.prompt', {
         sessionId: created.sessionId,
         mode: 'queue',
@@ -1017,6 +1117,21 @@ export class RemoteCommandProcessor {
         ? reason.message
         : ''
     const failed = reason.kind === 'error'
+    // TRANSPORT 中断(模型流错误,如中转站抖动):同会话自动重试一次。
+    if (failed && (reason.code === 'TRANSPORT' || (message !== '' && message.includes('finish_reason'))) &&
+        !this.retriedTransports.has(sessionId)) {
+      this.retriedTransports.add(sessionId)
+      const description = this.taskDescriptions.get(sessionId)
+      if (description !== undefined && this.push !== null) {
+        this.push(owner.channel, owner.userId, '⚠️ 任务因模型流中断,正在自动重试一次…', undefined, owner.pushTarget)
+        void this.harness.client().rpc('session.prompt', {
+          sessionId,
+          mode: 'queue',
+          content: [{ type: 'text', text: this.withModePrompt('task', description) }],
+        }).catch(() => {})
+        return
+      }
+    }
     // 去重:同一会话的完成/失败汇报 5 分钟内只推一次(多轮任务不重复刷屏)。
     const now = Date.now()
     const record = this.lastTurnReports.get(sessionId) ?? { done: 0, fail: 0 }
