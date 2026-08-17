@@ -1,0 +1,13 @@
+query {
+  repository(owner: "deepseek-ai", name: "deepseek-harness") {
+    id
+    name
+    hasDiscussionsEnabled
+    discussionCategories(first: 20) {
+      nodes {
+        id
+        name
+      }
+    }
+  }
+}
