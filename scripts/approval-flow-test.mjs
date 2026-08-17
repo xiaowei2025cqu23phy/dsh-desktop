@@ -370,7 +370,7 @@ function makeHarness(log) {
         log4.push([method, payload])
         if (method === 'session.create') return { sessionId: 'session-test-1' }
         if (method === 'session.history') {
-          return { events: [{ event: { type: 'assistant/message', data: { content: [{ type: 'text', text: '你好呀朋友!' }] } } }] }
+          return { events: [{ event: { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '你好呀朋友!' }] } } } }] }
         }
         return {}
       },
