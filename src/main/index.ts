@@ -84,7 +84,7 @@ if (!gotLock) {
     qqBot = new QQBotAdapter(config, commands)
     telegramBot = new TelegramBotAdapter(config, commands)
     const updater = new UpdateChecker()
-    registerIpc({ config, harness, models, screensaver, appearance, gateway, qqBot, telegramBot, updater })
+    registerIpc({ config, harness, models, screensaver, appearance, gateway, qqBot, telegramBot, updater, commands })
 
     if (isScreensaverLaunch()) {
       // 系统屏保模式:只启动屏保窗口,不创建主窗口与托盘。

@@ -11,6 +11,7 @@ import type { RemoteGateway } from './gateway'
 import type { HarnessManager } from './harness'
 import type { ModelManager } from './models'
 import type { QQBotAdapter } from './qq-bot'
+import type { RemoteCommandProcessor } from './remote-commands'
 import type { ScreensaverController } from './screensaver'
 import type { TelegramBotAdapter } from './telegram-bot'
 import type { UpdateChecker } from './updater'
@@ -25,6 +26,7 @@ export interface IpcDeps {
   qqBot?: QQBotAdapter
   telegramBot?: TelegramBotAdapter
   updater?: UpdateChecker
+  commands?: RemoteCommandProcessor
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -99,6 +101,8 @@ export function registerIpc(deps: IpcDeps): void {
     deps.config.update('bot', patch)
     return deps.config.get().bot
   })
+  // ---- 机器人指令集(桌面端可查看) ----
+  ipcMain.handle('bot:help', () => deps.commands?.fullHelp() ?? '(指令集不可用)')
 
   // ---- 外观 ----
   ipcMain.handle('appearance:getConfig', () => deps.appearance.getConfig())
