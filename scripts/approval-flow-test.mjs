@@ -244,12 +244,38 @@ function makeHarness(log) {
   check('群-审批推送目标', pushes.length === 1 && pushes[0][3] !== undefined && pushes[0][4].targetId === 'GROUP_OPENID_9', true)
   // 私聊对照:无 pushTarget → 回调 target 为 undefined
   pushes.length = 0
-  await processor.handleText('qq', 'private-openid-2', '任务 再来一首', undefined)
-  processor.handleInteractionFrame({
+  const pv = new RemoteCommandProcessor(makeHarness([]))
+  pv.setPush((channel, userId, text, meta, target) => pushes.push([channel, userId, text, meta, target]))
+  pv.setReport('qq', true)
+  await pv.handleText('qq', 'private-openid-2', '任务 再来一首', undefined)
+  pv.handleInteractionFrame({
     type: 'server-request', rpcId: 'r-g3', method: 'session/event',
     payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'ok' } } } },
   })
   check('私聊-无显式目标', pushes.length === 1 && pushes[0][4] === undefined, true)
+}
+
+// ---- 汇报去重:同一会话多轮 turn/end 只推一次 ----
+{
+  const pushes = []
+  const processor = new RemoteCommandProcessor(makeHarness([]))
+  processor.setPush((channel, userId, text) => pushes.push([channel, userId, text]))
+  processor.setReport('qq', true)
+  await processor.handleText('qq', 'u-dedupe', '任务 干活', undefined)
+  const frame = (rpcId, reason) => ({
+    type: 'server-request', rpcId, method: 'session/event',
+    payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason } } },
+  })
+  processor.handleInteractionFrame(frame('r-d1', { kind: 'ok' }))
+  processor.handleInteractionFrame(frame('r-d2', { kind: 'ok' }))
+  processor.handleInteractionFrame(frame('r-d3', { kind: 'ok' }))
+  check('汇报-三轮只推一次', pushes.length, 1)
+  // 失败不合并到完成的去重窗口,但同失败也去重
+  pushes.length = 0
+  processor.handleInteractionFrame(frame('r-d4', { kind: 'error', error: { message: 'boom' } }))
+  processor.handleInteractionFrame(frame('r-d5', { kind: 'error', error: { message: 'boom' } }))
+  check('汇报-失败两次只推一次', pushes.length, 1)
+  check('汇报-失败文本', pushes[0][2].includes('任务失败'), true)
 }
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
