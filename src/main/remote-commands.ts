@@ -13,6 +13,8 @@
 import type { HarnessManager } from './harness'
 import type { ServerRequest } from './client'
 import type { ConfigStore } from './config'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { resolve, sep } from 'node:path'
 import { parseCommand, parseTaskOptions, type QQCommand } from './qq-commands'
 
 /** 单条回复长度上限(超长由通道分段)。 */
@@ -305,6 +307,12 @@ export class RemoteCommandProcessor {
       '定时列表 — 查看已添加的定时任务',
       '取消定时 <编号> — 取消指定定时任务',
       '',
+      '📂 目录浏览(限工作区与预设根目录内)',
+      '目录 <路径> — 列出目录内容',
+      '  例:目录 D:/work/proj',
+      '文件 <路径> — 查看文件内容(64KB 以内)',
+      '  例:文件 D:/work/proj/README.md',
+      '',
       '💡 模式提示词:任务=专业助手,对话=朋友(桌面端可自定义,留空不注入)',
       '💡 典型流程:先「工作区」看列表 → 「进入 qqbot」→ 连续对话 → 「退出」',
     ].join('\n')
@@ -332,6 +340,10 @@ export class RemoteCommandProcessor {
         if (command.action === 'list') return this.cmdSchedList()
         if (command.action === 'remove') return this.cmdSchedRemove(command.index)
         return this.cmdSchedAdd(key, command.delay, command.description, pushTarget)
+      case 'ls':
+        return this.cmdLs(command.path)
+      case 'cat':
+        return this.cmdCat(command.path)
       case 'cancel':
         return this.cmdCancel(command.sessionId)
       case 'open':
@@ -496,7 +508,104 @@ export class RemoteCommandProcessor {
     return this.cmdOpen(sessionId)
   }
 
+  // ---- 目录浏览(安全:仅限已注册工作区与预设根目录内) ----
+
+  /** 路径白名单校验:目标必须在某个已注册工作区或预设根目录之下。 */
+  private async allowPath(target: string): Promise<{ ok: boolean; message: string }> {
+    if (target === '') return { ok: false, message: '用法:目录 <路径> 或 文件 <路径>' }
+    const normalized = resolve(target)
+    const client = this.harness.client()
+    try {
+      const ws = await client.rpc<{ items: Array<{ path?: string }> }>('workspace.list', {}, 20000)
+      const roots = [...(ws.items ?? []).map((w) => w.path).filter((p): p is string => typeof p === 'string')]
+      if (this.config !== undefined) {
+        roots.push(...(this.config.get().remote.presetWorkspaceRoots ?? []))
+      }
+      for (const root of roots) {
+        const r = resolve(root)
+        if (normalized === r || normalized.startsWith(r + sep)) return { ok: true, message: '' }
+      }
+      return { ok: false, message: '路径不在任何工作区或预设根目录内,已拒绝访问' }
+    } catch (error) {
+      return { ok: false, message: `校验失败:${error instanceof Error ? error.message : String(error)}` }
+    }
+  }
+
+  private async cmdLs(path: string): Promise<string> {
+    const check = await this.allowPath(path)
+    if (!check.ok) return check.message
+    try {
+      const entries = readdirSync(path, { withFileTypes: true }).slice(0, 40)
+      if (entries.length === 0) return `(目录为空) ${path}`
+      const lines = [`📂 ${path}`]
+      for (const entry of entries) {
+        let label = entry.name
+        if (entry.isDirectory()) label += '/'
+        lines.push(`  ${label}`)
+      }
+      if (entries.length === 40) lines.push('  …(仅显示前 40 项)')
+      return lines.join('\n')
+    } catch (error) {
+      return `读取失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  private async cmdCat(path: string): Promise<string> {
+    const check = await this.allowPath(path)
+    if (!check.ok) return check.message
+    try {
+      if (!statSync(path).isFile()) return '不是文件,发「目录 <路径>」查看目录'
+      const size = statSync(path).size
+      if (size > 64 * 1024) return `文件过大(${Math.round(size / 1024)}KB),仅支持 64KB 以内`
+      const text = readFileSync(path, 'utf8')
+      return `📄 ${path}\n${text.slice(0, 1500)}`
+    } catch (error) {
+      return `读取失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
   // ---- 定时任务 ----
+
+  /** 定时任务列表(供命令与 PWA 查看)。 */
+  listScheduled(): Array<{ id: string; channel: string; description: string; when: string; nextAt: number }> {
+    return (this.config?.get().scheduledTasks ?? []).map((t) => {
+      const when = t.delay.kind === 'once' ? `一次性 ${Math.round(t.delay.delayMs / 60000)} 分钟后` : `每天 ${String(t.delay.hours).padStart(2, '0')}:${String(t.delay.minutes).padStart(2, '0')}`
+      return { id: t.id, channel: t.channel, description: t.description, when, nextAt: t.nextAt }
+    })
+  }
+
+  /** 添加定时任务(命令与 PWA 共用)。 */
+  addScheduled(
+    channel: string,
+    userId: string,
+    delay: { kind: 'once'; delayMs: number } | { kind: 'daily'; hours: number; minutes: number },
+    description: string,
+    pushTarget?: { scope: string; targetId: string },
+  ): string {
+    const tasks = this.config?.get().scheduledTasks ?? []
+    const task = {
+      id: `sched-${Date.now()}`,
+      channel,
+      userId,
+      pushTarget,
+      description,
+      delay,
+      nextAt: this.nextFireTime(delay, Date.now()),
+    }
+    this.saveTasks([...tasks, task])
+    const when = delay.kind === 'once'
+      ? `${Math.round(delay.delayMs / 60000)} 分钟后`
+      : `每天 ${String(delay.hours).padStart(2, '0')}:${String(delay.minutes).padStart(2, '0')}`
+    return `⏰ 定时任务已添加:${when} 执行「${description.slice(0, 50)}」`
+  }
+
+  /** 取消定时任务(命令与 PWA 共用);返回是否成功。 */
+  removeScheduled(index: number): boolean {
+    const tasks = this.config?.get().scheduledTasks ?? []
+    if (index < 0 || index >= tasks.length) return false
+    this.saveTasks(tasks.filter((_, i) => i !== index))
+    return true
+  }
 
   private async cmdSchedList(): Promise<string> {
     const tasks = this.config?.get().scheduledTasks ?? []
@@ -508,11 +617,7 @@ export class RemoteCommandProcessor {
   }
 
   private async cmdSchedRemove(index: number): Promise<string> {
-    const tasks = this.config?.get().scheduledTasks ?? []
-    if (index < 0 || index >= tasks.length) return '编号无效,发「定时列表」查看'
-    const removed = tasks[index]
-    this.saveTasks(tasks.filter((_, i) => i !== index))
-    return `已取消定时任务:${removed.description.slice(0, 40)}`
+    return this.removeScheduled(index) ? '已取消定时任务' : '编号无效,发「定时列表」查看'
   }
 
   private async cmdSchedAdd(
@@ -523,21 +628,8 @@ export class RemoteCommandProcessor {
   ): Promise<string> {
     if (description === '') return '用法:定时 <表达式> <描述>(如:定时 10分钟 检查更新;定时 每天9:00 写日报)'
     const owner = this.ownerFromKey(key)
-    const tasks = this.config?.get().scheduledTasks ?? []
-    const task = {
-      id: `sched-${Date.now()}`,
-      channel: owner.channel,
-      userId: owner.userId,
-      pushTarget,
-      description,
-      delay,
-      nextAt: this.nextFireTime(delay, Date.now()),
-    }
-    this.saveTasks([...tasks, task])
-    const when = delay.kind === 'once'
-      ? `${Math.round(delay.delayMs / 60000)} 分钟后`
-      : `每天 ${String(delay.hours).padStart(2, '0')}:${String(delay.minutes).padStart(2, '0')}`
-    return `⏰ 定时任务已添加:${when} 执行「${description.slice(0, 50)}」\n发「定时列表」查看,「取消定时 <编号>」取消`
+    const added = this.addScheduled(owner.channel, owner.userId, delay, description, pushTarget)
+    return `${added}\n发「定时列表」查看,「取消定时 <编号>」取消`
   }
 
   private saveTasks(tasks: Array<{ id: string; channel: string; userId: string; pushTarget?: { scope: string; targetId: string } | null; description: string; delay: { kind: 'once'; delayMs: number } | { kind: 'daily'; hours: number; minutes: number }; nextAt: number }>): void {

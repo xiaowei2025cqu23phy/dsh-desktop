@@ -131,6 +131,10 @@ check('定时-添加', parseCommand('定时 10分钟 检查更新'), { kind: 'sc
 check('定时-每天添加', parseCommand('定时 每天9:00 写日报'), { kind: 'sched', action: 'add', delay: { kind: 'daily', hours: 9, minutes: 0 }, description: '写日报' })
 check('定时-列表', parseCommand('定时列表'), { kind: 'sched', action: 'list' })
 check('定时-取消', parseCommand('取消定时 2'), { kind: 'sched', action: 'remove', index: 1 })
+check('目录', parseCommand('目录 D:/work/proj'), { kind: 'ls', path: 'D:/work/proj' })
+check('ls', parseCommand('ls src'), { kind: 'ls', path: 'src' })
+check('文件', parseCommand('文件 D:/work/README.md'), { kind: 'cat', path: 'D:/work/README.md' })
+check('cat', parseCommand('cat src/a.ts'), { kind: 'cat', path: 'src/a.ts' })
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

@@ -482,5 +482,27 @@ function makeHarness(log) {
   check('定时-取消后空', stored.scheduledTasks.length, 0)
 }
 
+// ---- 目录浏览:白名单校验 ----
+{
+  const tempDir = require('node:fs').mkdtempSync(require('node:os').tmpdir() + '/dsh-ls-')
+  require('node:fs').writeFileSync(tempDir + '/hello.txt', '你好')
+  const processor = new RemoteCommandProcessor({
+    client: () => ({
+      async rpc(method) {
+        if (method === 'workspace.list') return { items: [{ path: tempDir }] }
+        return {}
+      },
+      async respond() { return { accepted: true } },
+    }),
+  })
+  const ls = await processor.handleText('telegram', '42', '目录 ' + tempDir, undefined)
+  check('目录-列出', ls.includes('hello.txt'), true)
+  const cat = await processor.handleText('telegram', '42', '文件 ' + tempDir + '/hello.txt', undefined)
+  check('文件-内容', cat.includes('你好'), true)
+  const denied = await processor.handleText('telegram', '42', '目录 C:/Windows/System32', undefined)
+  check('目录-白名单外拒绝', denied.includes('已拒绝访问'), true)
+  require('node:fs').rmSync(tempDir, { recursive: true, force: true })
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)
