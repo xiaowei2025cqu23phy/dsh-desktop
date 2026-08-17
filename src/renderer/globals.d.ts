@@ -94,6 +94,7 @@ interface DesktopApi {
   bot: {
     getConfig(): Promise<BotPromptConfigView>
     setConfig(patch: { taskPrompt?: string; chatPrompt?: string }): Promise<BotPromptConfigView>
+    help(): Promise<string>
   }
   harness: {
     getStatus(): Promise<HarnessStatus>

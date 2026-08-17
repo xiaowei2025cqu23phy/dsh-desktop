@@ -67,6 +67,7 @@ const api = {
   bot: {
     getConfig: () => ipcRenderer.invoke('bot:getConfig'),
     setConfig: (patch: { taskPrompt?: string; chatPrompt?: string }) => ipcRenderer.invoke('bot:setConfig', patch),
+    help: () => ipcRenderer.invoke('bot:help'),
   },
   appearance: {
     getConfig: () => ipcRenderer.invoke('appearance:getConfig'),

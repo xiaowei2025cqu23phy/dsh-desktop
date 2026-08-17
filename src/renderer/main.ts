@@ -1013,6 +1013,21 @@ function bind(): void {
     await API.bot.setConfig({ chatPrompt: ($id('bot-chat-prompt') as HTMLTextAreaElement).value.trim() })
     S.toast('对话模式提示词已保存', 'ok')
   })
+  // 机器人指令集(桌面端可查看)
+  $id('btn-bot-help').addEventListener('click', async () => {
+    const pre = $id('bot-help-text')
+    if (!pre.classList.contains('hidden')) {
+      pre.classList.add('hidden')
+      return
+    }
+    pre.textContent = '加载中…'
+    pre.classList.remove('hidden')
+    try {
+      pre.textContent = await API.bot.help()
+    } catch (error) {
+      pre.textContent = '加载失败:' + String(error)
+    }
+  })
 
   // QQ 扫码登录
   let onboardTimer: number | null = null
