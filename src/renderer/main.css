@@ -139,6 +139,22 @@ select:disabled { opacity: 0.55; }
 .view-error-box h2 { margin-bottom: 10px; }
 .view-error-box p { color: var(--text-dim); margin-bottom: 16px; word-break: break-all; }
 
+/* ---- 桌面宠物 ---- */
+.pet-canvas {
+  position: fixed;
+  right: 18px;
+  bottom: 14px;
+  width: 140px;
+  height: 120px;
+  z-index: 2147483000;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+.pet-canvas:active { cursor: grabbing; }
+.pet-canvas.hidden { display: none; }
+
 /* ---- 设置抽屉 ---- */
 .drawer {
   position: fixed;

@@ -554,5 +554,37 @@ function makeHarness(log) {
   check('用量-回合', usage.includes('回合'), true)
 }
 
+// ---- 角色扮演:设定 → 对话注入角色设定 → 清除 ----
+{
+  const stored = {}
+  const fakeConfig = {
+    get: () => ({ bot: { character: stored.character ?? '', chatPrompt: '朋友提示' }, chatSessions: stored }),
+    update: (key, value) => { if (key === 'bot') { stored.character = value.character } return undefined },
+  }
+  const log = []
+  const processor = new RemoteCommandProcessor(makeHarness(log), fakeConfig)
+  // 设定角色
+  const setReply = await processor.handleText('telegram', '42', '角色 你是温柔的英语老师', undefined)
+  check('角色-设定回复', setReply.startsWith('🎭 角色已设定'), true)
+  // 对话消息注入 [角色设定]
+  await processor.handleText('telegram', '42', '进入', undefined)
+  await processor.handleText('telegram', '42', '教我一句英语', undefined)
+  const chatPrompt = log.find(([kind, m, p]) => kind === 'rpc' && m === 'session.prompt')
+  check('角色-对话注入', chatPrompt[2].content[0].text.includes('[角色设定]\n你是温柔的英语老师'), true)
+  check('角色-叠加模式设定', chatPrompt[2].content[0].text.includes('[模式设定]\n朋友提示'), true)
+  // 任务模式不注入角色
+  log.length = 0
+  await processor.handleText('telegram', '42', '任务 写代码', undefined)
+  const taskPrompt = log.find(([kind, m, p]) => kind === 'rpc' && m === 'session.prompt')
+  check('角色-任务不注入', taskPrompt[2].content[0].text.includes('[角色设定]'), false)
+  // 清除角色
+  const clearReply = await processor.handleText('telegram', '42', '角色 无', undefined)
+  check('角色-清除回复', clearReply.includes('已清除角色设定'), true)
+  log.length = 0
+  await processor.handleText('telegram', '42', '接着聊', undefined)
+  const chatPrompt2 = log.find(([kind, m, p]) => kind === 'rpc' && m === 'session.prompt')
+  check('角色-清除后不注入', chatPrompt2[2].content[0].text.includes('[角色设定]'), false)
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

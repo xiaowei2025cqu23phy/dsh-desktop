@@ -25,6 +25,7 @@ export type QQCommand =
   | { kind: 'cat'; path: string }
   | { kind: 'export'; sessionId: string }
   | { kind: 'usage' }
+  | { kind: 'character'; text: string }
   | { kind: 'unknown'; text: string }
 
 /** 定时任务的调度表达(解析结果)。 */
@@ -76,6 +77,10 @@ export function parseCommand(content: string): QQCommand {
     return { kind: 'exit' }
   }
   const parts = content.trim().split(/\s+/)
+  // 角色扮演:角色 <设定> / 角色 无(清除)
+  if (parts[0] === '角色' || parts[0] === '扮演' || parts[0] === 'character') {
+    return { kind: 'character', text: content.trim().slice(parts[0].length).trim() }
+  }
   if (parts[0] === '停止' || parts[0] === 'cancel') {
     return { kind: 'cancel', sessionId: parts[1] ?? '' }
   }

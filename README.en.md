@@ -102,10 +102,19 @@ In **Settings → QQ Bot**, fill in the AppID/AppSecret from the [QQ Open Platfo
 | `停止 <sessionId>` / `打开 <sessionId>` | Stop a task / view session content | `停止 session-xxxxxxxx` |
 | `允许` / `拒绝` | **Approval replies**: allow/reject a pending permission request (add a session id when several are pending) | `允许`、`拒绝 session-xxxxxxxx` |
 | `选 <number>` | **Question replies**: answer an agent question (multi-select `选 1 3`, custom `选 自定义:…`, batch `#2 选 1`) | `选 2` |
+| `定时 <duration> <task>` | **Scheduled tasks**: once (`10分钟`/`5m`/`2小时`/`1天`) or daily (`每天9:00`) | `定时 10分钟 检查更新` |
+| `定时列表` / `取消定时 <index>` | List / cancel scheduled tasks | `取消定时 2` |
+| `目录 <path>` / `文件 <path>` | Browse workspace dirs / view text files (allowlisted) | `目录 D:/work`、`文件 D:/work/README.md` |
+| `导出 <sessionId>` | Export a session to Markdown (saved under the desktop `exports/` dir) | `导出 session-xxxxxxxx` |
+| `用量` | Today's usage stats (sessions/turns/tokens) | `用量` |
+| `角色 <setting>` | **Role-play**: set a character for chat mode (pure chat only); `角色 无` clears it | `角色 你是温柔的英语老师` |
+| *(send an image in DM)* | **Image understanding**: in chat mode, send an image and the agent analyzes it | send a screenshot → `看看这张图有什么问题` |
 
 **Buttons**: after a task starts, inline buttons appear — ⏹ Stop / 📋 Progress / 📖 Open; approvals carry ✅ Allow / ❌ Deny; single-choice questions carry option buttons — tap to act/answer, almost no typing needed.
 
-**Mode prompts**: `任务 xxx` commands run the agent as a **professional assistant**; chat mode speaks like a **friend**. Both prompts are customizable in the desktop app (**Settings → QQ Bot**); leave blank to disable injection.
+**Mode prompts**: `任务 xxx` commands run the agent as a **professional assistant**; chat mode speaks like a **friend**. Both prompts are customizable in the desktop app (**Settings → QQ Bot**); leave blank to disable injection. **Role-play**: `角色 <setting>` adds a character to chat mode (e.g. "你是温柔的英语老师"), `角色 无` clears it; a default character can also be preset in the desktop app.
+
+**Image understanding**: in chat mode, just send an image in a DM and the agent analyzes it — no extra configuration needed.
 
 **Chat visibility**: QQ/Telegram chat sessions are pinned at the top of the phone PWA sidebar under "🤖 机器人对话" — open it to see the full conversation and follow it live (streaming).
 
