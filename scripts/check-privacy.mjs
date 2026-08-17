@@ -36,6 +36,13 @@ const SENSITIVE_FILES = [
   /qq-welcomed/,
 ]
 
+/** API 密钥格式(误提交即泄漏;用格式而非明文,免于在脚本里存密钥)。 */
+const SECRET_PATTERNS = [
+  { name: 'Gemini API 密钥', pattern: /AIza[0-9A-Za-z_-]{35}/ },
+  { name: 'OpenAI 风格密钥', pattern: /sk-[0-9A-Za-z]{20,}/ },
+  { name: 'GitHub 令牌', pattern: /ghp_[0-9A-Za-z]{36}/ },
+]
+
 let failures = 0
 
 function fail(where, what) {
@@ -65,13 +72,16 @@ const untracked = execSync('git ls-files --others --exclude-standard', { encodin
 checkNames('tracked', allNames)
 checkNames('untracked', untracked)
 
-// 2. 已知敏感值扫描(仓库文本文件)
-if (process.argv.includes('--scan-values')) {
-  for (const file of allNames) {
-    if (!/\.(ts|js|mjs|json|md|html|yml|yaml)$/.test(file)) continue
+// 2. 已知敏感值扫描(仓库文本文件;默认开启,无需 --scan-values)
+{
+  const files = [...allNames, ...untracked]
+  for (const file of files) {
+    if (!/\.(ts|js|mjs|json|md|html|yml|yaml|gql)$/.test(file)) continue
     try {
       const text = readFileSync(file, 'utf8')
-      if (text.includes('REPLACED_WITH_ENV_TOKEN')) fail('value', `${file} 包含网关令牌`)
+      for (const secret of SECRET_PATTERNS) {
+        if (secret.pattern.test(text)) fail('value', `${file} 疑似包含${secret.name}`)
+      }
     } catch { /* 忽略不可读 */ }
   }
 }
