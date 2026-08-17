@@ -27,6 +27,7 @@
     questions: {},        // sessionId -> { rpcId, sessionId, questions }
     questionCards: {},    // sessionId -> DOM 元素
     fsPath: '',           // 文件夹浏览当前路径('' = 根列表)
+    defaultModel: null,   // { provider, model } 桌面端预设模型(host.describe)
   }
 
   var S = {
@@ -1063,10 +1064,26 @@
   }
 
   function loadModels() {
-    return apiRpc('llm.models', {}).then(function (data) {
+    return Promise.all([
+      apiRpc('llm.models', {}),
+      apiRpc('host.describe', {}).catch(function () { return {} }),
+    ]).then(function (results) {
+      var data = results[0]
+      var host = results[1] || {}
+      state.defaultModel = (typeof host.provider === 'string' && typeof host.model === 'string')
+        ? { provider: host.provider, model: host.model }
+        : null
       var groups = data.groups || []
       var select = $('task-model')
       select.innerHTML = ''
+      // 预设模型(桌面端设置的默认模型)置顶并默认选中。
+      if (state.defaultModel) {
+        var preset = document.createElement('option')
+        preset.value = 'default'
+        preset.textContent = '⭐ 预设模型(' + state.defaultModel.provider + ' / ' + state.defaultModel.model + ')'
+        preset.selected = true
+        select.appendChild(preset)
+      }
       groups.forEach(function (group) {
         group.models.forEach(function (model) {
           var o = document.createElement('option')
@@ -1101,6 +1118,11 @@
     else if (workspaceValue !== '') payload.workspaceId = workspaceValue
     apiRpc('session.create', payload).then(function (created) {
       var sessionId = created.sessionId
+      if (modelValue === 'default' && state.defaultModel) {
+        // 预设模型:显式应用(与桌面端一致,不随 harness 默认漂移)。
+        return apiRpc('session.selectModel', { sessionId: sessionId, provider: state.defaultModel.provider, model: state.defaultModel.model })
+          .then(function () { return sessionId })
+      }
       if (modelValue !== '') {
         var parts = modelValue.split('|')
         return apiRpc('session.selectModel', { sessionId: sessionId, provider: parts[0], model: parts[1] })
