@@ -95,12 +95,19 @@ In **Settings → QQ Bot**, fill in the AppID/AppSecret from the [QQ Open Platfo
 | `任务 <description>` | Run a task in the default workspace | `任务 分析这个仓库的架构` |
 | `任务 @<workspace> <description>` | Run in a specific workspace | `任务 @qqbot 修复登录 bug` |
 | `任务 目录:<path> <description>` | Run in a specific directory | `任务 目录:D:/work 写一个脚本` |
-| `进入 <workspace/dir>` | **Enter chat mode** (no argument = pure chat, no workspace bound) | `进入 qqbot`、`进入` |
-| *(chat mode)* | Send messages directly to chat continuously in that workspace; `退出` ends it | `帮我看看项目里的 TODO` → … → `退出` |
+| `进入` | **Pure chat**: no workspace bound, friend mode | `进入` |
+| `进入 <workspace/dir>` | Chat inside that workspace (assistant mode) | `进入 qqbot`、`进入 D:/work` |
+| *(chat mode)* | Just send messages, no prefix needed; the agent's reply is **pushed back automatically**, no "sent" noise; `退出` ends it | `帮我看看项目里的 TODO` → 💬 reply → `退出` |
 | `进展 <sessionId>` | Live task progress (status / tool stats / latest output) | `进展 session-xxxxxxxx` |
 | `停止 <sessionId>` / `打开 <sessionId>` | Stop a task / view session content | `停止 session-xxxxxxxx` |
 | `允许` / `拒绝` | **Approval replies**: allow/reject a pending permission request (add a session id when several are pending) | `允许`、`拒绝 session-xxxxxxxx` |
 | `选 <number>` | **Question replies**: answer an agent question (multi-select `选 1 3`, custom `选 自定义:…`, batch `#2 选 1`) | `选 2` |
+
+**Buttons**: after a task starts, inline buttons appear — ⏹ Stop / 📋 Progress / 📖 Open; approvals carry ✅ Allow / ❌ Deny; single-choice questions carry option buttons — tap to act/answer, almost no typing needed.
+
+**Mode prompts**: `任务 xxx` commands run the agent as a **professional assistant**; chat mode speaks like a **friend**. Both prompts are customizable in the desktop app (**Settings → QQ Bot**); leave blank to disable injection.
+
+**Chat visibility**: QQ/Telegram chat sessions are pinned at the top of the phone PWA sidebar under "🤖 机器人对话" — open it to see the full conversation and follow it live (streaming).
 
 Typical flow: `工作区` to list → `进入 qqbot` → chat freely → `退出`.
 
