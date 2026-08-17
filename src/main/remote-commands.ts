@@ -34,6 +34,8 @@ interface SessionOwner {
   userId: string
   /** 主动推送目标(群消息=群,私聊=用户);缺失时按 userId 回退。 */
   pushTarget?: { scope: string; targetId: string }
+  /** 会话类型:task=任务(完成/失败汇报),chat=对话(不推送回合结束汇报)。 */
+  kind: 'task' | 'chat'
 }
 
 /** 待审批项。 */
@@ -520,7 +522,7 @@ export class RemoteCommandProcessor {
       if (workspaceId !== null) payload.workspaceId = workspaceId
       else if (cwd !== null) payload.cwd = cwd
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
-      this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget })
+      this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
       await client.rpc('session.prompt', {
         sessionId: created.sessionId,
         mode: 'queue',
@@ -563,7 +565,7 @@ export class RemoteCommandProcessor {
       if (workspaceId !== null) payload.workspaceId = workspaceId
       else if (cwd !== null) payload.cwd = cwd
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
-      this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget })
+      this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'chat' })
       this.chatContexts.set(key, { sessionId: created.sessionId, label })
       this.persistChat(key)
       const lines = target === ''
@@ -669,11 +671,13 @@ export class RemoteCommandProcessor {
     }
   }
 
-  /** 会话事件汇报:turn/end 时向发起者推送完成/失败通知(同会话 5 分钟内去重)。 */
+  /** 会话事件汇报:turn/end 时向发起者推送完成/失败通知(仅任务会话;同会话 5 分钟内去重)。 */
   private handleSessionEvent(payload: Record<string, unknown>): void {
     const sessionId = String(payload.sessionId ?? '')
     const owner = this.sessionOwners.get(sessionId)
     if (owner === undefined || !this.reportChannels.has(owner.channel)) return
+    // 对话会话不推送回合结束汇报(聊天自然进行,报"任务完成"会很怪)。
+    if (owner.kind === 'chat') return
     if (!isRecord(payload.event)) return
     if (payload.event.type !== 'turn/end') return
     const data = isRecord(payload.event.data) ? payload.event.data : {}
@@ -834,7 +838,7 @@ export class RemoteCommandProcessor {
   // ---- 内部 ----
 
   /** 从 `${channel}:${userId}` 拆出归属(通道名不含冒号,userId 为 openid/数字)。 */
-  private ownerFromKey(key: string): SessionOwner {
+  private ownerFromKey(key: string): Pick<SessionOwner, 'channel' | 'userId'> {
     const sep = key.indexOf(':')
     return sep < 0
       ? { channel: key, userId: '' }
@@ -842,7 +846,7 @@ export class RemoteCommandProcessor {
   }
 
   /** 查该用户可应答的待审批项;sessionId/approvalId 非空时精确匹配。 */
-  private findPendingApproval(owner: SessionOwner, sessionId: string, approvalId: string): PendingApproval | null {
+  private findPendingApproval(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId: string, approvalId: string): PendingApproval | null {
     for (const pending of this.pendingApprovals.values()) {
       if (sessionId !== '' && pending.sessionId !== sessionId) continue
       if (approvalId !== '' && pending.approvalId !== approvalId) continue
@@ -853,7 +857,7 @@ export class RemoteCommandProcessor {
   }
 
   /** 查该用户最近的待回答提问。 */
-  private findPendingQuestion(owner: SessionOwner, sessionId?: string): PendingQuestion | null {
+  private findPendingQuestion(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId?: string): PendingQuestion | null {
     for (const pending of this.pendingQuestions.values()) {
       if (sessionId !== undefined && sessionId !== '' && pending.sessionId !== sessionId) continue
       const o = this.sessionOwners.get(pending.sessionId)

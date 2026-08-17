@@ -187,7 +187,7 @@ function makeHarness(log) {
   const pushes = []
   const processor = new RemoteCommandProcessor(makeHarness([]))
   processor.setPush((channel, userId, text) => pushes.push([channel, userId, text]))
-  await processor.handleText('telegram', '42', '进入 ws1')
+  await processor.handleText('telegram', '42', '任务 干活', undefined)
   pushes.length = 0
   // 未开启汇报:不推送
   processor.handleInteractionFrame({
@@ -350,6 +350,17 @@ function makeHarness(log) {
   const processor2 = new RemoteCommandProcessor(makeHarness([]), fakeConfig)
   const reply2 = await processor2.handleText('telegram', '42', '继续聊', undefined)
   check('持久化-恢复对话会话', reply2.includes('✓ 已发送'), true)
+  // 对话会话的 turn/end 不推送"任务完成"汇报
+  const pushes3 = []
+  const processor3 = new RemoteCommandProcessor(makeHarness([]))
+  processor3.setPush((channel, userId, text) => pushes3.push([channel, userId, text]))
+  processor3.setReport('telegram', true)
+  await processor3.handleText('telegram', '42', '进入', undefined)
+  processor3.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-chat1', method: 'session/event',
+    payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'ok' } } } },
+  })
+  check('对话回合不推完成汇报', pushes3.length, 0)
 }
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
