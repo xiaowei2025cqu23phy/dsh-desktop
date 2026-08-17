@@ -615,9 +615,11 @@
     Promise.all([
       apiRpc('workspace.list', {}),
       apiRpc('session.list', {}),
+      fetch(state.server + '/api/info?token=' + encodeURIComponent(state.token), { signal: AbortSignal.timeout(10000) }).then(function (r) { return r.json() }).catch(function () { return {} }),
     ]).then(function (results) {
       var wsData = results[0]
       var sessData = results[1]
+      var info = results[2] || {}
       var workspaces = wsData.items || []
       // 隐藏:子代理会话(origin)、未发生的空会话(blank)、已归档会话。
       var archived = new Set(wsData.archivedSessionIds || [])
@@ -625,20 +627,24 @@
         return !s.origin && !s.blank && !archived.has(s.sessionId)
       })
       sessions.sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0) })
+      // 机器人通道的固定对话会话(QQ/Telegram 聊天)→ 置顶分组,手机直接看到。
+      var botChatIds = new Set(info.chatSessionIds || [])
+      var botChats = sessions.filter(function (s) { return botChatIds.has(s.sessionId) })
+      var rest = sessions.filter(function (s) { return !botChatIds.has(s.sessionId) })
       var byPath = {}
       workspaces.forEach(function (ws) {
         ws.sessions = []
         byPath[ws.path] = ws
       })
       var unmatched = []
-      sessions.forEach(function (s) {
+      rest.forEach(function (s) {
         var ws = byPath[s.cwd]
         if (ws) ws.sessions.push(s)
         else unmatched.push(s)
       })
       state.workspaces = workspaces
       state.currentWsId = findWorkspaceId(state.currentWsPath) || state.currentWsId
-      renderSidebar(unmatched)
+      renderSidebar(unmatched, botChats)
     }).catch(function (err) {
       list.innerHTML = '<p class="empty">加载失败:' + S.escapeHtml(err.message) + '</p>'
     })
@@ -648,10 +654,14 @@
     return (s.projections && s.projections.values && s.projections.values.title) || '新会话'
   }
 
-  function renderSidebar(unmatched) {
+  function renderSidebar(unmatched, botChats) {
     var list = $('workspace-list')
     list.innerHTML = ''
     var frag = document.createDocumentFragment()
+    // 机器人通道对话(QQ/Telegram 聊天)置顶,手机直接看到。
+    if (botChats && botChats.length > 0) {
+      frag.appendChild(wsGroupElement('🤖 机器人对话', null, botChats, true))
+    }
     if (unmatched.length > 0) {
       frag.appendChild(wsGroupElement('最近', null, unmatched, true))
     }
