@@ -249,6 +249,8 @@ export class RemoteCommandProcessor {
       '  例:工作区',
       '模型 — 可用模型列表',
       '  例:模型',
+      '模型 <名称> — 切换当前对话的模型',
+      '  例:模型 deepseek-v4',
       '',
       '🚀 任务类(一次性任务)',
       '任务 <描述> — 默认工作区执行',
@@ -317,6 +319,8 @@ export class RemoteCommandProcessor {
         return this.cmdWorkspaces()
       case 'models':
         return this.cmdModels()
+      case 'model':
+        return this.cmdModelSwitch(key, command.query)
       case 'cancel':
         return this.cmdCancel(command.sessionId)
       case 'open':
@@ -396,6 +400,42 @@ export class RemoteCommandProcessor {
       ).join('\n')
     } catch (error) {
       return `查询失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  /**
+   * 切换模型:在当前对话/最近会话上执行 session.selectModel。
+   * 例:模型 deepseek-v4 / 模型 gpt-5.6
+   */
+  private async cmdModelSwitch(key: string, query: string): Promise<string> {
+    if (query === '') return '用法:模型 <模型名/前缀>(如:模型 deepseek-v4)'
+    const ctx = this.chatContexts.get(key)
+    if (ctx === undefined) return '当前不在对话模式,先发「进入」再切换模型(或直接发「模型」查看列表)'
+    const client = this.harness.client()
+    try {
+      const catalog = await client.rpc<{ groups: Array<{ id: string; name?: string; models: Array<{ id: string; name?: string }> }> }>('llm.models')
+      const groups = catalog.groups ?? []
+      let matches: Array<{ provider: string; model: string }> = []
+      for (const g of groups) {
+        for (const m of g.models ?? []) {
+          if (m.id.toLowerCase().includes(query.toLowerCase()) || (m.name ?? '').toLowerCase().includes(query.toLowerCase())) {
+            matches.push({ provider: g.id, model: m.id })
+          }
+        }
+      }
+      if (matches.length === 0) return `未找到模型「${query}」,发「模型」查看可用列表`
+      if (matches.length > 1) {
+        return `「${query}」匹配多个模型,请精确一点:\n${matches.slice(0, 6).map((x) => `  ${x.provider}/${x.model}`).join('\n')}`
+      }
+      const target = matches[0]
+      await client.rpc('session.selectModel', {
+        sessionId: ctx.sessionId,
+        provider: target.provider,
+        model: target.model,
+      })
+      return `✓ 已切换到 ${target.provider}/${target.model}(会话 ${ctx.sessionId.slice(0, 20)}…)`
+    } catch (error) {
+      return `切换失败:${error instanceof Error ? error.message : String(error)}`
     }
   }
 

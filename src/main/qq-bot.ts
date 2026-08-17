@@ -46,7 +46,7 @@ export class QQBotAdapter {
   /** userId(openid)→ 主动推送目标(登记自最近一次交互)。 */
   private userTargets = new Map<string, { target: PushTarget; ts: number }>()
   /** 流式对话会话(userId → 状态;QQ 私聊打字机效果)。 */
-  private streamSessions = new Map<string, { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; seq: number }>()
+  private streamSessions = new Map<string, { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; seq: number; flushing: boolean }>()
   /** 扫码登录流程状态。 */
   private onboardAbort: AbortController | null = null
   private onboardProgress: OnboardProgress | null = null
@@ -203,12 +203,13 @@ export class QQBotAdapter {
       this.streamSessions.set(userId, session)
     }
     session.buffer += delta
-    if (session.timer === null && session.buffer.length >= 12) {
+    if (session.timer === null && session.buffer.length >= 12 && !session.flushing) {
       void this.flushStream(bot, userId, target, session, false)
-    } else if (session.timer === null) {
-      session.timer = setTimeout(() => {
-        session.timer = null
-        void this.flushStream(bot, userId, target, session, false)
+    } else if (session.timer === null && !session.flushing) {
+      const s = session
+      s.timer = setTimeout(() => {
+        s.timer = null
+        void this.flushStream(bot, userId, target, s, false)
       }, 350)
     }
   }
@@ -235,9 +236,11 @@ export class QQBotAdapter {
     bot: QQBotLike,
     userId: string,
     target: { scope: string; targetId: string },
-    session: { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; seq: number },
+    session: { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; seq: number; flushing: boolean },
     done: boolean,
   ): Promise<void> {
+    if (session.flushing) return
+    session.flushing = true
     const config = this.getConfig()
     const creds = { appId: config.appId.trim(), clientSecret: config.appSecret.trim() }
     const body: Record<string, unknown> = {
@@ -251,9 +254,11 @@ export class QQBotAdapter {
     }
     if (session.streamMsgId !== '') body.stream_msg_id = session.streamMsgId
     try {
-      const response = await bot.messageApi.sendC2CStreamMessage(creds, target.targetId, body) as { stream_msg_id?: unknown }
+      const response = await bot.messageApi.sendC2CStreamMessage(creds, target.targetId, body) as { id?: unknown; stream_msg_id?: unknown }
       session.index += 1
-      if (typeof response.stream_msg_id === 'string') session.streamMsgId = response.stream_msg_id
+      // 服务端返回的流 ID 在响应 body 的 id 字段(参考 SDK StreamSession 实现)。
+      const streamId = typeof response.id === 'string' ? response.id : response.stream_msg_id
+      if (typeof streamId === 'string') session.streamMsgId = streamId
       if (done) session.buffer = ''
     } catch (error) {
       console.error('[qq-bot] 流式发送失败(回合结束整段兜底):', error)
@@ -261,6 +266,12 @@ export class QQBotAdapter {
       // 兜底:整段文本用普通消息发送。
       if (session.buffer !== '') {
         await bot.sendText(target, session.buffer.slice(0, MAX_MESSAGE_LENGTH)).catch(() => {})
+      }
+    } finally {
+      session.flushing = false
+      // 冲刷期间又有增量:再调度一次(会话仍存在且缓冲足够长时)。
+      if (!done && session.buffer !== '' && session.buffer.length >= 12 && session.timer === null && this.streamSessions.has(userId)) {
+        void this.flushStream(bot, userId, target, session, false)
       }
     }
   }

@@ -421,5 +421,30 @@ function makeHarness(log) {
   check('群场景-整段缓冲推送', pushes.length === 1 && pushes[0][2].includes('大家好呀'), true)
 }
 
+// ---- 模型切换命令 ----
+{
+  const log = []
+  const processor = new RemoteCommandProcessor({
+    client: () => ({
+      async rpc(method, payload) {
+        log.push([method, payload])
+        if (method === 'llm.models') {
+          return { groups: [{ id: 'deepseek-official', models: [{ id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash' }] }, { id: 'gpt', models: [{ id: 'gpt-5.6' }] }] }
+        }
+        return {}
+      },
+      async respond() { return { accepted: true } },
+    }),
+  })
+  await processor.handleText('telegram', '42', '进入', undefined)
+  const r1 = await processor.handleText('telegram', '42', '模型 deepseek', undefined)
+  check('模型切换-前缀匹配', r1.includes('deepseek-v4-flash'), true)
+  check('模型切换-调用 selectModel', log.some(([m, p]) => m === 'session.selectModel' && p.provider === 'deepseek-official' && p.model === 'deepseek-v4-flash'), true)
+  const r2 = await processor.handleText('telegram', '42', '模型 不存在模型', undefined)
+  check('模型切换-未找到', r2.includes('未找到模型'), true)
+  const r3 = await processor.handleText('telegram', '7', '模型 deepseek', undefined)
+  check('模型切换-需对话模式', r3.includes('先发「进入」'), true)
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)
