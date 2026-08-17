@@ -199,7 +199,7 @@ export class QQBotAdapter {
     if (bot === null) return
     let session = this.streamSessions.get(userId)
     if (session === undefined) {
-      session = { streamMsgId: '', index: 0, buffer: '', timer: null, seq: 1 }
+      session = { streamMsgId: '', index: 0, buffer: '', timer: null, seq: 1, flushing: false }
       this.streamSessions.set(userId, session)
     }
     session.buffer += delta
