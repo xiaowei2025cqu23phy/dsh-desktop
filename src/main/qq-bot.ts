@@ -366,7 +366,6 @@ export class QQBotAdapter {
     if (content === '') return
     const userId = this.senderId(record)
     this.registerPushTarget(userId, record.replyTarget)
-    this.welcomeIfNew(userId, this.pushTargetOf(record.replyTarget))
     const reply = await this.processor.handleText('qq', userId, content, this.pushTargetOf(record.replyTarget))
     await this.reply(bot, record.replyTarget, reply)
     // 任务启动回复附带操作按钮(停止/进展/打开),像 PWA 一样一键操作。
