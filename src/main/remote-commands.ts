@@ -421,13 +421,13 @@ export class RemoteCommandProcessor {
     if (!/^session-/.test(sessionId)) return '请提供完整的会话 id(以 session- 开头)'
     const client = this.harness.client()
     try {
-      const data = await client.rpc<{ events: Array<{ event?: { type?: string; data?: { content?: unknown } } }> }>('session.history', { sessionId, maxMessages: 2 }, 30000)
+      const data = await client.rpc<{ events: Array<{ event?: { type?: string; data?: { message?: { content?: unknown } } } }> }>('session.history', { sessionId, maxMessages: 2 }, 30000)
       const events = data.events ?? []
       const assistantTexts: string[] = []
       const userTexts: string[] = []
       for (const entry of events) {
         const type = entry.event?.type
-        const content = entry.event?.data?.content
+        const content = entry.event?.data?.message?.content
         if (type === 'assistant/message' && Array.isArray(content)) {
           const text = content.map((b) => (b as { text?: string }).text ?? '').join('')
           if (text.trim() !== '') assistantTexts.push(text)
@@ -453,7 +453,7 @@ export class RemoteCommandProcessor {
     try {
       const [list, data] = await Promise.all([
         client.rpc<{ items: Array<{ sessionId: string; running?: boolean; title?: string | null }> }>('session.list', {}, 20000),
-        client.rpc<{ events: Array<{ event?: { type?: string; seq?: number; data?: { content?: unknown; name?: unknown; error?: unknown } } }> }>('session.history', { sessionId, maxMessages: 6 }, 30000),
+        client.rpc<{ events: Array<{ event?: { type?: string; seq?: number; data?: { message?: { content?: unknown }; name?: unknown; error?: unknown } } }> }>('session.history', { sessionId, maxMessages: 6 }, 30000),
       ])
       const meta = (list.items ?? []).find((s) => s.sessionId === sessionId)
       const events = data.events ?? []
@@ -461,8 +461,8 @@ export class RemoteCommandProcessor {
       const toolFails = events.filter((e) => e.event?.type === 'tool/result' && e.event.data?.error !== undefined).length
       const assistantTexts: string[] = []
       for (const entry of events) {
-        if (entry.event?.type === 'assistant/message' && Array.isArray(entry.event.data?.content)) {
-          const text = (entry.event.data.content as Array<{ text?: string }>).map((b) => b.text ?? '').join('')
+        if (entry.event?.type === 'assistant/message' && Array.isArray(entry.event.data?.message?.content)) {
+          const text = (entry.event.data.message.content as Array<{ text?: string }>).map((b) => b.text ?? '').join('')
           if (text.trim() !== '') assistantTexts.push(text)
         }
       }
@@ -734,15 +734,15 @@ export class RemoteCommandProcessor {
     }
     this.chatReplies.delete(sessionId)
     const client = this.harness.client()
-    void client.rpc<{ events: Array<{ event?: { type?: string; data?: { content?: unknown } } }> }>(
+    void client.rpc<{ events: Array<{ event?: { type?: string; data?: { message?: { content?: unknown } } } }> }>(
       'session.history', { sessionId, maxMessages: 2 }, 30000,
     ).then((data) => {
       const events = data.events ?? []
       let reply = ''
       for (let i = events.length - 1; i >= 0; i--) {
         const ev = events[i].event
-        if (ev?.type === 'assistant/message' && Array.isArray(ev.data?.content)) {
-          const text = (ev.data.content as Array<{ text?: string }>).map((b) => b.text ?? '').join('')
+        if (ev?.type === 'assistant/message' && Array.isArray(ev.data?.message?.content)) {
+          const text = (ev.data.message.content as Array<{ text?: string }>).map((b) => b.text ?? '').join('')
           if (text.trim() !== '') { reply = text; break }
         }
       }
