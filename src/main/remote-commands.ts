@@ -368,9 +368,27 @@ export class RemoteCommandProcessor {
     }
   }
 
-  private async cmdSessions(): Promise<string> {
+  private async cmdSessions(key?: string): Promise<string> {
     const client = this.harness.client()
     try {
+      // 对话模式中:「会话」列出当前工作区的会话供选择(返回工作区一级)。
+      if (key !== undefined) {
+        const ctx = this.chatContexts.get(key)
+        if (ctx !== undefined && !ctx.label.startsWith('(纯对话')) {
+          const ws = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string; sessions?: Array<{ sessionId: string; title?: string | null; blank?: boolean }> }> }>('workspace.list', {}, 20000)
+          const found = (ws.items ?? []).find((w) => w.title === ctx.label || w.path === ctx.label || w.workspaceId === ctx.label)
+          if (found !== undefined) {
+            const sessions = (found.sessions ?? []).filter((s) => !s.blank)
+            if (sessions.length === 0) return '该工作区暂无会话,发「进入 ' + ctx.label + ' 新」新建。'
+            const lines = [`工作区「${ctx.label}」的会话(当前在 ${sessions.findIndex((s) => s.sessionId === ctx.sessionId) + 1 || 1} 号):`]
+            sessions.slice(0, 8).forEach((s, i) => {
+              lines.push(`  ${i + 1}. ${(s.title ?? s.sessionId).slice(0, 40)}${s.sessionId === ctx.sessionId ? ' ← 当前' : ''}`)
+            })
+            lines.push(`回复「进入 ${ctx.label} <编号>」切换会话`)
+            return lines.join('\n')
+          }
+        }
+      }
       const [list, ws] = await Promise.all([
         client.rpc<{ items: Array<{ sessionId: string; title?: string | null; running?: boolean; blank?: boolean }> }>('session.list', {}, 20000),
         client.rpc<{ archivedSessionIds?: string[] }>('workspace.list', {}, 20000),
@@ -599,7 +617,12 @@ export class RemoteCommandProcessor {
   /** 通道级默认工作区/目录(QQ 配置;其他通道留空)。 */
   defaultTarget = ''
 
-  /** 进入对话模式;target 为空 = 纯对话(不绑定工作区/目录)。 */
+  /**
+   * 进入对话模式:
+   * - target 为空 = 纯对话(不绑定工作区,朋友模式)
+   * - target = 工作区名 [编号]:进入该工作区(助手模式);工作区有多个会话时
+   *   列出会话供选择(回复「进入 <工作区> <编号>」);「会话」可随时返回选择。
+   */
   private async cmdEnter(
     key: string,
     target: string,
@@ -610,24 +633,59 @@ export class RemoteCommandProcessor {
       let workspaceId: string | null = null
       let cwd: string | null = null
       let label = target
+      let sessionIndex = -1
       if (target === '') {
         label = '(纯对话,不绑定工作区)'
-      } else if (/[\\/]/.test(target)) {
-        cwd = target
       } else {
-        const workspaces = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string }> }>('workspace.list')
-        const found = (workspaces.items ?? []).find((w) => w.title === target || w.workspaceId === target || w.path === target)
-        if (found === undefined) {
-          return `未找到工作区「${target}」,发送「工作区」查看列表(或直接「进入」开始纯对话)`
+        // 支持「工作区名 编号」选择已有会话。
+        const parts = target.trim().split(/\s+/)
+        const last = parts[parts.length - 1]
+        if (/^\d+$/.test(last)) {
+          sessionIndex = Number(last) - 1
+          target = parts.slice(0, -1).join(' ')
+          label = target
         }
-        workspaceId = found.workspaceId
-        cwd = found.path ?? null
+        if (/[\\/]/.test(target)) {
+          cwd = target
+        } else {
+          const workspaces = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string; sessions?: Array<{ sessionId: string; title?: string | null; blank?: boolean }> }> }>('workspace.list')
+          const found = (workspaces.items ?? []).find((w) => w.title === target || w.workspaceId === target || w.path === target)
+          if (found === undefined) {
+            return `未找到工作区「${target}」,发送「工作区」查看列表(或直接「进入」开始纯对话)`
+          }
+          workspaceId = found.workspaceId
+          cwd = found.path ?? null
+          // 工作区有会话:列出供选择(除非用户已指定编号)。
+          const sessions = (found.sessions ?? []).filter((s) => !s.blank)
+          if (sessionIndex < 0 && sessions.length > 0) {
+            const lines = [`工作区「${target}」已有 ${sessions.length} 个会话,选择进入:`]
+            sessions.slice(0, 8).forEach((s, i) => {
+              lines.push(`  ${i + 1}. ${(s.title ?? s.sessionId).slice(0, 40)}`)
+            })
+            lines.push(`回复「进入 ${target} <编号>」选择;或「进入 ${target} 新」新建会话`)
+            return lines.join('\n')
+          }
+          if (sessionIndex >= 0 && sessions[sessionIndex] !== undefined) {
+            // 选择已有会话:直接切换,不新建。
+            const chosen = sessions[sessionIndex]
+            this.sessionOwners.set(chosen.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
+            this.chatContexts.set(key, { sessionId: chosen.sessionId, label: target })
+            this.persistChat(key)
+            return [
+              `已进入工作区「${target}」会话 ${sessionIndex + 1} ✓`,
+              `会话: ${chosen.sessionId}`,
+              '现在直接发消息即可对话;「会话」返回工作区选择,「退出」结束对话模式。',
+            ].join('\n')
+          }
+        }
       }
       const payload: Record<string, unknown> = {}
       if (workspaceId !== null) payload.workspaceId = workspaceId
       else if (cwd !== null) payload.cwd = cwd
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
-      this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'chat' })
+      // 工作区 = 助手模式;纯对话 = 朋友模式。
+      const kind = target === '' ? 'chat' : 'task'
+      this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind })
       this.chatContexts.set(key, { sessionId: created.sessionId, label })
       this.persistChat(key)
       const lines = target === ''
@@ -640,7 +698,7 @@ export class RemoteCommandProcessor {
         : [
             `已进入工作区「${target}」对话模式 ✓`,
             `会话: ${created.sessionId}`,
-            '现在直接发消息即可对话(无需指令前缀),发送「退出」结束对话模式。',
+            '现在直接发消息即可对话;「会话」返回工作区选择,「退出」结束对话模式。',
           ]
       return lines.join('\n')
     } catch (error) {
@@ -653,7 +711,10 @@ export class RemoteCommandProcessor {
     if (ctx === undefined) return '当前不在对话模式。'
     this.chatContexts.delete(key)
     this.persistChat(key)
-    return `已退出工作区「${ctx.label}」对话模式。会话 ${ctx.sessionId} 保留在后台,可发「打开 ${ctx.sessionId}」继续查看。`
+    const hint = this.autoChatChannels.has(key.split(':')[0])
+      ? '开启默认对话模式时,发任意消息将自动进入纯对话。'
+      : ''
+    return `已退出「${ctx.label}」对话模式。会话 ${ctx.sessionId} 保留在后台。${hint}`.trim()
   }
 
   private async cmdChatMessage(key: string, text: string, pushTarget?: { scope: string; targetId: string }): Promise<string> {
@@ -661,10 +722,13 @@ export class RemoteCommandProcessor {
     if (ctx === undefined) return this.fullHelp()
     const client = this.harness.client()
     try {
+      const owner = this.sessionOwners.get(ctx.sessionId)
+      // 工作区会话 = 助手模式提示词;纯对话 = 朋友模式提示词。
+      const mode = owner !== undefined && owner.kind === 'task' ? 'task' : 'chat'
       await client.rpc('session.prompt', {
         sessionId: ctx.sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: this.withModePrompt('chat', text) }],
+        content: [{ type: 'text', text: this.withModePrompt(mode, text) }],
       })
       // 注册回复推送:回合结束后把 agent 的回复主动推给发起者(对话体验)。
       // 重启后恢复的对话会话可能没有归属记录,这里补登记。
