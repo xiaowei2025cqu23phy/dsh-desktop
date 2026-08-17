@@ -428,6 +428,7 @@ function makeHarness(log) {
     client: () => ({
       async rpc(method, payload) {
         log.push([method, payload])
+        if (method === 'session.create') return { sessionId: 'session-test-1' }
         if (method === 'llm.models') {
           return { groups: [{ id: 'deepseek-official', models: [{ id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash' }] }, { id: 'gpt', models: [{ id: 'gpt-5.6' }] }] }
         }
