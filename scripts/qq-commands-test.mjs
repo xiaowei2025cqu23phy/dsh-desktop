@@ -139,5 +139,12 @@ check('导出', parseCommand('导出 session-abc'), { kind: 'export', sessionId:
 check('用量', parseCommand('用量'), { kind: 'usage' })
 check('统计', parseCommand('统计'), { kind: 'usage' })
 
+// 角色扮演
+check('角色-设定', parseCommand('角色 你是猫娘,说话带喵'), { kind: 'character', text: '你是猫娘,说话带喵' })
+check('角色-清除', parseCommand('角色 无'), { kind: 'character', text: '无' })
+check('扮演-设定', parseCommand('扮演 你是温柔的英语老师'), { kind: 'character', text: '你是温柔的英语老师' })
+check('character-设定', parseCommand('character 你是侦探'), { kind: 'character', text: '你是侦探' })
+check('角色-空', parseCommand('角色'), { kind: 'character', text: '' })
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

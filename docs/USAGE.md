@@ -155,6 +155,13 @@ This guide walks you through the desktop client end to end: installation, config
 | `停止 <会话id>` / `打开 <会话id>` | 停止任务 / 查看内容 | `停止 session-xxxxxxxx` |
 | `允许` / `拒绝` | **审批应答**:agent 请求权限时,允许/拒绝当前操作(多个待审批时带会话 id) | `允许` / `拒绝 session-xxxxxxxx` |
 | `选 <编号>` | **选择题应答**:回答 agent 的提问(多选:`选 1 3`;自定义:`选 自定义:先备份再删`;多题批次:`#2 选 1`) | `选 2` |
+| `定时 <时长> <任务>` | **定时任务**:一次性(`10分钟`/`5m`/`2小时`/`1天`)或每天(`每天9:00`) | `定时 10分钟 检查更新` |
+| `定时列表` / `取消定时 <编号>` | 查看 / 取消已排定时任务 | `取消定时 2` |
+| `目录 <路径>` / `文件 <路径>` | 浏览工作区目录 / 查看文本文件(白名单内) | `目录 D:/work`、`文件 D:/work/README.md` |
+| `导出 <会话id>` | 导出会话为 Markdown(保存在桌面端 `exports/` 目录) | `导出 session-xxxxxxxx` |
+| `用量` | 今日用量统计(会话数/回合数/Token) | `用量` |
+| `角色 <设定>` | **角色扮演**:对话模式叠加角色设定(仅纯对话生效);`角色 无` 清除 | `角色 你是温柔的英语老师` |
+| *(私聊发图片)* | **图片理解**:对话模式下直接发图片,agent 看图分析 | 发截图 → `看看这张图有什么问题` |
 
 **典型流程**:`工作区` 看列表 → `进入 qqbot` → 连续对话(修改代码、查资料……)→ `退出`。
 
@@ -180,6 +187,13 @@ This guide walks you through the desktop client end to end: installation, config
 | `停止 <sessionId>` / `打开 <sessionId>` | Stop a task / view content | `停止 session-xxxxxxxx` |
 | `允许` / `拒绝` | **Approval replies**: allow/reject the pending permission request (add a session id when several are pending) | `允许` / `拒绝 session-xxxxxxxx` |
 | `选 <number>` | **Question replies**: answer an agent question (multi-select: `选 1 3`; custom: `选 自定义:backup first`; multi-question batch: `#2 选 1`) | `选 2` |
+| `定时 <duration> <task>` | **Scheduled tasks**: once (`10分钟`/`5m`/`2小时`/`1天`) or daily (`每天9:00`) | `定时 10分钟 检查更新` |
+| `定时列表` / `取消定时 <index>` | List / cancel scheduled tasks | `取消定时 2` |
+| `目录 <path>` / `文件 <path>` | Browse workspace dirs / view text files (allowlisted) | `目录 D:/work`、`文件 D:/work/README.md` |
+| `导出 <sessionId>` | Export a session to Markdown (saved under the desktop `exports/` dir) | `导出 session-xxxxxxxx` |
+| `用量` | Today's usage stats (sessions/turns/tokens) | `用量` |
+| `角色 <setting>` | **Role-play**: set a character for chat mode (pure chat only); `角色 无` clears it | `角色 你是温柔的英语老师` |
+| *(send an image in DM)* | **Image understanding**: in chat mode, send an image and the agent analyzes it | send a screenshot → `看看这张图有什么问题` |
 
 **Typical flow**: `工作区` to list → `进入 qqbot` → chat continuously (fix code, look things up…) → `退出`.
 

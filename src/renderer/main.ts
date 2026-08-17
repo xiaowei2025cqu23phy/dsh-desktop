@@ -124,6 +124,8 @@ async function refreshStatus(): Promise<void> {
   } catch {
     return
   }
+  // 桌面宠物:连接/运行状态驱动动画节奏。
+  petBusy = status.state === 'running' || status.state === 'external'
   const pill = $id('status-pill')
   pill.className = `pill pill-${status.state}`
   pill.textContent = `${STATE_LABEL[status.state] ?? status.state} · ${status.baseUrl}`
@@ -1205,6 +1207,132 @@ function init(): void {
   setInterval(() => void refreshStatus(), 2000)
   void loadModels()
   void loadAppearance()
+  initPet()
+}
+
+// ---- 桌面宠物(小鲸鱼) ----
+
+let petBusy = false
+let petVisible = localStorage.getItem('dsh-pet') !== '0'
+
+function initPet(): void {
+  const canvas = $id('pet-canvas') as HTMLCanvasElement
+  const ctx = canvas.getContext('2d')
+  if (ctx === null) return
+  if (!petVisible) canvas.classList.add('hidden')
+  else canvas.classList.remove('hidden')
+
+  let x = canvas.offsetWidth / 2
+  let y = canvas.offsetHeight / 2
+  let t = 0
+  let dragging = false
+  let dx = 0
+  let dy = 0
+
+  const draw = (): void => {
+    t += 0.05
+    const speed = petBusy ? 2.2 : 0.8
+    const sway = Math.sin(t * speed) * (petBusy ? 0.22 : 0.12)
+    const bob = Math.sin(t * speed * 1.7) * 3
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.save()
+    ctx.translate(x, y + bob)
+    ctx.rotate(sway)
+
+    // 尾巴
+    ctx.fillStyle = '#2f6fb2'
+    ctx.beginPath()
+    ctx.moveTo(-22, 0)
+    ctx.lineTo(-36, -12 + Math.sin(t * speed * 2) * 4)
+    ctx.lineTo(-36, 12 + Math.sin(t * speed * 2 + 1) * 4)
+    ctx.closePath()
+    ctx.fill()
+    // 身体
+    const grad = ctx.createLinearGradient(-20, -14, 20, 14)
+    grad.addColorStop(0, '#3d7fd4')
+    grad.addColorStop(1, '#1f4e8c')
+    ctx.fillStyle = grad
+    ctx.beginPath()
+    ctx.ellipse(0, 0, 24, 15, 0, 0, Math.PI * 2)
+    ctx.fill()
+    // 鳍
+    ctx.fillStyle = '#2a62ab'
+    ctx.beginPath()
+    ctx.moveTo(2, 8)
+    ctx.quadraticCurveTo(12, 14, 18, 8)
+    ctx.quadraticCurveTo(10, 6, 2, 8)
+    ctx.fill()
+    // 眼睛
+    ctx.fillStyle = '#fff'
+    ctx.beginPath()
+    ctx.arc(12, -4, 5.5, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = '#12233f'
+    ctx.beginPath()
+    ctx.arc(13.5, -4, 2.6, 0, Math.PI * 2)
+    ctx.fill()
+    // 腮红/嘴
+    ctx.strokeStyle = '#7fb2e8'
+    ctx.lineWidth = 1.4
+    ctx.beginPath()
+    ctx.arc(15, 3, 4, -0.4, 0.9)
+    ctx.stroke()
+    ctx.restore()
+
+    // 冒泡(忙碌时更频繁)
+    if (Math.random() < (petBusy ? 0.16 : 0.05)) {
+      bubbles.push({ by: y - 16, bx: x + 8 + Math.random() * 8, r: 1.5 + Math.random() * 2 })
+    }
+    for (let i = bubbles.length - 1; i >= 0; i--) {
+      const b = bubbles[i]
+      b.by -= 0.8
+      b.bx += Math.sin(t + i) * 0.2
+      if (b.by < 0) bubbles.splice(i, 1)
+      else {
+        ctx.strokeStyle = 'rgba(180,220,255,0.7)'
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.arc(b.bx, b.by, b.r, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+    }
+    requestAnimationFrame(draw)
+  }
+  const bubbles: Array<{ by: number; bx: number; r: number }> = []
+  requestAnimationFrame(draw)
+
+  // 拖动(移动 canvas 元素本身,绘制坐标保持中心)
+  canvas.addEventListener('pointerdown', (e) => {
+    dragging = true
+    dx = e.clientX - 70
+    dy = e.clientY - 60
+    canvas.setPointerCapture(e.pointerId)
+  })
+  canvas.addEventListener('pointermove', (e) => {
+    if (!dragging) return
+    canvas.style.left = `${e.clientX - dx}px`
+    canvas.style.top = `${e.clientY - dy}px`
+    canvas.style.right = 'auto'
+    canvas.style.bottom = 'auto'
+  })
+  canvas.addEventListener('pointerup', () => { dragging = false })
+  canvas.addEventListener('dblclick', () => {
+    petVisible = !petVisible
+    localStorage.setItem('dsh-pet', petVisible ? '1' : '0')
+    canvas.classList.toggle('hidden', !petVisible)
+  })
+  // 常驻右下角(未拖动时)
+  const place = (): void => {
+    if (dragging) return
+    canvas.style.left = 'auto'
+    canvas.style.top = 'auto'
+    canvas.style.right = '18px'
+    canvas.style.bottom = '14px'
+    x = canvas.offsetWidth / 2
+    y = canvas.offsetHeight / 2
+  }
+  place()
+  window.addEventListener('resize', place)
 }
 
 init()

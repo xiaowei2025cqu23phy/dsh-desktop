@@ -412,21 +412,58 @@ export class QQBotAdapter {
   private async handleMessage(msg: unknown): Promise<void> {
     const bot = this.bot
     if (bot === null) return
-    const record = msg as { content?: unknown; replyTarget?: unknown; author?: unknown }
-    if (typeof record.content !== 'string') return
-    const content = record.content.trim()
-    if (content === '') return
+    const record = msg as { content?: unknown; replyTarget?: unknown; author?: unknown; attachments?: unknown }
+    const content = typeof record.content === 'string' ? record.content.trim() : ''
     const userId = this.senderId(record)
     this.registerPushTarget(userId, record.replyTarget)
-    const reply = await this.processor.handleText('qq', userId, content, this.pushTargetOf(record.replyTarget))
+    const pushTarget = this.pushTargetOf(record.replyTarget)
+    // 图片消息(QQ C2C 图片 content 为 JSON {type:'image', data:url};也兼容 attachments)。
+    const image = await this.extractImage(record)
+    if (content === '' && image === undefined) return
+    const reply = await this.processor.handleText('qq', userId, content, pushTarget, image)
     await this.reply(bot, record.replyTarget, reply)
     // 任务启动回复附带操作按钮(停止/进展/打开),像 PWA 一样一键操作。
     const sessionMatch = /任务已启动 ✓\n会话: (session-[0-9a-f-]+)/.exec(reply)
     if (sessionMatch !== null) {
-      const target = this.pushTargetOf(record.replyTarget) ?? this.userTargets.get(userId)?.target
+      const target = pushTarget ?? this.userTargets.get(userId)?.target
       if (target !== undefined) {
         await bot.sendMarkdown(target, '⚡ 任务已启动,选择操作', { keyboard: buildActionKeyboard(sessionMatch[1]) }).catch(() => {})
       }
+    }
+  }
+
+  /** 从消息中提取图片:content JSON(image url)或 attachments;下载为 base64。 */
+  private async extractImage(record: { content?: unknown; attachments?: unknown }): Promise<{ mime: string; data: string } | undefined> {
+    let url = ''
+    if (typeof record.content === 'string') {
+      try {
+        const parsed = JSON.parse(record.content) as { type?: unknown; data?: unknown }
+        if (parsed.type === 'image' && typeof parsed.data === 'string' && /^https?:\/\//.test(parsed.data)) {
+          url = parsed.data
+        }
+      } catch {
+        // 非 JSON 文本消息,忽略。
+      }
+    }
+    if (url === '' && Array.isArray(record.attachments)) {
+      const img = record.attachments.find((a) => typeof a === 'object' && a !== null &&
+        ((a as { type?: unknown }).type === 'image' || /^https?:\/\//.test(String((a as { url?: unknown }).url ?? ''))))
+      if (img !== null && img !== undefined) {
+        url = String((img as { url?: unknown }).url ?? (img as { data?: unknown }).data ?? '')
+      }
+    }
+    if (url === '') return undefined
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(15000) })
+      if (!response.ok) return undefined
+      const buf = Buffer.from(await response.arrayBuffer())
+      if (buf.length > 10 * 1024 * 1024) return undefined
+      const type = response.headers.get('content-type') ?? ''
+      const mime = /^image\/(jpeg|png|webp|gif)$/.test(type) ? type : 'image/jpeg'
+      return { mime, data: buf.toString('base64') }
+    } catch (error) {
+      console.error('[qq-bot] 图片下载失败:', error)
+      return undefined
     }
   }
 

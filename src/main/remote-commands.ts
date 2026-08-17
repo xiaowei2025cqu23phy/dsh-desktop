@@ -107,6 +107,8 @@ export class RemoteCommandProcessor {
   private taskDescriptions = new Map<string, string>()
   /** 已自动重试过 TRANSPORT 的会话(每个会话最多重试一次)。 */
   private retriedTransports = new Set<string>()
+  /** 会话 Token 累计(来自 assistant/chunk usage 事件;本次运行内)。 */
+  private tokenUsage = new Map<string, { input: number; output: number; cache: number }>()
   /** 对话会话等待回复推送:发送消息后注册,回合结束把 agent 回复推给发起者。 */
   private chatReplies = new Map<string, { channel: string; userId: string; pushTarget?: { scope: string; targetId: string }; ts: number }>()
   /** 流式输出通道(QQ 私聊打字机效果);缺失时回合计束后整段推送。 */
@@ -146,11 +148,28 @@ export class RemoteCommandProcessor {
     this.config.update('chatSessions', { ...this.config.get().chatSessions, [key]: { sessionId: ctx.sessionId, label: ctx.label } })
   }
 
-  /** 注入模式提示词:工作=助手,对话=朋友(桌面端可自定义;空则不注入)。 */
+  /** 注入模式提示词:工作=助手,对话=朋友(桌面端可自定义;空则不注入);角色设定叠加。 */
   private withModePrompt(mode: 'task' | 'chat', text: string): string {
-    const prompt = this.config?.get().bot[mode === 'task' ? 'taskPrompt' : 'chatPrompt']?.trim() ?? ''
-    if (prompt === '') return text
-    return `[模式设定]\n${prompt}\n\n[消息]\n${text}`
+    const bot = this.config?.get().bot
+    const prompt = bot?.[mode === 'task' ? 'taskPrompt' : 'chatPrompt']?.trim() ?? ''
+    const character = mode === 'chat' ? bot?.character?.trim() ?? '' : ''
+    const sections: string[] = []
+    if (character !== '') sections.push(`[角色设定]\n${character}`)
+    if (prompt !== '') sections.push(`[模式设定]\n${prompt}`)
+    if (sections.length === 0) return text
+    return `${sections.join('\n\n')}\n\n[消息]\n${text}`
+  }
+
+  /** 设置/清除角色扮演设定(对话模式生效)。 */
+  private cmdCharacter(text: string): string {
+    if (this.config === undefined) return '角色设置不可用'
+    const value = text === '' || text === '无' || text === '清空' || text === '清除' || text === 'none'
+      ? ''
+      : text
+    this.config.update('bot', { character: value })
+    return value === ''
+      ? '已清除角色设定,恢复默认朋友模式。'
+      : `🎭 角色已设定:${value.slice(0, 60)}\n进入对话模式后生效(纯对话);「角色 无」清除。`
   }
 
   /** 开关某通道的默认对话模式。 */
@@ -209,24 +228,33 @@ export class RemoteCommandProcessor {
     text: string,
     /** 推送目标(群消息=群;私聊可不传,按 userId 回退)。 */
     pushTarget?: { scope: string; targetId: string },
+    /** 附带图片(base64;对话/任务消息会一并发给 agent)。 */
+    image?: { mime: string; data: string },
   ): Promise<string> {
     const content = text.trim()
     const key = `${channel}:${userId}`
     let reply: string
-    if (content === '') {
+    if (content === '' && image === undefined) {
       reply = ''
     } else {
       const command = parseCommand(content)
       if (command.kind === 'unknown') {
         const ctx = this.chatContexts.get(key)
         if (ctx !== undefined) {
-          reply = await this.cmdChatMessage(key, content, pushTarget)
+          reply = await this.cmdChatMessage(key, content, pushTarget, image)
         } else if (this.autoChatChannels.has(channel)) {
           // 默认对话模式:非指令消息自动进入纯对话并发送。
           const entered = await this.cmdEnter(key, '', pushTarget)
           const autoCtx = this.chatContexts.get(key)
           reply = autoCtx !== undefined
-            ? `${entered}\n\n${await this.cmdChatMessage(key, content, pushTarget)}`
+            ? `${entered}\n\n${await this.cmdChatMessage(key, content, pushTarget, image)}`
+            : entered
+        } else if (image !== undefined && this.autoChatChannels.has(channel) === false) {
+          // 纯图片消息:自动进入纯对话后发送(图片理解)。
+          const entered = await this.cmdEnter(key, '', pushTarget)
+          const autoCtx = this.chatContexts.get(key)
+          reply = autoCtx !== undefined
+            ? `${entered}\n\n${await this.cmdChatMessage(key, content, pushTarget, image)}`
             : entered
         } else {
           reply = this.fullHelp()
@@ -356,6 +384,8 @@ export class RemoteCommandProcessor {
         return this.cmdExport(command.sessionId)
       case 'usage':
         return this.cmdUsage()
+      case 'character':
+        return this.cmdCharacter(command.text)
       case 'cancel':
         return this.cmdCancel(command.sessionId)
       case 'open':
@@ -651,6 +681,19 @@ export class RemoteCommandProcessor {
         `今日回合:${sumTurns(today)} 次(累计 ${sumTurns(all)} 次)`,
         `今日模型耗时:${fmt(sumLlms(today))}(累计 ${fmt(sumLlms(all))})`,
       ]
+      // Token 统计(本次运行内,按今日会话聚合)。
+      const todayIds = new Set(today.map((s) => s.sessionId))
+      let inTok = 0, outTok = 0, cacheTok = 0
+      for (const [sid, rec] of this.tokenUsage) {
+        if (!todayIds.has(sid)) continue
+        inTok += rec.input
+        outTok += rec.output
+        cacheTok += rec.cache
+      }
+      if (inTok + outTok + cacheTok > 0) {
+        const total = inTok + outTok + cacheTok
+        lines.push(`今日 Token:${(total / 1000).toFixed(1)}K(输入 ${(inTok / 1000).toFixed(1)}K / 输出 ${(outTok / 1000).toFixed(1)}K / 缓存 ${(cacheTok / 1000).toFixed(1)}K)`)
+      }
       if (today.length > 0) {
         lines.push('', '今日会话:')
         today.slice(0, 5).forEach((s) => {
@@ -999,7 +1042,12 @@ export class RemoteCommandProcessor {
     return `已退出「${ctx.label}」对话模式。会话 ${ctx.sessionId} 保留在后台。${hint}`.trim()
   }
 
-  private async cmdChatMessage(key: string, text: string, pushTarget?: { scope: string; targetId: string }): Promise<string> {
+  private async cmdChatMessage(
+    key: string,
+    text: string,
+    pushTarget?: { scope: string; targetId: string },
+    image?: { mime: string; data: string },
+  ): Promise<string> {
     const ctx = this.chatContexts.get(key)
     if (ctx === undefined) return this.fullHelp()
     const client = this.harness.client()
@@ -1007,10 +1055,13 @@ export class RemoteCommandProcessor {
       let owner = this.sessionOwners.get(ctx.sessionId)
       // 工作区会话 = 助手模式提示词;纯对话 = 朋友模式提示词。
       const mode = owner !== undefined && owner.kind === 'task' ? 'task' : 'chat'
+      const parts: Array<{ type: string; text?: string; mediaType?: string; data?: string }> = []
+      if (text !== '') parts.push({ type: 'text', text: this.withModePrompt(mode, text) })
+      if (image !== undefined) parts.push({ type: 'image', mediaType: image.mime, data: image.data })
       await client.rpc('session.prompt', {
         sessionId: ctx.sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: this.withModePrompt(mode, text) }],
+        content: parts,
       })
       // 注册回复推送:回合结束后把 agent 的回复主动推给发起者(对话体验)。
       // 重启后恢复的对话会话可能没有归属记录,这里补登记。
@@ -1097,11 +1148,24 @@ export class RemoteCommandProcessor {
     }
   }
 
-  /** 会话事件:任务汇报 + 对话回复(流式/整段)。 */
+  /** 会话事件:任务汇报 + 对话回复(流式/整段)+ Token 累计。 */
   private handleSessionEvent(payload: Record<string, unknown>): void {
     const sessionId = String(payload.sessionId ?? '')
     const owner = this.sessionOwners.get(sessionId)
-    if (owner === undefined || !isRecord(payload.event)) return
+    if (!isRecord(payload.event)) return
+    // Token 累计(usage 事件,所有会话)。
+    if (payload.event.type === 'assistant/chunk' && isRecord(payload.event.data) && isRecord(payload.event.data.chunk)) {
+      const chunk = payload.event.data.chunk
+      if (chunk.type === 'usage' && isRecord(chunk.usage)) {
+        const u = chunk.usage
+        const rec = this.tokenUsage.get(sessionId) ?? { input: 0, output: 0, cache: 0 }
+        rec.input += typeof u.inputTokens === 'number' ? u.inputTokens : 0
+        rec.output += typeof u.outputTokens === 'number' ? u.outputTokens : 0
+        rec.cache += typeof u.cacheReadTokens === 'number' ? u.cacheReadTokens : 0
+        this.tokenUsage.set(sessionId, rec)
+      }
+    }
+    if (owner === undefined) return
     if (owner.kind === 'chat') {
       this.handleChatEvent(sessionId, owner, payload.event)
       return

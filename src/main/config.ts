@@ -118,6 +118,8 @@ export interface BotPromptConfig {
   taskPrompt: string
   /** 对话模式提示词:agent 以朋友身份聊天。空 = 不注入。 */
   chatPrompt: string
+  /** 自定义角色设定(对话模式时叠加在 chatPrompt 前);空 = 不启用。 */
+  character: string
 }
 
 export interface AppConfig {
@@ -202,6 +204,7 @@ const DEFAULTS: AppConfig = {
   bot: {
     taskPrompt: '你是一个专业、高效的 AI 助手。执行任务时请条理清晰、直接给出可用的结果,必要时说明关键步骤。',
     chatPrompt: '你现在是用户的朋友。请用轻松、亲切、口语化的语气聊天,像朋友一样自然,不要过于正式。',
+    character: '',
   },
 }
 
