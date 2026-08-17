@@ -278,5 +278,37 @@ function makeHarness(log) {
   check('汇报-失败文本', pushes[0][2].includes('任务失败'), true)
 }
 
+// ---- 提问按钮应答(单选单问题) ----
+{
+  const log = []
+  const pushes = []
+  const processor = new RemoteCommandProcessor(makeHarness(log))
+  processor.setPush((channel, userId, text, meta) => pushes.push([channel, userId, text, meta]))
+  await processor.handleText('telegram', '42', '进入 ws1')
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'q-b1', method: 'question/requested',
+    payload: {
+      sessionId: 'session-test-1',
+      questions: [{ id: 'color', question: '喜欢什么颜色?', options: [{ label: '蓝' }, { label: '绿' }] }],
+    },
+  })
+  check('提问按钮-推送带 meta', pushes.length === 1 && pushes[0][3] !== undefined && pushes[0][3].kind === 'question', true)
+  check('提问按钮-选项数组', pushes[0][3].question.options.join(','), '蓝,绿')
+  const result = await processor.respondQuestion('telegram', '42', 'session-test-1', 'color', 1)
+  check('提问按钮-应答结果', result.startsWith('✓ 已选择:绿'), true)
+  const respondCall = log.find(([kind]) => kind === 'respond')
+  check('提问按钮-提交载荷', JSON.stringify(respondCall[2]), JSON.stringify({ ok: true, value: { sessionId: 'session-test-1', answer: { answers: [{ id: 'color', selected: ['绿'] }] } } }))
+  // 多选问题不生成按钮 meta
+  pushes.length = 0
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'q-b2', method: 'question/requested',
+    payload: {
+      sessionId: 'session-test-1',
+      questions: [{ id: 'multi', question: '多选?', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] }],
+    },
+  })
+  check('提问按钮-多选无 meta', pushes.length === 1 && pushes[0][3] === undefined, true)
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

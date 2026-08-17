@@ -11,7 +11,7 @@ import { app } from 'electron'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { ConfigStore, QQBotConfig } from './config'
-import { APPROVE_BUTTON_PREFIX, findEventGroupOpenid, findEventUserId, parseApprovalButtonData } from './qq-commands'
+import { QUESTION_BUTTON_PREFIX, APPROVE_BUTTON_PREFIX, findEventGroupOpenid, findEventUserId, parseApprovalButtonData, parseQuestionButtonData } from './qq-commands'
 import { startOnboard, type OnboardProgress } from './qq-onboard'
 import type { RemoteCommandProcessor } from './remote-commands'
 
@@ -184,13 +184,13 @@ export class QQBotAdapter {
 
   // ---- 内部 ----
 
-  /** 主动推送(审批带内联键盘按钮;超窗或失败静默降级,回复提醒兜底)。
+  /** 主动推送(审批/提问带内联键盘按钮;超窗或失败静默降级,回复提醒兜底)。
    *  target 提供时直接推送到该目标;群场景优先推群(需机器人开通
    *  「群内主动发言」权限),失败时回退发起者私聊(c2c 登记存在时)。 */
   async sendToUser(
     userId: string,
     text: string,
-    meta?: { kind: 'approval'; sessionId: string; approvalId: string },
+    meta?: { kind: 'approval'; sessionId: string; approvalId: string } | { kind: 'question'; sessionId: string; question: { id: string; question: string; options: string[] } },
     target?: { scope: string; targetId: string },
   ): Promise<void> {
     const bot = this.bot
@@ -225,12 +225,17 @@ export class QQBotAdapter {
     bot: QQBotLike,
     target: PushTarget,
     text: string,
-    meta?: { kind: 'approval'; sessionId: string; approvalId: string },
+    meta?: { kind: 'approval'; sessionId: string; approvalId: string } | { kind: 'question'; sessionId: string; question: { id: string; question: string; options: string[] } },
   ): Promise<boolean> {
     try {
       if (meta !== undefined && meta.kind === 'approval') {
-        // QQ 按钮键盘只随 markdown 消息(msg_type=2)渲染,纯文本消息不显示键盘。
-        await bot.sendMarkdown(target, text, { keyboard: buildApprovalKeyboard(meta.sessionId, meta.approvalId) })
+        // QQ markdown 消息需平台模板,未配置时内容不渲染(仅按钮显示)。
+        // 因此拆两条:纯文本内容(可读)+ markdown 键盘消息(按钮)。
+        await bot.sendText(target, text.slice(0, MAX_MESSAGE_LENGTH))
+        await bot.sendMarkdown(target, '⚡ 请选择', { keyboard: buildApprovalKeyboard(meta.sessionId, meta.approvalId) })
+      } else if (meta !== undefined && meta.kind === 'question') {
+        await bot.sendText(target, text.slice(0, MAX_MESSAGE_LENGTH))
+        await bot.sendMarkdown(target, '⚡ 请选择', { keyboard: buildQuestionKeyboard(meta.sessionId, meta.question) })
       } else {
         for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
           await bot.sendText(target, text.slice(index, index + MAX_MESSAGE_LENGTH))
@@ -247,11 +252,15 @@ export class QQBotAdapter {
     bot: QQBotLike,
     target: PushTarget,
     text: string,
-    meta?: { kind: 'approval'; sessionId: string; approvalId: string },
+    meta?: { kind: 'approval'; sessionId: string; approvalId: string } | { kind: 'question'; sessionId: string; question: { id: string; question: string; options: string[] } },
   ): Promise<void> {
     try {
       if (meta !== undefined && meta.kind === 'approval') {
-        await bot.sendMarkdown(target, text, { keyboard: buildApprovalKeyboard(meta.sessionId, meta.approvalId) })
+        await bot.sendText(target, text.slice(0, MAX_MESSAGE_LENGTH))
+        await bot.sendMarkdown(target, '⚡ 请选择', { keyboard: buildApprovalKeyboard(meta.sessionId, meta.approvalId) })
+      } else if (meta !== undefined && meta.kind === 'question') {
+        await bot.sendText(target, text.slice(0, MAX_MESSAGE_LENGTH))
+        await bot.sendMarkdown(target, '⚡ 请选择', { keyboard: buildQuestionKeyboard(meta.sessionId, meta.question) })
       } else {
         for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
           await bot.sendText(target, text.slice(index, index + MAX_MESSAGE_LENGTH))
@@ -268,9 +277,11 @@ export class QQBotAdapter {
     if (bot === null) return
     const raw = event as { id?: unknown; data?: unknown }
     const interactionId = typeof raw.id === 'string' ? raw.id : ''
-    const parsed = interactionId !== '' ? parseApprovalButtonData(raw.data) : null
-    if (parsed === null) {
-      if (interactionId !== '') await bot.acknowledgeInteraction(interactionId, 1, {}).catch(() => {})
+    if (interactionId === '') return
+    const approval = parseApprovalButtonData(raw.data)
+    const question = parseQuestionButtonData(raw.data)
+    if (approval === null && question === null) {
+      await bot.acknowledgeInteraction(interactionId, 1, {}).catch(() => {})
       return
     }
     // 按钮点击者身份:优先取事件里的 user openid;缺失时退回首个私聊登记。
@@ -280,7 +291,12 @@ export class QQBotAdapter {
         if (v.target.scope === 'c2c') { userId = k; break }
       }
     }
-    const result = await this.processor.respondApproval('qq', userId, parsed.sessionId, parsed.approvalId, parsed.decision)
+    let result: string
+    if (approval !== null) {
+      result = await this.processor.respondApproval('qq', userId, approval.sessionId, approval.approvalId, approval.decision)
+    } else {
+      result = await this.processor.respondQuestion('qq', userId, question!.sessionId, question!.questionId, question!.optionIndex)
+    }
     await bot.acknowledgeInteraction(interactionId, 0, {}).catch(() => {})
     // 应答结果回发:群按钮点击回发群里,私聊点击回发私聊;都定位不到时用登记回退。
     const groupOpenid = findEventGroupOpenid(raw.data)
@@ -390,4 +406,20 @@ function buildApprovalKeyboard(sessionId: string, approvalId: string): unknown {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** 提问(单选)内联键盘:每个选项一个按钮,data 供点击回传识别。 */
+function buildQuestionKeyboard(sessionId: string, question: { id: string; question: string; options: string[] }): unknown {
+  const buttons = question.options.map((label, index) => ({
+    id: `opt-${index}`,
+    render_data: { label: label.slice(0, 12), visited_label: `已选:${label.slice(0, 8)}`, style: 1 },
+    action: {
+      type: 1,
+      data: `${QUESTION_BUTTON_PREFIX}${sessionId}|${question.id}|${index}`,
+      permission: { type: 2 },
+      click_limit: 1,
+    },
+    group_id: 'dsh-question',
+  }))
+  return { content: { rows: [{ buttons }] } }
 }

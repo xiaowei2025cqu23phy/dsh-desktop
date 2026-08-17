@@ -6,7 +6,7 @@
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { parseCommand, parseTaskOptions, parseApprovalButtonData, findEventUserId, findEventGroupOpenid } = require('../dist/main/qq-commands.js')
+const { parseCommand, parseTaskOptions, parseApprovalButtonData, findEventUserId, findEventGroupOpenid, parseQuestionButtonData } = require('../dist/main/qq-commands.js')
 
 let failures = 0
 function check(name, actual, expected) {
@@ -108,6 +108,10 @@ check('群 openid', findEventGroupOpenid({ detail: { group_openid: 'GROUP_9', bu
 check('群 openid 嵌套', findEventGroupOpenid({ detail: { resolved: { group_openid: 'GROUP_9' } } }), 'GROUP_9')
 check('群 openid 缺失', findEventGroupOpenid({ resolved: { user_id: 'U' } }), '')
 check('群 openid 非对象', findEventGroupOpenid(7), '')
+check('提问按钮-解析', parseQuestionButtonData('dsh-question|session-a|q1|2'), { sessionId: 'session-a', questionId: 'q1', optionIndex: 2 })
+check('提问按钮-嵌套', parseQuestionButtonData({ resolved: { button_data: 'dsh-question|s1|q2|0' } }), { sessionId: 's1', questionId: 'q2', optionIndex: 0 })
+check('提问按钮-非法索引', parseQuestionButtonData('dsh-question|s1|q1|x'), null)
+check('提问按钮-其他前缀', parseQuestionButtonData('dsh-approve|s1|a1|allowed-once'), null)
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

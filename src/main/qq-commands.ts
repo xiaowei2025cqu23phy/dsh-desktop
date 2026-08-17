@@ -85,6 +85,45 @@ export function parseTaskOptions(description: string): { description: string; cw
 /** 审批按钮 data 前缀(键盘按钮点击后随 INTERACTION_CREATE 回传)。 */
 export const APPROVE_BUTTON_PREFIX = 'dsh-approve|'
 
+/** 提问(选择题)按钮 data 前缀。 */
+export const QUESTION_BUTTON_PREFIX = 'dsh-question|'
+
+/** 提问键盘按钮点击的解析结果。 */
+export interface QuestionButtonData {
+  sessionId: string
+  questionId: string
+  optionIndex: number
+}
+
+/**
+ * 在 INTERACTION_CREATE 的 data 里递归查找提问按钮 data 并解析。
+ * 格式:dsh-question|<sessionId>|<questionId>|<optionIndex>
+ */
+export function parseQuestionButtonData(data: unknown): QuestionButtonData | null {
+  if (typeof data === 'string') {
+    if (!data.startsWith(QUESTION_BUTTON_PREFIX)) return null
+    const parts = data.split('|')
+    if (parts.length !== 4 || parts[0] !== 'dsh-question') return null
+    const optionIndex = Number(parts[3])
+    if (!Number.isInteger(optionIndex) || optionIndex < 0) return null
+    return { sessionId: parts[1], questionId: parts[2], optionIndex }
+  }
+  if (data === null || typeof data !== 'object') return null
+  const record = data as Record<string, unknown>
+  if (record.resolved !== null && typeof record.resolved === 'object') {
+    const resolved = record.resolved as Record<string, unknown>
+    if (typeof resolved.button_data === 'string') {
+      const parsed = parseQuestionButtonData(resolved.button_data)
+      if (parsed !== null) return parsed
+    }
+  }
+  for (const value of Object.values(record)) {
+    const found = parseQuestionButtonData(value)
+    if (found !== null) return found
+  }
+  return null
+}
+
 /** 审批键盘按钮点击的解析结果。 */
 export interface ApprovalButtonData {
   sessionId: string
