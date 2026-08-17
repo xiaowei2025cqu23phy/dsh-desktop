@@ -141,6 +141,7 @@
     state.approvalCards = {}
     state.questionCards = {}
     $('btn-chat-export').classList.add('hidden')
+    $('btn-chat-model').classList.add('hidden')
     hideEmpty(false)
   }
 
@@ -553,6 +554,7 @@
         if (state.presetRoots[i].path === state.currentWsPath) state.currentWsRoot = state.currentWsPath
       }
     }
+    $('btn-chat-model').classList.remove('hidden')
     clearChat()
     $('chat-title').textContent = '会话'
     setChatStatus('加载中…', '')
@@ -1458,6 +1460,75 @@
     })
   }
 
+  // ---- 用量与费用(今日) ----
+  function loadUsage() {
+    var host = $('set-usage')
+    apiAction('usage.get').then(function (data) {
+      var r = data.report
+      if (!r) {
+        host.innerHTML = '<p class="empty">暂无数据</p>'
+        return
+      }
+      var html = ''
+      html += '会话:' + r.todaySessions + ' 个 / 回合:' + r.todayTurns + ' 次<br>'
+      html += 'Token:' + (r.tokens.total / 1000).toFixed(1) + 'K(输入 ' + (r.tokens.input / 1000).toFixed(1) + 'K / 输出 ' + (r.tokens.output / 1000).toFixed(1) + 'K' + (r.tokens.cache > 0 ? ' / 缓存 ' + (r.tokens.cache / 1000).toFixed(1) + 'K' : '') + ')'
+      if (r.cost.total > 0) {
+        html += '<br>💰 费用估算:¥' + r.cost.total.toFixed(3) + '(倍率 ' + r.prices.multiplier + ')'
+      }
+      if (r.byModel.length > 0) {
+        html += '<br><br>按模型:'
+        r.byModel.slice(0, 6).forEach(function (m) {
+          html += '<br>· ' + m.provider + '/' + m.model + ':' + ((m.input + m.output) / 1000).toFixed(1) + 'K Token,' + m.calls + ' 次'
+        })
+      }
+      host.innerHTML = html
+    }).catch(function (err) {
+      host.innerHTML = '<p class="empty">加载失败:' + S.escapeHtml(err.message) + '</p>'
+    })
+  }
+
+  // ---- 切换会话模型 ----
+  function openModelSheet() {
+    openSheet($('view-model'))
+    var list = $('model-list')
+    list.innerHTML = '<p class="empty">加载中…</p>'
+    apiRpc('llm.models', {}).then(function (data) {
+      var groups = data.groups || []
+      list.innerHTML = ''
+      groups.forEach(function (group) {
+        var head = document.createElement('div')
+        head.className = 'model-group'
+        head.textContent = (group.name || group.id) + ' / ' + group.id
+        list.appendChild(head)
+        group.models.forEach(function (model) {
+          var row = document.createElement('div')
+          row.className = 'model-row'
+          var name = document.createElement('span')
+          name.className = 'model-name'
+          name.textContent = model.name || model.id
+          row.appendChild(name)
+          var state2 = document.createElement('span')
+          state2.className = 'model-id'
+          state2.textContent = model.id
+          row.appendChild(state2)
+          row.addEventListener('click', function () {
+            apiRpc('session.selectModel', { sessionId: state.sessionId, provider: group.id, model: model.id }).then(function () {
+              S.toast('已切换:' + group.id + '/' + model.id, 'ok')
+              closeSheet($('view-model'))
+              setChatStatus('已切换模型 ' + model.id, '')
+            }).catch(function (err) {
+              S.toast('切换失败:' + err.message, 'error')
+            })
+          })
+          list.appendChild(row)
+        })
+      })
+      if (groups.length === 0) list.innerHTML = '<p class="empty">(未配置模型)</p>'
+    }).catch(function (err) {
+      list.innerHTML = '<p class="empty">加载失败:' + S.escapeHtml(err.message) + '</p>'
+    })
+  }
+
   // ---- 连接流程 ----
   function connect() {
     var server = $('conn-server').value.trim().replace(/\/+$/, '')
@@ -1610,9 +1681,13 @@
       loadWallpapers()
       loadScheduled()
       loadPresetRoots()
+      loadUsage()
       openSheet($('view-settings'))
     })
     $('btn-settings-close').addEventListener('click', function () { closeSheet($('view-settings')) })
+    $('btn-usage-refresh').addEventListener('click', loadUsage)
+    $('btn-chat-model').addEventListener('click', openModelSheet)
+    $('btn-model-close').addEventListener('click', function () { closeSheet($('view-model')) })
     $('btn-sched-add').addEventListener('click', addScheduled)
     $('btn-preset-add').addEventListener('click', function () {
       closeSheet($('view-settings'))

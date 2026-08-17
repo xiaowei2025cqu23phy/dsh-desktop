@@ -109,6 +109,8 @@ export class RemoteCommandProcessor {
   private retriedTransports = new Set<string>()
   /** 会话 Token 累计(来自 assistant/chunk usage 事件;本次运行内)。 */
   private tokenUsage = new Map<string, { input: number; output: number; cache: number }>()
+  /** 会话当前模型(来自 request/header 事件;用于按模型分组统计)。 */
+  private sessionModels = new Map<string, { provider: string; model: string }>()
   /** 对话会话等待回复推送:发送消息后注册,回合结束把 agent 回复推给发起者。 */
   private chatReplies = new Map<string, { channel: string; userId: string; pushTarget?: { scope: string; targetId: string }; ts: number }>()
   /** 流式输出通道(QQ 私聊打字机效果);缺失时回合计束后整段推送。 */
@@ -660,44 +662,114 @@ export class RemoteCommandProcessor {
 
   // ---- 用量统计 ----
 
-  /** 用量统计:今日会话数 / 总回合 / 模型耗时。 */
-  private async cmdUsage(): Promise<string> {
+  /** 用量与费用估算(结构化;命令端与 PWA 共用)。 */
+  async usageReport(): Promise<{
+    todaySessions: number
+    totalSessions: number
+    todayTurns: number
+    totalTurns: number
+    todayLlmMs: number
+    totalLlmMs: number
+    tokens: { input: number; output: number; cache: number; total: number }
+    byModel: Array<{ provider: string; model: string; input: number; output: number; cache: number; calls: number }>
+    cost: { input: number; output: number; cache: number; total: number }
+    prices: { inputPerM: number; outputPerM: number; cachePerM: number; multiplier: number }
+    todayList: Array<{ title: string; turns: number }>
+  }> {
     const client = this.harness.client()
+    const list = await client.rpc<{ items: Array<{ sessionId: string; updatedAt?: number; title?: string | null; projections?: { values?: { sessionStats?: { turns?: number; llmMs?: number } } } }> }>('session.list', {}, 20000)
+    const items = list.items ?? []
+    const now = new Date()
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+    const today = items.filter((s) => (s.updatedAt ?? 0) >= todayStart)
+    const all = items.filter((s) => (s.updatedAt ?? 0) > 0)
+    const sumTurns = (arr: Array<{ projections?: { values?: { sessionStats?: { turns?: number } } } }>) =>
+      arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.turns ?? 0), 0)
+    const sumLlms = (arr: Array<{ projections?: { values?: { sessionStats?: { llmMs?: number } } } }>) =>
+      arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.llmMs ?? 0), 0)
+    // Token:本次运行内累计,按今日会话聚合;再按会话模型分组。
+    const todayIds = new Set(today.map((s) => s.sessionId))
+    let inTok = 0, outTok = 0, cacheTok = 0
+    const byModel = new Map<string, { provider: string; model: string; input: number; output: number; cache: number; calls: number }>()
+    for (const [sid, rec] of this.tokenUsage) {
+      if (!todayIds.has(sid)) continue
+      inTok += rec.input
+      outTok += rec.output
+      cacheTok += rec.cache
+      const sm = this.sessionModels.get(sid)
+      const key = sm === undefined ? '未知/未知' : `${sm.provider}/${sm.model}`
+      const entry = byModel.get(key) ?? { provider: sm?.provider ?? '未知', model: sm?.model ?? '未知', input: 0, output: 0, cache: 0, calls: 0 }
+      entry.input += rec.input
+      entry.output += rec.output
+      entry.cache += rec.cache
+      byModel.set(key, entry)
+    }
+    // 回合也按模型归属(统计调用次数)。
+    const turnsByModel = new Map<string, number>()
+    for (const s of today) {
+      const sm = this.sessionModels.get(s.sessionId)
+      const key = sm === undefined ? '未知/未知' : `${sm.provider}/${sm.model}`
+      turnsByModel.set(key, (turnsByModel.get(key) ?? 0) + (s.projections?.values?.sessionStats?.turns ?? 0))
+    }
+    for (const [key, entry] of byModel) {
+      entry.calls = turnsByModel.get(key) ?? 0
+    }
+    // 费用估算:Token × 官方单价 × 倍率。
+    const usage = this.config?.get().usage
+    const prices = usage === undefined
+      ? { inputPerM: 2, outputPerM: 8, cachePerM: 0.5, multiplier: 1 }
+      : { inputPerM: usage.inputPricePerM, outputPerM: usage.outputPricePerM, cachePerM: usage.cachePricePerM, multiplier: usage.multiplier }
+    const calc = (tokens: number, pricePerM: number): number => tokens / 1e6 * pricePerM * prices.multiplier
+    const cost = {
+      input: calc(inTok, prices.inputPerM),
+      output: calc(outTok, prices.outputPerM),
+      cache: calc(cacheTok, prices.cachePerM),
+      total: 0,
+    }
+    cost.total = cost.input + cost.output + cost.cache
+    return {
+      todaySessions: today.length,
+      totalSessions: all.length,
+      todayTurns: sumTurns(today),
+      totalTurns: sumTurns(all),
+      todayLlmMs: sumLlms(today),
+      totalLlmMs: sumLlms(all),
+      tokens: { input: inTok, output: outTok, cache: cacheTok, total: inTok + outTok + cacheTok },
+      byModel: [...byModel.values()].sort((a, b) => (b.input + b.output) - (a.input + a.output)),
+      cost,
+      prices,
+      todayList: today.slice(0, 5).map((s) => ({
+        title: (s.title ?? s.sessionId.slice(0, 12)).slice(0, 30),
+        turns: s.projections?.values?.sessionStats?.turns ?? 0,
+      })),
+    }
+  }
+
+  /** 用量统计命令:今日会话/回合/耗时/Token/费用,按模型分组。 */
+  private async cmdUsage(): Promise<string> {
     try {
-      const list = await client.rpc<{ items: Array<{ sessionId: string; updatedAt?: number; title?: string | null; projections?: { values?: { sessionStats?: { turns?: number; llmMs?: number } } } }> }>('session.list', {}, 20000)
-      const items = list.items ?? []
-      const now = new Date()
-      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-      const today = items.filter((s) => (s.updatedAt ?? 0) >= todayStart)
-      const all = items.filter((s) => (s.updatedAt ?? 0) > 0)
-      const sumTurns = (arr: Array<{ projections?: { values?: { sessionStats?: { turns?: number } } } }>) =>
-        arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.turns ?? 0), 0)
-      const sumLlms = (arr: Array<{ projections?: { values?: { sessionStats?: { llmMs?: number } } } }>) =>
-        arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.llmMs ?? 0), 0)
+      const r = await this.usageReport()
       const fmt = (ms: number) => ms >= 60000 ? `${(ms / 60000).toFixed(1)} 分钟` : `${Math.round(ms / 1000)} 秒`
       const lines = [
         '📊 用量统计',
-        `今日会话:${today.length} 个(总 ${all.length} 个)`,
-        `今日回合:${sumTurns(today)} 次(累计 ${sumTurns(all)} 次)`,
-        `今日模型耗时:${fmt(sumLlms(today))}(累计 ${fmt(sumLlms(all))})`,
+        `今日会话:${r.todaySessions} 个(总 ${r.totalSessions} 个)`,
+        `今日回合:${r.todayTurns} 次(累计 ${r.totalTurns} 次)`,
+        `今日模型耗时:${fmt(r.todayLlmMs)}(累计 ${fmt(r.totalLlmMs)})`,
       ]
-      // Token 统计(本次运行内,按今日会话聚合)。
-      const todayIds = new Set(today.map((s) => s.sessionId))
-      let inTok = 0, outTok = 0, cacheTok = 0
-      for (const [sid, rec] of this.tokenUsage) {
-        if (!todayIds.has(sid)) continue
-        inTok += rec.input
-        outTok += rec.output
-        cacheTok += rec.cache
+      if (r.tokens.total > 0) {
+        lines.push(`今日 Token:${(r.tokens.total / 1000).toFixed(1)}K(输入 ${(r.tokens.input / 1000).toFixed(1)}K / 输出 ${(r.tokens.output / 1000).toFixed(1)}K / 缓存 ${(r.tokens.cache / 1000).toFixed(1)}K)`)
+        lines.push(`💰 费用估算:¥${r.cost.total.toFixed(3)}(倍率 ${r.prices.multiplier},官方价:输入 ¥${r.prices.inputPerM}/M / 输出 ¥${r.prices.outputPerM}/M / 缓存 ¥${r.prices.cachePerM}/M)`)
+        if (r.byModel.length > 0) {
+          lines.push('', '按模型(今日):')
+          r.byModel.slice(0, 6).forEach((m) => {
+            lines.push(`  ${m.provider}/${m.model}:${((m.input + m.output) / 1000).toFixed(1)}K Token,${m.calls} 次调用`)
+          })
+        }
       }
-      if (inTok + outTok + cacheTok > 0) {
-        const total = inTok + outTok + cacheTok
-        lines.push(`今日 Token:${(total / 1000).toFixed(1)}K(输入 ${(inTok / 1000).toFixed(1)}K / 输出 ${(outTok / 1000).toFixed(1)}K / 缓存 ${(cacheTok / 1000).toFixed(1)}K)`)
-      }
-      if (today.length > 0) {
+      if (r.todaySessions > 0) {
         lines.push('', '今日会话:')
-        today.slice(0, 5).forEach((s) => {
-          lines.push(`  ${(s.title ?? s.sessionId.slice(0, 12)).slice(0, 30)}(${s.projections?.values?.sessionStats?.turns ?? 0} 回合)`)
+        r.todayList.forEach((s) => {
+          lines.push(`  ${s.title}(${s.turns} 回合)`)
         })
       }
       return lines.join('\n')
@@ -1148,11 +1220,18 @@ export class RemoteCommandProcessor {
     }
   }
 
-  /** 会话事件:任务汇报 + 对话回复(流式/整段)+ Token 累计。 */
+  /** 会话事件:任务汇报 + 对话回复(流式/整段)+ Token 累计 + 模型记录。 */
   private handleSessionEvent(payload: Record<string, unknown>): void {
     const sessionId = String(payload.sessionId ?? '')
     const owner = this.sessionOwners.get(sessionId)
     if (!isRecord(payload.event)) return
+    // 模型记录(request/header 事件携带本次请求的 provider/model,用于按模型统计)。
+    if (payload.event.type === 'request/header' && isRecord(payload.event.data) && isRecord(payload.event.data.header)) {
+      const config = payload.event.data.header.config
+      if (isRecord(config) && typeof config.provider === 'string' && typeof config.model === 'string') {
+        this.sessionModels.set(sessionId, { provider: config.provider, model: config.model })
+      }
+    }
     // Token 累计(usage 事件,所有会话)。
     if (payload.event.type === 'assistant/chunk' && isRecord(payload.event.data) && isRecord(payload.event.data.chunk)) {
       const chunk = payload.event.data.chunk

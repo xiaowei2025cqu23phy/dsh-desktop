@@ -44,6 +44,7 @@
         </div>
         <div class="topbar-right">
           <span id="conn-dot" class="conn-dot" title="连接状态"></span>
+          <button id="btn-chat-model" class="btn btn-ghost hidden" title="切换会话模型">模型</button>
           <button id="btn-chat-export" class="btn btn-ghost hidden" title="导出会话为 Markdown">📄</button>
           <button id="btn-chat-stop" class="btn btn-ghost">停止</button>
         </div>
@@ -145,6 +146,15 @@
       <pre id="fsp-content" class="fsp-content"></pre>
     </div>
 
+    <!-- 切换会话模型弹层 -->
+    <div id="view-model" class="sheet hidden">
+      <header class="sheet-head">
+        <h2>切换会话模型</h2>
+        <button id="btn-model-close" class="btn btn-ghost">✕</button>
+      </header>
+      <div id="model-list" class="task-form"><p class="empty">加载中…</p></div>
+    </div>
+
     <!-- 设置弹层 -->
     <div id="view-settings" class="sheet hidden">
       <header class="sheet-head">
@@ -159,6 +169,11 @@
         <div class="field">
           <label>可用模型</label>
           <div id="set-models" class="value-text"></div>
+        </div>
+        <div class="field">
+          <label>用量与费用(今日)</label>
+          <div id="set-usage" class="value-text"><p class="empty">加载中…</p></div>
+          <button id="btn-usage-refresh" class="btn btn-sm">刷新</button>
         </div>
         <div class="field">
           <label>Harness</label>

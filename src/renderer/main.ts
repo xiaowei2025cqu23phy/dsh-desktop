@@ -204,7 +204,7 @@ async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
   await Promise.all([loadHarnessConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(),
-    loadWallpaperPacks(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), refreshWebhookEndpoint(),
+    loadWallpaperPacks(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), loadUsageConfig(), refreshWebhookEndpoint(),
     loadUpdateInfo(), refreshLogs()])
   if (logsTimer === null) {
     logsTimer = setInterval(() => { if (drawerOpen) void refreshLogs() }, 3000)
@@ -892,6 +892,17 @@ async function loadTelegramConfig(): Promise<void> {
   }
 }
 
+// ---- 用量与费用 ----
+
+async function loadUsageConfig(): Promise<void> {
+  try {
+    const config = await API.usage.getConfig()
+    input('usage-multiplier').value = String(config.multiplier ?? 1)
+  } catch {
+    // 忽略
+  }
+}
+
 async function refreshWebhookEndpoint(): Promise<void> {
   try {
     const remote = await API.remote.getConfig()
@@ -1032,6 +1043,16 @@ function bind(): void {
   $id('bot-task-prompt').addEventListener('change', async () => {
     await API.bot.setConfig({ taskPrompt: ($id('bot-task-prompt') as HTMLTextAreaElement).value.trim() })
     S.toast('工作模式提示词已保存', 'ok')
+  })
+  $id('usage-multiplier').addEventListener('change', async () => {
+    const value = Number(($id('usage-multiplier') as HTMLInputElement).value)
+    if (!Number.isFinite(value) || value <= 0) {
+      S.toast('倍率必须是大于 0 的数字', 'error')
+      await loadUsageConfig()
+      return
+    }
+    await API.usage.setConfig({ multiplier: value })
+    S.toast(`费用倍率已设为 ${value}(官方价 × ${value})`, 'ok')
   })
   $id('bot-chat-prompt').addEventListener('change', async () => {
     await API.bot.setConfig({ chatPrompt: ($id('bot-chat-prompt') as HTMLTextAreaElement).value.trim() })
@@ -1251,6 +1272,12 @@ function initPet(): void {
   let dx = 0
   let dy = 0
 
+  // Gemini 生成的鲸鱼图(assets/pet-whale.svg),加载完成后替换手绘。
+  const whaleImg = new Image()
+  whaleImg.src = 'assets/pet-whale.svg'
+  let whaleReady = false
+  whaleImg.onload = () => { whaleReady = true }
+
   const draw = (): void => {
     t += 0.05
     const speed = petBusy ? 2.2 : 0.8
@@ -1260,11 +1287,15 @@ function initPet(): void {
     ctx.save()
     ctx.translate(x, y + bob)
     ctx.rotate(sway)
-
-    // 尾巴
-    ctx.fillStyle = '#2f6fb2'
-    ctx.beginPath()
-    ctx.moveTo(-22, 0)
+    if (whaleReady) {
+      const size = 112
+      ctx.drawImage(whaleImg, -size / 2, -size / 2, size, size)
+    } else {
+      // 手绘回退(图片未加载完成)
+      // 尾巴
+      ctx.fillStyle = '#2f6fb2'
+      ctx.beginPath()
+      ctx.moveTo(-22, 0)
     ctx.lineTo(-36, -12 + Math.sin(t * speed * 2) * 4)
     ctx.lineTo(-36, 12 + Math.sin(t * speed * 2 + 1) * 4)
     ctx.closePath()
@@ -1299,6 +1330,7 @@ function initPet(): void {
     ctx.beginPath()
     ctx.arc(15, 3, 4, -0.4, 0.9)
     ctx.stroke()
+    }
     ctx.restore()
 
     // 冒泡(忙碌时更频繁)

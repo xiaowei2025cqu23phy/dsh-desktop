@@ -114,6 +114,12 @@ export function registerIpc(deps: IpcDeps): void {
     deps.config.update('bot', patch)
     return deps.config.get().bot
   })
+  // ---- 用量费用配置(倍率;默认官方价) ----
+  ipcMain.handle('usage:getConfig', () => deps.config.get().usage)
+  ipcMain.handle('usage:setConfig', (_event, patch: { multiplier?: number }) => {
+    deps.config.update('usage', patch)
+    return deps.config.get().usage
+  })
   // ---- 机器人指令集(桌面端可查看) ----
   ipcMain.handle('bot:help', () => deps.commands?.fullHelp() ?? '(指令集不可用)')
 

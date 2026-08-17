@@ -96,6 +96,10 @@ interface DesktopApi {
     setConfig(patch: { taskPrompt?: string; chatPrompt?: string }): Promise<BotPromptConfigView>
     help(): Promise<string>
   }
+  usage: {
+    getConfig(): Promise<{ multiplier: number; inputPricePerM: number; outputPricePerM: number; cachePricePerM: number }>
+    setConfig(patch: { multiplier?: number }): Promise<{ multiplier: number; inputPricePerM: number; outputPricePerM: number; cachePricePerM: number }>
+  }
   harness: {
     getStatus(): Promise<HarnessStatus>
     getConfig(): Promise<unknown>

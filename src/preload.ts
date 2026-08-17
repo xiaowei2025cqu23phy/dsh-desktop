@@ -72,6 +72,10 @@ const api = {
     setConfig: (patch: { taskPrompt?: string; chatPrompt?: string }) => ipcRenderer.invoke('bot:setConfig', patch),
     help: () => ipcRenderer.invoke('bot:help'),
   },
+  usage: {
+    getConfig: () => ipcRenderer.invoke('usage:getConfig'),
+    setConfig: (patch: { multiplier?: number }) => ipcRenderer.invoke('usage:setConfig', patch),
+  },
   appearance: {
     getConfig: () => ipcRenderer.invoke('appearance:getConfig'),
     pickSource: (kind: 'window' | 'phone' | 'screensaver') => ipcRenderer.invoke('appearance:pickSource', kind),

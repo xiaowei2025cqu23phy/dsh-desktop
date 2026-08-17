@@ -115,8 +115,9 @@ This guide walks you through the desktop client end to end: installation, config
 2. 手机与电脑连**同一 WiFi**;手机浏览器扫设置面板中的**二维码**(或访问 `http://<电脑IP>:3082`)。
 3. PWA 自动填入地址与令牌并连接;浏览器菜单「添加到主屏幕」可当 App 使用。
 4. 功能:
-   - **会话**:列表 → 打开 → 历史与实时流式收发消息、停止任务;
+   - **会话**:列表 → 打开 → 历史与实时流式收发消息、停止任务;**顶栏「模型」按钮随时切换当前会话的厂商/模型**;
    - **任务**:填描述 → 选工作区 → 选模型 → 运行并实时查看;**模型下拉默认选中「⭐ 预设模型」**(即桌面端设置的默认模型,如 `google / gemini-3.6-flash`),想换模型直接选其他项;
+   - **用量与费用**:设置面板「用量与费用」显示今日会话/回合/Token/**费用估算**(按模型分组);费用倍率在桌面端「设置 → 用量与费用」配置(1 = 官方价);
    - **工作区**:列表、新建(在电脑端配置的**预设根目录**下新建文件夹;不能指定任意路径);每个工作区带「📂」按钮**浏览文件夹**,点文件可**预览文本内容**(≤64KB;仅限工作区/预设根内,越权拒绝);
    - **设置**:手机端同样可管理多项设置——**预设工作区根目录**(查看/移除/「浏览文件夹添加」,不必只在电脑上配)、手机壁纸、定时任务、重启 Harness 等。
 5. 安全:令牌认证 + RPC 白名单 + 文件浏览白名单(仅工作区/预设根内,越权 403),仅局域网可达;令牌在设置面板可重新生成(旧令牌立即失效)。
@@ -127,8 +128,9 @@ This guide walks you through the desktop client end to end: installation, config
 2. Connect the phone to the **same Wi-Fi**; scan the **QR code** in the settings panel (or open `http://<PC-IP>:3082`).
 3. The PWA auto-fills the address and token; "Add to home screen" makes it feel like an app.
 4. Features:
-   - **Sessions**: list → open → history + real-time streaming chat, stop tasks;
+   - **Sessions**: list → open → history + real-time streaming chat, stop tasks; the **模型 (Model)** button in the top bar switches the current session's provider/model anytime;
    - **Tasks**: describe → choose workspace → choose model → run and watch live; the model dropdown defaults to "⭐ 预设模型" (the default model set on the desktop, e.g. `google / gemini-3.6-flash`); pick another option to override;
+   - **Usage & cost**: the settings sheet shows today's sessions/turns/tokens/**estimated cost** (grouped by model); the cost multiplier is configured on the desktop (**Settings → Usage & Cost**, 1 = official price);
    - **Workspaces**: list, create (new folders under the **preset roots** configured on the PC; arbitrary paths are not allowed); each workspace has a "📂" button to **browse its folder** — tap a file to **preview text content** (≤64KB; workspace/preset-roots only, anything else is denied);
    - **Settings**: the phone can manage several settings too — **preset workspace roots** (view / remove / "browse to add", no need to configure only on the PC), phone wallpaper, scheduled tasks, restart Harness, etc.
 5. Security: token auth + RPC allowlist + file-browse allowlist (workspaces/preset roots only, 403 otherwise), LAN only; regenerate the token in the settings panel anytime (the old one stops working immediately).
@@ -161,7 +163,7 @@ This guide walks you through the desktop client end to end: installation, config
 | `定时列表` / `取消定时 <编号>` | 查看 / 取消已排定时任务 | `取消定时 2` |
 | `目录 <路径>` / `文件 <路径>` | 浏览工作区目录 / 查看文本文件(白名单内) | `目录 D:/work`、`文件 D:/work/README.md` |
 | `导出 <会话id>` | 导出会话为 Markdown(保存在桌面端 `exports/` 目录) | `导出 session-xxxxxxxx` |
-| `用量` | 今日用量统计(会话数/回合数/Token) | `用量` |
+| `用量` | 今日用量统计(会话数/回合数/Token/**费用估算**,按模型分组) | `用量` |
 | `角色 <设定>` | **角色扮演**:对话模式叠加角色设定(仅纯对话生效);`角色 无` 清除 | `角色 你是温柔的英语老师` |
 | *(私聊发图片)* | **图片理解**:对话模式下直接发图片,agent 看图分析 | 发截图 → `看看这张图有什么问题` |
 
