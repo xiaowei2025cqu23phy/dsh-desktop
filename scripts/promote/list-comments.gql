@@ -1,0 +1,12 @@
+query {
+  repository(owner: "deepseek-ai", name: "deepseek-harness") {
+    discussion(number: 2903) {
+      comments(first: 10) {
+        nodes {
+          author { login }
+          body
+        }
+      }
+    }
+  }
+}

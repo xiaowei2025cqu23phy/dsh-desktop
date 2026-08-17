@@ -1,0 +1,8 @@
+query {
+  repository(owner: "deepseek-ai", name: "deepseek-harness") {
+    discussion(number: 2903) {
+      id
+      title
+    }
+  }
+}

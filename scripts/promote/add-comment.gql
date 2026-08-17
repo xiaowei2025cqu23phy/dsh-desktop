@@ -1,0 +1,8 @@
+mutation AddComment($id: ID!, $body: String!) {
+  addDiscussionComment(input: { discussionId: $id, body: $body }) {
+    comment {
+      id
+      url
+    }
+  }
+}
