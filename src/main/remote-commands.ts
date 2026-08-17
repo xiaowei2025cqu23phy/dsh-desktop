@@ -65,8 +65,13 @@ export interface AskUserQuestionItem {
   multiSelect?: boolean
 }
 
-/** 主动推送函数(由宿主注入;失败时靠回复附加提示兜底)。 */
-export type PushFn = (
+/** 流式输出回调(QQ 私聊对话的打字机效果;回合文本增量实时下发)。 */
+export interface ChatStreamSink {
+  onDelta(channel: string, userId: string, delta: string, target?: { scope: string; targetId: string }): void
+  onEnd(channel: string, userId: string, target?: { scope: string; targetId: string }): void
+}
+
+/** 主动推送函数(由宿主注入;失败时靠回复附加提示兜底)。 */export type PushFn = (
   channel: string,
   userId: string,
   text: string,
@@ -98,6 +103,15 @@ export class RemoteCommandProcessor {
   private lastTurnReports = new Map<string, { done: number; fail: number }>()
   /** 对话会话等待回复推送:发送消息后注册,回合结束把 agent 回复推给发起者。 */
   private chatReplies = new Map<string, { channel: string; userId: string; pushTarget?: { scope: string; targetId: string }; ts: number }>()
+  /** 流式输出通道(QQ 私聊打字机效果);缺失时回合计束后整段推送。 */
+  private chatStream: ChatStreamSink | null = null
+  /** 非流式通道的回合文本缓冲(整段推送用)。 */
+  private chatReplyBuffer = new Map<string, string>()
+
+  /** 注入流式输出实现(仅支持主动流式的通道,如 QQ 私聊)。 */
+  setChatStream(sink: ChatStreamSink): void {
+    this.chatStream = sink
+  }
 
   constructor(private harness: HarnessManager, private config?: ConfigStore) {
     // 恢复持久化的对话会话(重启后继续同一对话)。
@@ -200,13 +214,13 @@ export class RemoteCommandProcessor {
       if (command.kind === 'unknown') {
         const ctx = this.chatContexts.get(key)
         if (ctx !== undefined) {
-          reply = await this.cmdChatMessage(key, content)
+          reply = await this.cmdChatMessage(key, content, pushTarget)
         } else if (this.autoChatChannels.has(channel)) {
           // 默认对话模式:非指令消息自动进入纯对话并发送。
           const entered = await this.cmdEnter(key, '', pushTarget)
           const autoCtx = this.chatContexts.get(key)
           reply = autoCtx !== undefined
-            ? `${entered}\n\n${await this.cmdChatMessage(key, content)}`
+            ? `${entered}\n\n${await this.cmdChatMessage(key, content, pushTarget)}`
             : entered
         } else {
           reply = this.fullHelp()
@@ -602,7 +616,7 @@ export class RemoteCommandProcessor {
     return `已退出工作区「${ctx.label}」对话模式。会话 ${ctx.sessionId} 保留在后台,可发「打开 ${ctx.sessionId}」继续查看。`
   }
 
-  private async cmdChatMessage(key: string, text: string): Promise<string> {
+  private async cmdChatMessage(key: string, text: string, pushTarget?: { scope: string; targetId: string }): Promise<string> {
     const ctx = this.chatContexts.get(key)
     if (ctx === undefined) return this.fullHelp()
     const client = this.harness.client()
@@ -618,6 +632,9 @@ export class RemoteCommandProcessor {
       if (owner === undefined) {
         owner = { ...this.ownerFromKey(key), kind: 'chat' }
         this.sessionOwners.set(ctx.sessionId, owner)
+      } else if (pushTarget !== undefined && owner.pushTarget === undefined) {
+        // 补全推送目标(如会话从群创建、当前消息来自私聊)。
+        owner.pushTarget = pushTarget
       }
       if (owner.kind === 'chat') {
         this.chatReplies.set(ctx.sessionId, {
@@ -695,17 +712,16 @@ export class RemoteCommandProcessor {
     }
   }
 
-  /** 会话事件汇报:turn/end 时向发起者推送完成/失败通知(仅任务会话;同会话 5 分钟内去重)。 */
+  /** 会话事件:任务汇报 + 对话回复(流式/整段)。 */
   private handleSessionEvent(payload: Record<string, unknown>): void {
     const sessionId = String(payload.sessionId ?? '')
     const owner = this.sessionOwners.get(sessionId)
     if (owner === undefined || !isRecord(payload.event)) return
-    if (payload.event.type !== 'turn/end') return
-    // 对话会话:回合结束后推送 agent 回复(而不是"任务完成"汇报)。
     if (owner.kind === 'chat') {
-      this.pushChatReply(sessionId)
+      this.handleChatEvent(sessionId, owner, payload.event)
       return
     }
+    if (payload.event.type !== 'turn/end') return
     if (!this.reportChannels.has(owner.channel)) return
     const data = isRecord(payload.event.data) ? payload.event.data : {}
     const reason = isRecord(data.reason) ? data.reason : {}
@@ -730,16 +746,42 @@ export class RemoteCommandProcessor {
     if (this.push !== null) this.push(owner.channel, owner.userId, text, undefined, owner.pushTarget)
   }
 
-  /** 对话回合结束:拉取最新 agent 回复并推送给发起者(对话体验闭环)。 */
+  /** 对话回合事件:chunk 增量实时流出(QQ 私聊流式)或缓冲;turn/end 收尾。 */
+  private handleChatEvent(sessionId: string, owner: SessionOwner, ev: Record<string, unknown>): void {
+    const pending = this.chatReplies.get(sessionId)
+    if (pending === undefined) return
+    const streamable = this.chatStream !== null && owner.channel === 'qq' && owner.pushTarget?.scope === 'c2c'
+    if (ev.type === 'assistant/chunk') {
+      const chunk = isRecord(ev.data) && isRecord(ev.data.chunk) ? ev.data.chunk : null
+      if (chunk !== null && chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text !== '') {
+        if (streamable) this.chatStream!.onDelta(owner.channel, pending.userId, chunk.text, owner.pushTarget)
+        else this.chatReplyBuffer.set(sessionId, (this.chatReplyBuffer.get(sessionId) ?? '') + chunk.text)
+      }
+      return
+    }
+    if (ev.type === 'turn/end') {
+      if (streamable) {
+        this.chatStream!.onEnd(owner.channel, pending.userId, owner.pushTarget)
+        this.chatReplies.delete(sessionId)
+        return
+      }
+      this.pushChatReply(sessionId)
+    }
+  }
+
+  /** 对话回合结束:推送给发起者(非流式通道);优先用回合缓冲,兜底拉历史。 */
   private pushChatReply(sessionId: string): void {
     const pending = this.chatReplies.get(sessionId)
     if (pending === undefined || this.push === null) return
+    this.chatReplies.delete(sessionId)
     // 5 分钟内有效;超时视为用户已离开,不再推送。
-    if (Date.now() - pending.ts > 5 * 60 * 1000) {
-      this.chatReplies.delete(sessionId)
+    if (Date.now() - pending.ts > 5 * 60 * 1000) return
+    const buffered = this.chatReplyBuffer.get(sessionId) ?? ''
+    this.chatReplyBuffer.delete(sessionId)
+    if (buffered.trim() !== '') {
+      this.push(pending.channel, pending.userId, `💬 ${buffered.slice(0, 1500)}`, undefined, pending.pushTarget)
       return
     }
-    this.chatReplies.delete(sessionId)
     const client = this.harness.client()
     void client.rpc<{ events: Array<{ event?: { type?: string; data?: { message?: { content?: unknown } } } }> }>(
       'session.history', { sessionId, maxMessages: 2 }, 30000,

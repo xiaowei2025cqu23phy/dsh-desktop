@@ -71,6 +71,15 @@ if (!gotLock) {
       if (channel === 'telegram' && telegramBot !== null) void telegramBot.sendMessage(Number(userId), text)
       else if (channel === 'qq' && qqBot !== null) void qqBot.sendToUser(userId, text, meta, target)
     })
+    // QQ 私聊对话流式输出(打字机效果)。
+    commands.setChatStream({
+      onDelta: (channel, userId, delta, target) => {
+        if (channel === 'qq' && qqBot !== null) qqBot.onChatDelta(channel, userId, delta, target)
+      },
+      onEnd: (channel, userId, target) => {
+        if (channel === 'qq' && qqBot !== null) qqBot.onChatEnd(channel, userId, target)
+      },
+    })
     const gateway = new RemoteGateway(config, harness, events, commands)
     qqBot = new QQBotAdapter(config, commands)
     telegramBot = new TelegramBotAdapter(config, commands)

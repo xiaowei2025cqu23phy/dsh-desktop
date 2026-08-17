@@ -389,5 +389,37 @@ function makeHarness(log) {
   check('对话回复推送', pushes4.length === 1 && pushes4[0][2].includes('你好呀朋友'), true)
 }
 
+// ---- 对话流式输出(QQ 私聊:c2c + sink → chunk 实时,回合结束 onEnd) ----
+{
+  const deltas = []
+  const ends = []
+  const processor = new RemoteCommandProcessor(makeHarness([]))
+  processor.setChatStream({
+    onDelta: (channel, userId, delta, target) => deltas.push([channel, userId, delta, target && target.targetId]),
+    onEnd: (channel, userId, target) => ends.push([channel, userId, target && target.targetId]),
+  })
+  await processor.handleText('qq', 'u-stream', '进入', { scope: 'c2c', targetId: 'OPENID_STREAM' })
+  await processor.handleText('qq', 'u-stream', '讲个笑话', { scope: 'c2c', targetId: 'OPENID_STREAM' })
+  const frame = (rpcId, event) => ({
+    type: 'server-request', rpcId, method: 'session/event',
+    payload: { sessionId: 'session-test-1', event },
+  })
+  processor.handleInteractionFrame(frame('r-s1', { type: 'assistant/chunk', data: { chunk: { type: 'text-delta', text: '哈' } } }))
+  processor.handleInteractionFrame(frame('r-s2', { type: 'assistant/chunk', data: { chunk: { type: 'text-delta', text: '哈' } } }))
+  processor.handleInteractionFrame(frame('r-s3', { type: 'assistant/chunk', data: { chunk: { type: 'reasoning-delta', text: '思考' } } }))
+  processor.handleInteractionFrame(frame('r-s4', { type: 'turn/end', data: { reason: { kind: 'ok' } } }))
+  check('流式-增量实时下发', deltas.length === 2 && deltas[0][2] === '哈' && deltas[0][3] === 'OPENID_STREAM', true)
+  check('流式-回合结束回调', ends.length === 1, true)
+  // 群/无 sink:走整段缓冲推送
+  const pushes = []
+  const p2 = new RemoteCommandProcessor(makeHarness([]))
+  p2.setPush((channel, userId, text) => pushes.push([channel, userId, text]))
+  await p2.handleText('qq', 'u-group', '进入', undefined)
+  await p2.handleText('qq', 'u-group', '大家好', { scope: 'group', targetId: 'GROUP_X' })
+  p2.handleInteractionFrame(frame('r-s5', { type: 'assistant/chunk', data: { chunk: { type: 'text-delta', text: '大家好呀' } } }))
+  p2.handleInteractionFrame(frame('r-s6', { type: 'turn/end', data: { reason: { kind: 'ok' } } }))
+  check('群场景-整段缓冲推送', pushes.length === 1 && pushes[0][2].includes('大家好呀'), true)
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)
