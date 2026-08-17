@@ -619,7 +619,11 @@
       var wsData = results[0]
       var sessData = results[1]
       var workspaces = wsData.items || []
-      var sessions = (sessData.items || []).filter(function (s) { return !s.origin })
+      // 隐藏:子代理会话(origin)、未发生的空会话(blank)、已归档会话。
+      var archived = new Set(wsData.archivedSessionIds || [])
+      var sessions = (sessData.items || []).filter(function (s) {
+        return !s.origin && !s.blank && !archived.has(s.sessionId)
+      })
       sessions.sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0) })
       var byPath = {}
       workspaces.forEach(function (ws) {
