@@ -5,7 +5,8 @@
 (function () {
   'use strict'
 
-  var $ = function (id) { return document.getElementById(id) }
+  // 宽松类型起步:$ 返回 any,后续逐步收紧为按元素类型的泛型。
+  var $ = function (id: string): any { return document.getElementById(id) }
 
   var state = {
     server: '',
@@ -28,6 +29,7 @@
     questionCards: {},    // sessionId -> DOM 元素
     fsPath: '',           // 文件夹浏览当前路径('' = 根列表)
     defaultModel: null,   // { provider, model } 桌面端预设模型(host.describe)
+    sidebarOpen: false,   // 左侧抽屉开关状态
   }
 
   var S = {
@@ -63,7 +65,7 @@
   }
 
   // ---- API ----
-  function apiRpc(method, payload) {
+  function apiRpc(method: string, payload?: unknown): Promise<any> {
     return fetch(state.server + '/api/rpc', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token },
@@ -72,7 +74,7 @@
       return res.json()
     }).then(function (data) {
       if (!data.ok) {
-        var err = new Error((data.error && data.error.message) || 'RPC 失败')
+        const err: Error & { code?: unknown } = new Error((data.error && data.error.message) || 'RPC 失败')
         err.code = data.error && data.error.code
         throw err
       }
@@ -93,7 +95,7 @@
   }
 
   /** 控制动作(白名单,桌面端执行;用于预设工作区目录等)。 */
-  function apiAction(action, extra) {
+  function apiAction(action: string, extra?: Record<string, unknown>): Promise<any> {
     return fetch(state.server + '/api/action', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token },
@@ -165,7 +167,7 @@
     el.innerHTML = '<span class="tool-name">' + S.escapeHtml(name) + '</span>' +
       '<span class="tool-state">调用中…</span><br><pre style="margin-top:4px;white-space:pre-wrap">' +
       S.escapeHtml(String(args || '').slice(0, 300)) + '</pre>'
-    el._stateEl = el.querySelector('.tool-state')
+    ;(el as any)._stateEl = el.querySelector('.tool-state')
     stream.appendChild(el)
     state.msgLog.push({ kind: 'tool', text: name + ' 调用中' })
     stream.scrollTop = stream.scrollHeight
@@ -589,7 +591,7 @@
   }
 
   function newSession() {
-    var payload = {}
+    var payload: Record<string, unknown> = {}
     if (state.currentWsId) payload.workspaceId = state.currentWsId
     else if (state.currentWsRoot) payload.cwd = state.currentWsRoot
     apiRpc('session.create', payload).then(function (created) {
@@ -727,7 +729,7 @@
   function sessionRowElement(s, cwd) {
     var row = document.createElement('div')
     row.className = 'session-row' + (s.sessionId === state.sessionId ? ' current' : '')
-    row._sid = s.sessionId
+    ;(row as any)._sid = s.sessionId
     var t = document.createElement('span')
     t.className = 'session-title' + (s.blank ? ' blank' : '')
     t.textContent = sessionTitle(s)
@@ -891,7 +893,7 @@
   function markCurrentRow(sessionId) {
     var rows = document.querySelectorAll('.session-row')
     rows.forEach(function (row) {
-      row.classList.toggle('current', row._sid === sessionId)
+      row.classList.toggle('current', (row as any)._sid === sessionId)
     })
   }
 
@@ -1036,7 +1038,7 @@
   }
 
   // ---- 任务 ----
-  function fillWorkspaceSelect(selectedId) {
+  function fillWorkspaceSelect(selectedId?: string) {
     return apiRpc('workspace.list', {}).then(function (data) {
       var select = $('task-workspace')
       select.innerHTML = ''
@@ -1115,7 +1117,7 @@
     var statusEl = $('task-status')
     statusEl.textContent = '正在创建会话…'
     statusEl.className = 'conn-status'
-    var payload = {}
+    var payload: Record<string, unknown> = {}
     if (workspaceValue.indexOf('cwd:') === 0) payload.cwd = workspaceValue.slice(4)
     else if (workspaceValue !== '') payload.workspaceId = workspaceValue
     apiRpc('session.create', payload).then(function (created) {
@@ -1141,7 +1143,7 @@
       statusEl.textContent = '任务已启动 ✓'
       statusEl.className = 'conn-status ok'
       closeSheet($('view-task'))
-      openSession(sessionId, payload.cwd || undefined)
+      openSession(sessionId, typeof payload.cwd === 'string' && payload.cwd !== '' ? payload.cwd : undefined)
       loadSidebar()
     }).catch(function (err) {
       statusEl.textContent = '启动失败:' + err.message
@@ -1406,8 +1408,33 @@
     $('fsp-title').textContent = name
     $('fsp-content').textContent = '加载中…'
     openSheet($('view-fspreview'))
-    apiAction('fs.read', { path: path }).then(function (data) {
-      $('fsp-content').textContent = data.text || '(空文件)'
+    loadFsPreviewChunk(path, 0)
+  }
+
+  function loadFsPreviewChunk(path, offset) {
+    apiAction('fs.read', { path: path, offset: offset }).then(function (data) {
+      var pre = $('fsp-content')
+      if (data.image) {
+        pre.textContent = ''
+        var img = document.createElement('img')
+        img.src = data.dataUrl
+        img.style.maxWidth = '100%'
+        img.style.borderRadius = '8px'
+        pre.appendChild(img)
+        return
+      }
+      if (offset === 0) pre.textContent = data.text || '(空文件)'
+      else pre.textContent += data.text
+      if (data.truncated) {
+        var more = document.createElement('button')
+        more.className = 'btn btn-sm'
+        more.textContent = '加载更多(' + Math.max(1, Math.round((data.size - data.nextOffset) / 1024)) + 'KB 剩余)'
+        more.addEventListener('click', function () {
+          more.remove()
+          loadFsPreviewChunk(path, data.nextOffset)
+        })
+        pre.appendChild(more)
+      }
     }).catch(function (err) {
       $('fsp-content').textContent = '预览失败:' + err.message
     })
@@ -1670,6 +1697,22 @@
     }).catch(function (err) { $('set-memories').textContent = '加载失败:' + err.message })
   }
 
+  function loadPwaQueue() {
+    var host = $('set-queue')
+    apiAction('queue.get').then(function (data) {
+      var items = data.items || []
+      var active = items.filter(function (item) { return item.status === 'queued' || item.status === 'running' || item.status === 'failed' })
+      if (active.length === 0) { host.textContent = '队列为空。'; return }
+      host.textContent = active.slice(0, 10).map(function (item) {
+        var retryIn = item.status === 'failed' && item.nextAttemptAt !== null
+          ? ' / ' + Math.max(1, Math.ceil((item.nextAttemptAt - Date.now()) / 1000)) + 's 后自动重试'
+          : ''
+        var state = item.status === 'failed' ? '失败(尝试 ' + item.attempts + '/' + item.maxAttempts + ')' + retryIn : item.status === 'running' ? '运行中' : '排队中'
+        return state + ' | ' + item.source + '\n' + item.description.slice(0, 80) + (item.error ? '\n' + item.error.slice(0, 100) : '')
+      }).join('\n\n')
+    }).catch(function (err) { host.textContent = '加载失败:' + err.message })
+  }
+
   function loadTaskHistory() {
     var host = $('set-task-history')
     apiAction('tasks.get').then(function (data) {
@@ -1767,6 +1810,7 @@
       loadHealth()
       loadInteractions()
       loadWorkbench()
+      loadPwaQueue()
       loadTaskHistory()
       loadDiagnostics()
       openSheet($('view-settings'))
@@ -1774,6 +1818,7 @@
     $('btn-settings-close').addEventListener('click', function () { closeSheet($('view-settings')) })
     $('btn-usage-refresh').addEventListener('click', loadUsage)
     $('btn-health-refresh').addEventListener('click', loadHealth)
+    $('btn-queue-refresh').addEventListener('click', loadPwaQueue)
     $('btn-interactions-refresh').addEventListener('click', loadInteractions)
     $('btn-diagnostics').addEventListener('click', loadDiagnostics)
     $('btn-chat-model').addEventListener('click', openModelSheet)

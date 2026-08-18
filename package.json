@@ -6,7 +6,7 @@
   "main": "dist/main/index.js",
   "private": true,
   "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && node scripts/copy-assets.mjs",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.remote.json && node scripts/build-remote.mjs && node scripts/copy-assets.mjs",
     "start": "npm run build && electron .",
     "smoke": "node scripts/smoke.mjs",
     "pack": "npm run build && electron-builder --win nsis zip",
@@ -49,6 +49,7 @@
   "devDependencies": {
     "electron": "^43.4.0",
     "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.3"
   },
   "dependencies": {

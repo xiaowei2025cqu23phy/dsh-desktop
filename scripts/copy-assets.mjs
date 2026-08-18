@@ -27,6 +27,8 @@ for (const name of readdirSync(sourceDir)) {
 for (const name of readdirSync(remoteSourceDir)) {
   const source = join(remoteSourceDir, name)
   if (!statSync(source).isFile()) continue
+  // PWA 脚本由 esbuild 从 app.ts 构建,这里只复制 html/css 等静态资源。
+  if (name.endsWith('.ts') || name === 'app.js') continue
   copyFileSync(source, join(remoteTargetDir, name))
   copied += 1
 }

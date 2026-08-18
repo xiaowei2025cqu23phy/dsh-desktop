@@ -248,6 +248,156 @@ export class RemoteCommandProcessor {
     this.appendAudit({ time: now, type: `task.${next.status}`, sessionId: next.sessionId ?? undefined, activityId, detail: next.error ?? next.description.slice(0, 240) })
   }
 
+  /** 任务启动入队(队列同步独立于汇报开关与推送去重)。 */
+  private enqueueTaskRun(description: string, sessionId: string, workspace: string | null): void {
+    const now = Date.now()
+    this.syncQueueFromTask(
+      { id: `task-${now}-${Math.random().toString(36).slice(2, 8)}`, description, sessionId, status: 'running', attempts: 1 },
+      { description, sessionId, workspace, status: 'running' },
+      now,
+    )
+  }
+
+  /** 有任务运行中时,新任务进入排队等待(串行执行)。 */
+  private enqueueQueuedTask(key: string, description: string, pushTarget: { scope: string; targetId: string } | undefined, workspace: string | null): void {
+    const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue']; upsertTaskQueueEntry?: ConfigStore['upsertTaskQueueEntry'] }
+    if (typeof target?.taskQueue !== 'function' || typeof target?.upsertTaskQueueEntry !== 'function') return
+    const now = Date.now()
+    const owner = this.ownerFromKey(key)
+    target.upsertTaskQueueEntry({
+      id: `queue-${now}-${Math.random().toString(36).slice(2, 8)}`,
+      description,
+      sessionId: null,
+      status: 'queued',
+      attempts: 0,
+      maxAttempts: 3,
+      nextAttemptAt: null,
+      workspace,
+      source: owner.channel === 'qq' || owner.channel === 'telegram' ? owner.channel : 'system',
+      channel: owner.channel,
+      userId: owner.userId,
+      pushTarget: pushTarget ?? null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    this.appendAudit({ time: now, type: 'task.queued', detail: `任务排队:${description.slice(0, 120)}` })
+  }
+
+  /** 当前无运行任务时,启动最早的排队任务(串行执行器)。 */
+  private draining = false
+  private async drainQueue(): Promise<void> {
+    if (this.draining) return
+    this.draining = true
+    try {
+      const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue']; upsertTaskQueueEntry?: ConfigStore['upsertTaskQueueEntry'] }
+      if (typeof target?.taskQueue !== 'function' || typeof target?.upsertTaskQueueEntry !== 'function') return
+      const entries = target.taskQueue()
+      if (entries.some((item) => item.status === 'running')) return
+      const next = entries.find((item) => item.status === 'queued')
+      if (next === undefined) return
+      const client = this.harness.client()
+      try {
+        if (next.sessionId === null) {
+          // 排队任务(尚未创建会话):创建工作区/目录会话。
+          const payload: Record<string, unknown> = {}
+          if (next.workspace !== null) {
+            if (/[\\/]/.test(next.workspace)) payload.cwd = next.workspace
+            else payload.workspaceId = next.workspace
+          }
+          const created = await client.rpc<{ sessionId: string }>('session.create', payload)
+          const key = `${next.channel}:${next.userId}`
+          this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget: next.pushTarget ?? undefined, kind: 'task' })
+          this.taskDescriptions.set(created.sessionId, next.description)
+          this.recordTask({ description: next.description, sessionId: created.sessionId, workspace: next.workspace, status: 'running' })
+          target.upsertTaskQueueEntry({ ...next, sessionId: created.sessionId, status: 'running', attempts: 1, updatedAt: Date.now() })
+          await client.rpc('session.prompt', {
+            sessionId: created.sessionId,
+            mode: 'queue',
+            content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(next.workspace !== null && /[\\/]/.test(next.workspace) ? next.workspace : null, next.description)) }],
+          })
+        } else {
+          // 已有会话(重试转排队):直接重新执行。
+          target.upsertTaskQueueEntry({ ...next, status: 'running', nextAttemptAt: null, updatedAt: Date.now() })
+          await client.rpc('session.prompt', {
+            sessionId: next.sessionId,
+            mode: 'queue',
+            content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(next.workspace !== null && /[\\/]/.test(next.workspace) ? next.workspace : null, next.description)) }],
+          })
+        }
+        if (this.push !== null && next.pushTarget !== undefined && next.pushTarget !== null) {
+          this.push(next.channel, next.userId, `▶️ 排队任务已开始执行:${next.description.slice(0, 60)}`, undefined, next.pushTarget)
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        target.upsertTaskQueueEntry({ ...next, status: 'failed', error: message.slice(0, 500), attempts: next.attempts + 1, nextAttemptAt: Date.now() + 30_000, updatedAt: Date.now() })
+        if (this.push !== null && next.pushTarget !== undefined && next.pushTarget !== null) {
+          this.push(next.channel, next.userId, `❌ 排队任务启动失败:${message.slice(0, 120)}`, undefined, next.pushTarget)
+        }
+      }
+    } finally {
+      this.draining = false
+    }
+  }
+
+  /** 任务记录变化时同步调度队列(首次运行入队;完成/失败更新状态与退避时间)。 */
+  private syncQueueFromTask(
+    next: { id: string; description: string; sessionId: string | null; status: string; attempts: number; error?: string },
+    patch: { description?: string; sessionId?: string | null; workspace?: string | null; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; error?: string },
+    now: number,
+  ): void {
+    const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue']; upsertTaskQueueEntry?: ConfigStore['upsertTaskQueueEntry'] }
+    if (typeof target?.taskQueue !== 'function' || typeof target?.upsertTaskQueueEntry !== 'function') return
+    const existing = next.sessionId === null ? undefined : target.taskQueue().find((item) => item.sessionId === next.sessionId)
+    if (existing === undefined) {
+      // 首次记录:任务启动即入队。
+      const owner = next.sessionId === null ? undefined : this.sessionOwners.get(next.sessionId)
+      target.upsertTaskQueueEntry({
+        id: `queue-${next.id}`,
+        description: next.description,
+        sessionId: next.sessionId,
+        status: patch.status === 'failed' || patch.status === 'cancelled' || patch.status === 'completed' ? patch.status : 'running',
+        attempts: patch.status === 'failed' || patch.status === 'cancelled' ? 0 : 1,
+        maxAttempts: 3,
+        nextAttemptAt: null,
+        ...(patch.error === undefined ? {} : { error: patch.error.slice(0, 500) }),
+        workspace: patch.workspace === undefined ? null : patch.workspace,
+        source: owner?.channel === 'qq' || owner?.channel === 'telegram' ? owner.channel : 'system',
+        channel: owner?.channel ?? 'system',
+        userId: owner?.userId ?? '',
+        pushTarget: owner?.pushTarget ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      return
+    }
+    if (next.status === 'completed') {
+      target.upsertTaskQueueEntry({ ...existing, status: 'completed', nextAttemptAt: null, updatedAt: now })
+      return
+    }
+    if (next.status === 'cancelled') {
+      target.upsertTaskQueueEntry({ ...existing, status: 'cancelled', nextAttemptAt: null, updatedAt: now })
+      return
+    }
+    if (next.status === 'failed') {
+      const attempts = existing.attempts + 1
+      // 最多自动重试 maxAttempts 次(第 1~maxAttempts 次失败后各自退避一次;超过后不再自动重试)。
+      const exhausted = attempts > existing.maxAttempts
+      // 指数退避:第 1 次失败后 30s,第 2 次 60s,第 3 次 120s。
+      const nextAttemptAt = exhausted ? null : now + 30_000 * 2 ** (attempts - 2)
+      target.upsertTaskQueueEntry({
+        ...existing,
+        status: 'failed',
+        attempts,
+        nextAttemptAt,
+        ...(patch.error === undefined ? {} : { error: patch.error.slice(0, 500) }),
+        updatedAt: now,
+      })
+      return
+    }
+    // running(自动/手动重试后恢复执行)。
+    target.upsertTaskQueueEntry({ ...existing, status: 'running', nextAttemptAt: null, updatedAt: now })
+  }
+
   private withWorkspaceMemory(path: string | null, text: string): string {
     if (path === null || this.config === undefined) return text
     const target = this.config as ConfigStore & { memory?: ConfigStore['memory'] }
@@ -1055,6 +1205,86 @@ export class RemoteCommandProcessor {
     this.saveTasks(remaining)
   }
 
+  /** 每 30 秒 tick:到期失败的队列项按指数退避自动重试 + 启动排队任务。 */
+  async tickQueue(): Promise<void> {
+    const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue'] }
+    if (typeof target?.taskQueue !== 'function') return
+    const now = Date.now()
+    const due = target.taskQueue().filter((item) => item.status === 'failed' && item.nextAttemptAt !== null && item.nextAttemptAt <= now)
+    for (const entry of due) {
+      const result = await this.retryQueueEntry(entry.id).catch(() => '')
+      if (result !== '' && this.push !== null) {
+        const owner = entry.sessionId === null ? undefined : this.sessionOwners.get(entry.sessionId)
+        if (owner !== undefined && owner.pushTarget !== undefined) {
+          this.push(owner.channel, owner.userId, `🔄 任务自动重试:${entry.description.slice(0, 60)}\n${result}`, undefined, owner.pushTarget)
+        }
+      }
+    }
+    await this.drainQueue()
+  }
+
+  /** 应用启动后恢复队列:上次运行中(被退出中断)的项标记为失败,等待手动重试。 */
+  recoverQueue(): void {
+    const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue']; upsertTaskQueueEntry?: ConfigStore['upsertTaskQueueEntry'] }
+    if (typeof target?.taskQueue !== 'function' || typeof target?.upsertTaskQueueEntry !== 'function') return
+    const now = Date.now()
+    for (const entry of target.taskQueue()) {
+      if (entry.status === 'running') {
+        target.upsertTaskQueueEntry({ ...entry, status: 'failed', nextAttemptAt: null, error: '应用退出导致任务中断', updatedAt: now })
+      }
+    }
+  }
+
+  /** 队列列表(桌面端与 PWA 展示)。 */
+  queueList(): Array<{ id: string; description: string; sessionId: string | null; status: string; attempts: number; maxAttempts: number; nextAttemptAt: number | null; error?: string; workspace: string | null; source: string; createdAt: number; updatedAt: number }> {
+    const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue'] }
+    return typeof target?.taskQueue === 'function' ? target.taskQueue() : []
+  }
+
+  /** 取消队列项:标记取消并停止对应会话。 */
+  async cancelQueueEntry(id: string): Promise<string> {
+    const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue']; upsertTaskQueueEntry?: ConfigStore['upsertTaskQueueEntry'] }
+    if (typeof target?.taskQueue !== 'function' || typeof target?.upsertTaskQueueEntry !== 'function') return '队列不可用'
+    const entry = target.taskQueue().find((item) => item.id === id)
+    if (entry === undefined) return '未找到该队列项。'
+    if (entry.sessionId !== null) {
+      await this.harness.client().rpc('session.cancel', { sessionId: entry.sessionId }).catch(() => {})
+    }
+    target.upsertTaskQueueEntry({ ...entry, status: 'cancelled', nextAttemptAt: null, updatedAt: Date.now() })
+    void this.drainQueue().catch(() => {})
+    return `已取消:${entry.description.slice(0, 60)}`
+  }
+
+  /** 立即重试队列项(手动或自动)。 */
+  async retryQueueEntry(id: string): Promise<string> {
+    const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue']; upsertTaskQueueEntry?: ConfigStore['upsertTaskQueueEntry'] }
+    if (typeof target?.taskQueue !== 'function' || typeof target?.upsertTaskQueueEntry !== 'function') return '队列不可用'
+    const entry = target.taskQueue().find((item) => item.id === id)
+    if (entry === undefined) return '未找到该队列项。'
+    if (entry.status !== 'failed' && entry.status !== 'cancelled') return '只有失败或已取消的任务可以重试。'
+    if (entry.sessionId === null) return '该队列项没有关联会话,无法重试。'
+    if (entry.attempts >= entry.maxAttempts && entry.status === 'failed') return `已达到最大重试次数(${entry.maxAttempts}),不再自动重试。`
+    // 串行执行:已有任务运行中时,重试也进入排队。
+    if (target.taskQueue().some((item) => item.status === 'running' && item.id !== id)) {
+      target.upsertTaskQueueEntry({ ...entry, status: 'queued', nextAttemptAt: null, updatedAt: Date.now() })
+      return '已有任务在运行,重试已排队,将串行执行。'
+    }
+    target.upsertTaskQueueEntry({ ...entry, status: 'running', nextAttemptAt: null, updatedAt: Date.now() })
+    try {
+      await this.harness.client().rpc('session.prompt', {
+        sessionId: entry.sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(entry.workspace, entry.description)) }],
+      })
+      this.appendAudit({ time: Date.now(), type: 'task.retried', sessionId: entry.sessionId ?? undefined, activityId: `activity-${entry.id.replace(/^queue-/, '')}`, detail: `重试任务:${entry.description.slice(0, 120)}` })
+      return `已重新执行:${entry.description.slice(0, 60)}`
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      target.upsertTaskQueueEntry({ ...entry, status: 'failed', error: message.slice(0, 500), nextAttemptAt: null, updatedAt: Date.now() })
+      return `重试失败:${message}`
+    }
+  }
+
   private async cmdCancel(sessionId: string): Promise<string> {
     if (!/^session-/.test(sessionId)) return '请提供完整的会话 id(以 session- 开头)'
     try {
@@ -1132,6 +1362,12 @@ export class RemoteCommandProcessor {
   }
 
   private async cmdRetry(key: string, taskId: string, pushTarget?: { scope: string; targetId: string }): Promise<string> {
+    // 优先命中调度队列(失败/取消项可立即重试,保留退避状态)。
+    const queueEntry = this.queueList().find((item) => item.id === taskId || item.sessionId === taskId)
+    if (queueEntry !== undefined) {
+      if (queueEntry.status !== 'failed' && queueEntry.status !== 'cancelled') return '该任务未失败或未取消,无需重试。'
+      return this.retryQueueEntry(queueEntry.id)
+    }
     if (this.config === undefined) return '任务记录不可用'
     const task = (this.config.get().taskHistory ?? []).find((item) => item.id === taskId || item.sessionId === taskId)
     if (task === undefined) return `未找到任务「${taskId}」,可从桌面端任务记录查看 ID`
@@ -1176,6 +1412,11 @@ export class RemoteCommandProcessor {
         }
         workspaceId = found.workspaceId
       }
+      // 串行执行:已有任务运行中时,新任务入队等待。
+      if (this.queueList().some((item) => item.status === 'running')) {
+        this.enqueueQueuedTask(key, taskText, pushTarget, cwd ?? workspaceId)
+        return '已有任务在运行,新任务已排队,将串行执行。\n可在桌面端「工作台 → 任务队列」查看或取消。'
+      }
       const payload: Record<string, unknown> = {}
       if (workspaceId !== null) payload.workspaceId = workspaceId
       else if (cwd !== null) payload.cwd = cwd
@@ -1183,6 +1424,7 @@ export class RemoteCommandProcessor {
       this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
       this.taskDescriptions.set(created.sessionId, taskText)
       this.recordTask({ description: taskText, sessionId: created.sessionId, workspace: cwd ?? workspaceId, status: 'running' })
+      this.enqueueTaskRun(taskText, created.sessionId, cwd ?? workspaceId)
       await client.rpc('session.prompt', {
         sessionId: created.sessionId,
         mode: 'queue',
@@ -1455,7 +1697,6 @@ export class RemoteCommandProcessor {
       return
     }
     if (payload.event.type !== 'turn/end') return
-    if (!this.reportChannels.has(owner.channel)) return
     const data = isRecord(payload.event.data) ? payload.event.data : {}
     const reason = isRecord(data.reason) ? data.reason : {}
     const detail = reason.error ?? reason.failure
@@ -1480,6 +1721,28 @@ export class RemoteCommandProcessor {
         return
       }
     }
+    // 队列状态同步:不依赖主动汇报开关与推送去重(失败进入指数退避,完成即完结)。
+    const queueDescription = this.taskDescriptions.get(sessionId)
+    if (queueDescription !== undefined) {
+      const queueNow = Date.now()
+      const prevHistory = (this.config?.get().taskHistory ?? []).find((item) => item.sessionId === sessionId)
+      this.syncQueueFromTask(
+        {
+          id: prevHistory?.id ?? `task-${queueNow}-${Math.random().toString(36).slice(2, 8)}`,
+          description: queueDescription,
+          sessionId,
+          status: failed ? 'failed' : 'completed',
+          attempts: prevHistory?.attempts ?? 1,
+          ...(failed && message !== '' ? { error: message } : {}),
+        },
+        { sessionId, status: failed ? 'failed' : 'completed', ...(failed && message !== '' ? { error: message } : {}) },
+        queueNow,
+      )
+    }
+    if (!this.reportChannels.has(owner.channel)) {
+      void this.drainQueue().catch(() => {})
+      return
+    }
     // 去重:同一会话的完成/失败汇报 5 分钟内只推一次(多轮任务不重复刷屏)。
     const now = Date.now()
     const record = this.lastTurnReports.get(sessionId) ?? { done: 0, fail: 0 }
@@ -1497,6 +1760,8 @@ export class RemoteCommandProcessor {
         `\n发送「打开 ${sessionId}」查看详情`
       : `✅ 任务完成(会话 ${sessionId})\n发送「打开 ${sessionId}」查看结果`
     if (this.push !== null) this.push(owner.channel, owner.userId, text, undefined, owner.pushTarget)
+    // 任务结束:启动下一个排队任务(串行执行)。
+    void this.drainQueue().catch(() => {})
   }
 
   /** 对话回合事件:chunk 增量实时流出(QQ 私聊流式)或缓冲;turn/end 收尾。 */

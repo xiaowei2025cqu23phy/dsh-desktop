@@ -6,6 +6,7 @@
 import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { LocalDb } from './db'
 
 export interface HarnessConfig {
   /** auto: 先探测已运行实例,没有则托管启动;external: 只连接外部地址;managed: 始终自己启动。 */
@@ -176,6 +177,24 @@ export interface NotificationConfig {
   urgentBypassQuiet: boolean
 }
 
+export interface TaskQueueEntry {
+  id: string
+  description: string
+  sessionId: string | null
+  status: 'queued' | 'running' | 'failed' | 'completed' | 'cancelled'
+  attempts: number
+  maxAttempts: number
+  nextAttemptAt: number | null
+  error?: string
+  workspace: string | null
+  source: string
+  channel: string
+  userId: string
+  pushTarget?: { scope: string; targetId: string } | null
+  createdAt: number
+  updatedAt: number
+}
+
 export interface AppConfig {
   harness: HarnessConfig
   screensaver: ScreensaverConfig
@@ -212,6 +231,8 @@ export interface AppConfig {
     updatedAt: number
   }>
   notifications: NotificationConfig
+  /** 任务调度队列(串行执行 + 失败指数退避重试,重启保留)。 */
+  taskQueue: TaskQueueEntry[]
   /** 跨入口统一活动记录。 */
   activities: ActivityRecord[]
   /** 工作区路径到本地记忆的映射。 */
@@ -288,6 +309,7 @@ const DEFAULTS: AppConfig = {
   },
   taskHistory: [],
   notifications: { enabled: true, approval: true, question: true, taskDone: true, taskFail: true, quietHoursEnabled: false, quietStart: 22, quietEnd: 8, urgentBypassQuiet: true },
+  taskQueue: [],
   activities: [],
   workspaceMemories: {},
   auditLog: [],
@@ -296,10 +318,26 @@ const DEFAULTS: AppConfig = {
 export class ConfigStore {
   private config: AppConfig
   private readonly path: string
+  private readonly db: LocalDb
 
   constructor() {
     this.path = join(app.getPath('userData'), 'config.json')
     this.config = this.load()
+    this.db = new LocalDb(app.getPath('userData'))
+    this.migrateLegacyData()
+  }
+
+  /** 首次启用 SQLite 时,把旧 JSON 中的活动/审计/队列一次性导入,之后数据源切换为 local.db。 */
+  private migrateLegacyData(): void {
+    if (this.config.activities.length === 0 && this.config.auditLog.length === 0 && this.config.taskQueue.length === 0) return
+    this.db.migrateFromLegacy(this.config.activities, this.config.auditLog, this.config.taskQueue)
+    if (this.db.activities().length > 0 || this.db.auditList().length > 0 || this.db.taskQueue().length > 0) {
+      // 导入成功后清空 JSON 中的重复数据,避免双重维护。
+      this.config.activities = []
+      this.config.auditLog = []
+      this.config.taskQueue = []
+      this.save()
+    }
   }
 
   private load(): AppConfig {
@@ -325,6 +363,7 @@ export class ConfigStore {
         config.scheduledTasks = Object.values(config.scheduledTasks as Record<string, never>)
       }
       if (!Array.isArray(config.taskHistory)) config.taskHistory = []
+      if (!Array.isArray(config.taskQueue)) config.taskQueue = []
       if (!Array.isArray(config.activities)) config.activities = []
       if (!Array.isArray(config.auditLog)) config.auditLog = []
       if (config.workspaceMemories === null || typeof config.workspaceMemories !== 'object' || Array.isArray(config.workspaceMemories)) config.workspaceMemories = {}
@@ -388,22 +427,29 @@ export class ConfigStore {
     return target
   }
 
-  /** 返回最近活动,供主窗口和 PWA 离线查看。 */
+  /** 返回最近活动,供主窗口和 PWA 离线查看(SQLite)。 */
   activities(): ActivityRecord[] {
-    return [...this.config.activities].sort((a, b) => b.updatedAt - a.updatedAt)
+    return [...this.db.activities()].sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
-  /** 更新或创建一条活动。 */
+  /** 更新或创建一条活动(SQLite)。 */
   upsertActivity(activity: ActivityRecord): void {
-    const next = this.config.activities.filter((item) => item.id !== activity.id)
-    this.config.activities = [activity, ...next].slice(0, 200)
-    this.save()
+    this.db.upsertActivity(activity)
   }
 
-  /** 添加本地审计摘要,不记录请求正文。 */
+  /** 添加本地审计摘要,不记录请求正文(SQLite)。 */
   appendAudit(entry: Omit<AuditEntry, 'id'>): void {
-    this.config.auditLog = [{ ...entry, id: `audit-${entry.time}-${Math.random().toString(36).slice(2, 8)}` }, ...this.config.auditLog].slice(0, 500)
-    this.save()
+    this.db.appendAudit(entry)
+  }
+
+  /** 审计时间线列表(SQLite)。 */
+  auditList(): AuditEntry[] {
+    return this.db.auditList()
+  }
+
+  /** 清空审计时间线(SQLite)。 */
+  clearAudit(): void {
+    this.db.clearAudit()
   }
 
   /** 读取指定工作区的本地记忆。 */
@@ -425,8 +471,17 @@ export class ConfigStore {
     this.save()
   }
 
-  /** 合并指定分区后持久化。数组分区(如 scheduledTasks)整体替换。 */
-  update<K extends keyof AppConfig>(section: K, patch: Partial<AppConfig[K]>): AppConfig[K] {
+  /** 任务调度队列(按创建时间排序,活跃项在前;SQLite)。 */
+  taskQueue(): TaskQueueEntry[] {
+    return this.db.taskQueue()
+  }
+
+  /** 更新或插入一条队列项。活跃项全保留;已结束项只留最近 100 条(SQLite)。 */
+  upsertTaskQueueEntry(entry: TaskQueueEntry): void {
+    this.db.upsertTaskQueueEntry(entry)
+  }
+
+  /** 合并指定分区后持久化。数组分区(如 scheduledTasks)整体替换。 */  update<K extends keyof AppConfig>(section: K, patch: Partial<AppConfig[K]>): AppConfig[K] {
     if (Array.isArray(patch)) {
       this.config[section] = patch as never
     } else {
@@ -443,5 +498,10 @@ export class ConfigStore {
     } catch (error) {
       console.error('[config] 保存失败:', error)
     }
+  }
+
+  /** 应用退出时关闭 SQLite 连接。 */
+  close(): void {
+    this.db.close()
   }
 }
