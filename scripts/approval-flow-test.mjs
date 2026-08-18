@@ -563,11 +563,21 @@ function makeHarness(log) {
     type: 'server-request', rpcId: 'r-ut', method: 'session/event',
     payload: { sessionId: 's1', event: { type: 'assistant/chunk', data: { chunk: { type: 'usage', usage: { inputTokens: 1000, outputTokens: 2000, cacheReadTokens: 100 } } } } },
   })
+  // 同一会话中途切 Gemini:后续 usage 必须进入独立模型桶。
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-gm', method: 'session/event',
+    payload: { sessionId: 's1', event: { type: 'request/header', data: { header: { config: { provider: 'google', model: 'gemini-3.6-flash' } } } } },
+  })
+  processor.handleInteractionFrame({
+    type: 'server-request', rpcId: 'r-gu', method: 'session/event',
+    payload: { sessionId: 's1', event: { type: 'assistant/chunk', data: { chunk: { type: 'usage', usage: { inputTokens: 500, outputTokens: 250, cacheReadTokens: 0 } } } } },
+  })
   const report = await processor.usageReport()
-  check('用量-模型分组', report.byModel.some((m) => m.provider === 'deepseek' && m.model === 'deepseek-v4-pro' && m.input === 1000 && m.output === 2000 && m.cache === 100), true)
+  check('用量-模型分组', report.byModel.some((m) => m.provider === 'deepseek' && m.model === 'deepseek-v4-pro' && m.input === 1000 && m.output === 2000 && m.cache === 100 && m.calls === 1), true)
+  check('用量-同会话切模型分开', report.byModel.some((m) => m.provider === 'google' && m.model === 'gemini-3.6-flash' && m.input === 500 && m.output === 250 && m.calls === 1), true)
   check('用量-费用估算', report.cost.total > 0, true)
   check('用量-倍率默认1', report.prices.multiplier, 1)
-  check('用量-费用计算', report.cost.total, (1000 / 1e6 * 2 + 2000 / 1e6 * 8 + 100 / 1e6 * 0.5))
+  check('用量-费用计算', report.cost.total, (1500 / 1e6 * 2 + 2250 / 1e6 * 8 + 100 / 1e6 * 0.5))
   check('用量-文本含费用', (await processor.handleText('telegram', '42', '用量', undefined)).includes('💰'), true)
 }
 

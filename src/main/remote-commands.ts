@@ -107,9 +107,9 @@ export class RemoteCommandProcessor {
   private taskDescriptions = new Map<string, string>()
   /** 已自动重试过 TRANSPORT 的会话(每个会话最多重试一次)。 */
   private retriedTransports = new Set<string>()
-  /** 会话 Token 累计(来自 assistant/chunk usage 事件;本次运行内)。 */
-  private tokenUsage = new Map<string, { input: number; output: number; cache: number }>()
-  /** 会话当前模型(来自 request/header 事件;用于按模型分组统计)。 */
+  /** 会话 Token 累计:每个 usage 在到达时归入当时的模型，本次运行内精确分组。 */
+  private tokenUsage = new Map<string, Map<string, { provider: string; model: string; input: number; output: number; cache: number; calls: number }>>()
+  /** 会话当前模型(来自 request/header 事件;用于把后续 usage 归入正确模型)。 */
   private sessionModels = new Map<string, { provider: string; model: string }>()
   /** 对话会话等待回复推送:发送消息后注册,回合结束把 agent 回复推给发起者。 */
   private chatReplies = new Map<string, { channel: string; userId: string; pushTarget?: { scope: string; targetId: string }; ts: number }>()
@@ -662,28 +662,53 @@ export class RemoteCommandProcessor {
 
   // ---- 用量统计 ----
 
-  /** 会话模型兜底查询:事件流未记录时,从会话历史最近的 request/header 事件获取。 */
-  private async sessionModelOf(sessionId: string): Promise<{ provider: string; model: string } | null> {
-    const known = this.sessionModels.get(sessionId)
-    if (known !== undefined) return known
+  /** 从历史事件中按每次请求的模型累计今日 usage;仅扫描最近事件，避免长会话阻塞统计。 */
+  private async sessionUsageByModel(sessionId: string, since: number): Promise<Array<{ provider: string; model: string; input: number; output: number; cache: number; calls: number }>> {
     try {
       const client = this.harness.client()
-      const h = await client.rpc<{ events: Array<{ event?: { type?: string; data?: { header?: { config?: { provider?: string; model?: string } } } } }> }>(
-        'session.history', { sessionId, maxMessages: 50 }, 20000,
+      const h = await client.rpc<{ events: Array<Record<string, unknown>> }>(
+        'session.history', { sessionId, maxMessages: 20 }, 4000,
       )
+      const byModel = new Map<string, { provider: string; model: string; input: number; output: number; cache: number; calls: number }>()
+      let current: { provider: string; model: string } | null = null
+      let currentIsToday = false
       for (const entry of h.events ?? []) {
-        const ev = entry.event
-        if (ev?.type === 'request/header' && ev.data?.header?.config &&
-            typeof ev.data.header.config.provider === 'string' && typeof ev.data.header.config.model === 'string') {
-          const info = { provider: ev.data.header.config.provider, model: ev.data.header.config.model }
-          this.sessionModels.set(sessionId, info)
-          return info
+        const ev = isRecord(entry.event) ? entry.event : entry
+        const time = typeof ev.time === 'number' ? ev.time : 0
+        const data = isRecord(ev.data) ? ev.data : ev
+        const header = isRecord(data.header) ? data.header : isRecord(ev.header) ? ev.header : undefined
+        const config = isRecord(header) ? header.config : undefined
+        if (ev.type === 'request/header' && isRecord(config) &&
+            typeof config.provider === 'string' && typeof config.model === 'string') {
+          current = { provider: config.provider, model: config.model }
+          currentIsToday = time >= since
+          if (currentIsToday) {
+            const key = `${current.provider}/${current.model}`
+            const entry = byModel.get(key) ?? { ...current, input: 0, output: 0, cache: 0, calls: 0 }
+            entry.calls += 1
+            byModel.set(key, entry)
+          }
+          this.sessionModels.set(sessionId, current)
+          continue
+        }
+        const chunk = isRecord(data.chunk) ? data.chunk : undefined
+        const usage = ev.type === 'assistant/chunk' && isRecord(chunk) && chunk.type === 'usage' && isRecord(chunk.usage)
+          ? chunk.usage
+          : undefined
+        if (usage !== undefined && current !== null && currentIsToday && time >= since) {
+          const key = `${current.provider}/${current.model}`
+          const entry = byModel.get(key) ?? { ...current, input: 0, output: 0, cache: 0, calls: 0 }
+          entry.input += typeof usage.inputTokens === 'number' ? usage.inputTokens : 0
+          entry.output += typeof usage.outputTokens === 'number' ? usage.outputTokens : 0
+          entry.cache += typeof usage.cacheReadTokens === 'number' ? usage.cacheReadTokens : 0
+          byModel.set(key, entry)
         }
       }
+      return [...byModel.values()]
     } catch {
-      // 查询失败:保持未知。
+      // 历史不可用时由实时累计数据兜底。
+      return []
     }
-    return null
   }
 
   /** 用量与费用估算(结构化;命令端与 PWA 共用)。 */
@@ -711,33 +736,40 @@ export class RemoteCommandProcessor {
       arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.turns ?? 0), 0)
     const sumLlms = (arr: Array<{ projections?: { values?: { sessionStats?: { llmMs?: number } } } }>) =>
       arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.llmMs ?? 0), 0)
-    // Token:本次运行内累计,按今日会话聚合;再按会话模型分组(事件缺失时查历史兜底)。
+    // 实时 usage 在到达时已按当时模型拆分；不再把整个会话归到最后一次模型。
     const todayIds = new Set(today.map((s) => s.sessionId))
     let inTok = 0, outTok = 0, cacheTok = 0
     const byModel = new Map<string, { provider: string; model: string; input: number; output: number; cache: number; calls: number }>()
-    for (const sid of this.tokenUsage.keys()) {
-      if (!todayIds.has(sid)) continue
-      const rec = this.tokenUsage.get(sid)!
-      inTok += rec.input
-      outTok += rec.output
-      cacheTok += rec.cache
-      const sm = await this.sessionModelOf(sid)
-      const key = sm === null ? '未知/未知' : `${sm.provider}/${sm.model}`
-      const entry = byModel.get(key) ?? { provider: sm?.provider ?? '未知', model: sm?.model ?? '未知', input: 0, output: 0, cache: 0, calls: 0 }
-      entry.input += rec.input
-      entry.output += rec.output
-      entry.cache += rec.cache
-      byModel.set(key, entry)
+    for (const [sessionId, models] of this.tokenUsage) {
+      if (!todayIds.has(sessionId)) continue
+      for (const [key, rec] of models) {
+        inTok += rec.input
+        outTok += rec.output
+        cacheTok += rec.cache
+        const entry = byModel.get(key) ?? { provider: rec.provider, model: rec.model, input: 0, output: 0, cache: 0, calls: 0 }
+        entry.input += rec.input
+        entry.output += rec.output
+        entry.cache += rec.cache
+        entry.calls += rec.calls
+        byModel.set(key, entry)
+      }
     }
-    // 回合也按模型归属(统计调用次数)。
-    const turnsByModel = new Map<string, number>()
-    for (const s of today) {
-      const sm = this.sessionModels.get(s.sessionId)
-      const key = sm === undefined ? '未知/未知' : `${sm.provider}/${sm.model}`
-      turnsByModel.set(key, (turnsByModel.get(key) ?? 0) + (s.projections?.values?.sessionStats?.turns ?? 0))
-    }
-    for (const [key, entry] of byModel) {
-      entry.calls = turnsByModel.get(key) ?? 0
+    // 重启前的会话只读取最近 20 个历史消息；无法快速恢复的历史不会阻塞报表。
+    const historicalSessions = today.filter((s) => !this.tokenUsage.has(s.sessionId)).slice(0, 12)
+    const historical = await Promise.all(historicalSessions.map((s) => this.sessionUsageByModel(s.sessionId, todayStart)))
+    for (const models of historical) {
+      for (const item of models) {
+        inTok += item.input
+        outTok += item.output
+        cacheTok += item.cache
+        const key = `${item.provider}/${item.model}`
+        const entry = byModel.get(key) ?? { provider: item.provider, model: item.model, input: 0, output: 0, cache: 0, calls: 0 }
+        entry.input += item.input
+        entry.output += item.output
+        entry.cache += item.cache
+        entry.calls += item.calls
+        byModel.set(key, entry)
+      }
     }
     // 费用估算:Token × 官方单价 × 倍率。
     const usage = this.config?.get().usage
@@ -1254,19 +1286,30 @@ export class RemoteCommandProcessor {
     if (payload.event.type === 'request/header' && isRecord(payload.event.data) && isRecord(payload.event.data.header)) {
       const config = payload.event.data.header.config
       if (isRecord(config) && typeof config.provider === 'string' && typeof config.model === 'string') {
-        this.sessionModels.set(sessionId, { provider: config.provider, model: config.model })
+        const model = { provider: config.provider, model: config.model }
+        this.sessionModels.set(sessionId, model)
+        const models = this.tokenUsage.get(sessionId) ?? new Map()
+        const key = `${model.provider}/${model.model}`
+        const usage = models.get(key) ?? { ...model, input: 0, output: 0, cache: 0, calls: 0 }
+        usage.calls += 1
+        models.set(key, usage)
+        this.tokenUsage.set(sessionId, models)
       }
     }
-    // Token 累计(usage 事件,所有会话)。
+    // Token 累计:usage 到达时归入当前 request/header 的模型桶。
     if (payload.event.type === 'assistant/chunk' && isRecord(payload.event.data) && isRecord(payload.event.data.chunk)) {
       const chunk = payload.event.data.chunk
       if (chunk.type === 'usage' && isRecord(chunk.usage)) {
         const u = chunk.usage
-        const rec = this.tokenUsage.get(sessionId) ?? { input: 0, output: 0, cache: 0 }
-        rec.input += typeof u.inputTokens === 'number' ? u.inputTokens : 0
-        rec.output += typeof u.outputTokens === 'number' ? u.outputTokens : 0
-        rec.cache += typeof u.cacheReadTokens === 'number' ? u.cacheReadTokens : 0
-        this.tokenUsage.set(sessionId, rec)
+        const model = this.sessionModels.get(sessionId) ?? { provider: '未知', model: '未知' }
+        const models = this.tokenUsage.get(sessionId) ?? new Map()
+        const key = `${model.provider}/${model.model}`
+        const usage = models.get(key) ?? { ...model, input: 0, output: 0, cache: 0, calls: 0 }
+        usage.input += typeof u.inputTokens === 'number' ? u.inputTokens : 0
+        usage.output += typeof u.outputTokens === 'number' ? u.outputTokens : 0
+        usage.cache += typeof u.cacheReadTokens === 'number' ? u.cacheReadTokens : 0
+        models.set(key, usage)
+        this.tokenUsage.set(sessionId, models)
       }
     }
     if (owner === undefined) return
