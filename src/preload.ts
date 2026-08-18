@@ -99,6 +99,8 @@ const api = {
   },
   workspace: {
     health: () => ipcRenderer.invoke('workspace:health'),
+    changes: (path: string, diff = false) => ipcRenderer.invoke('workspace:changes', path, diff),
+    openFolder: (path: string) => ipcRenderer.invoke('workspace:openFolder', path),
   },
   audit: {
     list: () => ipcRenderer.invoke('audit:list'),

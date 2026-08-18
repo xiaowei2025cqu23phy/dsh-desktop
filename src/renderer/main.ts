@@ -236,6 +236,15 @@ async function showActivityDetail(item: { id: string; type: string; source: stri
   } catch {
     related = '(审计加载失败)'
   }
+  let workspaceChanges = ''
+  if (item.workspace !== null) {
+    try {
+      const result = await API.workspace.changes(item.workspace, false)
+      workspaceChanges = result.unavailable ? '(非 Git 仓库或不可用)' : `\n${result.status === '' ? '(工作区干净)' : result.status ?? ''}`
+    } catch {
+      workspaceChanges = '(变更读取失败)'
+    }
+  }
   $id('ad-body').textContent = [
     `ID: ${item.id}`,
     `类型: ${item.source}/${item.type}`,
@@ -245,6 +254,7 @@ async function showActivityDetail(item: { id: string; type: string; source: stri
     `创建: ${new Date(item.createdAt).toLocaleString()}`,
     `更新: ${new Date(item.updatedAt).toLocaleString()}`,
     `最近事件: ${item.lastEvent}`,
+    item.workspace === null ? '' : `\n── 工作区 Git 变更 ──${workspaceChanges}`,
     '',
     '── 关联审计 ──',
     related,
@@ -328,19 +338,8 @@ async function loadNotificationConfig(): Promise<void> {
   input('notify-urgent-bypass').checked = config.urgentBypassQuiet
 }
 
-async function saveNotificationConfig(): Promise<void> {
-  await API.notifications.setConfig({
-    enabled: input('notify-enabled').checked,
-    approval: input('notify-approval').checked,
-    question: input('notify-question').checked,
-    taskDone: input('notify-task-done').checked,
-    taskFail: input('notify-task-fail').checked,
-    quietHoursEnabled: input('notify-quiet').checked,
-    quietStart: Number(input('notify-quiet-start').value),
-    quietEnd: Number(input('notify-quiet-end').value),
-    urgentBypassQuiet: input('notify-urgent-bypass').checked,
-  })
-  S.toast('通知设置已保存', 'ok')
+async function saveNotificationConfig(patch: object): Promise<void> {
+  await API.notifications.setConfig(patch)
 }
 
 async function loadTaskHistory(): Promise<void> {
@@ -435,27 +434,75 @@ async function loadWorkspaces(): Promise<void> {
   }
 }
 
-async function showWorkspaceDetail(item: { title: string; path: string; exists: boolean; readable: boolean; writable: boolean; freeBytes: number | null; sessions: number | null }): Promise<void> {
-  const free = item.freeBytes === null ? '未知' : `${(item.freeBytes / 1073741824).toFixed(1)} GB`
-  $id('workspace-detail').textContent = [
-    `名称: ${item.title}`,
-    `路径: ${item.path}`,
-    `存在: ${item.exists ? '是' : '否'}`,
-    `可读: ${item.readable ? '是' : '否'}`,
-    `可写: ${item.writable ? '是' : '否'}`,
-    `磁盘可用: ${free}`,
-    `会话数: ${item.sessions === null ? '未知' : item.sessions}`,
-  ].join('\n')
+async function loadWorkspaceChanges(diff = false): Promise<void> {
+  const host = $id('workspace-changes')
+  if (selectedWorkspacePath === null) { host.textContent = '请先选择工作区。'; return }
+  try {
+    const result = await API.workspace.changes(selectedWorkspacePath, diff)
+    if (result.unavailable) {
+      host.textContent = result.message === undefined ? '该目录不是 Git 仓库或 Git 不可用。' : result.message
+      return
+    }
+    host.textContent = diff ? (result.diff === '' ? '(没有未提交 diff)' : `${result.summary ?? ''}\n${result.diff ?? ''}${result.truncated ? '\n\n(diff 已截断)' : ''}`) : (result.status === '' ? '(工作区干净)' : result.status ?? '(无状态)')
+  } catch (error) {
+    host.textContent = `读取变更失败:${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+/** 文件选择器:把选中的第一个目录填入输入框(取消/失败时保留原值)。 */
+async function pickDirectoryInto(inputId: string): Promise<string | null> {
+  try {
+    const dirs = await API.dialog.pickDirectories()
+    if (dirs.length === 0) return null
+    const path = dirs[0]
+    input(inputId).value = path
+    return path
+  } catch (error) {
+    S.toast(`选择文件夹失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+    return null
+  }
+}
+
+/** 打开任意目录作为工作区详情:健康信息有则显示,未注册时仅记忆/变更/活动可用。 */
+async function openWorkspaceByPath(path: string, healthItem?: { title: string; path: string; exists: boolean; readable: boolean; writable: boolean; freeBytes: number | null; sessions: number | null }): Promise<void> {
+  selectedWorkspacePath = path
+  input('memory-path').value = path
   $id('workspace-memory-box').classList.remove('hidden')
-  input('memory-path').value = item.path
+  if (healthItem === undefined) {
+    try {
+      const items = await API.workspace.health()
+      healthItem = items.find((item) => item.path === path) ?? undefined
+    } catch {
+      /* 健康查询失败时按未注册处理。 */
+    }
+  }
+  if (healthItem === undefined) {
+    $id('workspace-detail').textContent = `名称: ${path.split(/[\\/]/).pop() ?? path}\n路径: ${path}\n\n(该目录未注册为工作区,仅记忆与变更可用)`
+  } else {
+    const free = healthItem.freeBytes === null ? '未知' : `${(healthItem.freeBytes / 1073741824).toFixed(1)} GB`
+    $id('workspace-detail').textContent = [
+      `名称: ${healthItem.title}`,
+      `路径: ${healthItem.path}`,
+      `存在: ${healthItem.exists ? '是' : '否'}`,
+      `可读: ${healthItem.readable ? '是' : '否'}`,
+      `可写: ${healthItem.writable ? '是' : '否'}`,
+      `磁盘可用: ${free}`,
+      `会话数: ${healthItem.sessions === null ? '未知' : healthItem.sessions}`,
+    ].join('\n')
+  }
   await loadMemory()
+  await loadWorkspaceChanges(false)
   try {
     const acts = await API.activity.list()
-    const filtered = acts.filter((a) => a.workspace === item.path || a.workspace === item.title)
+    const filtered = acts.filter((a) => a.workspace === path)
     $id('workspace-activities').textContent = filtered.length === 0 ? '(无关联活动)' : filtered.slice(0, 10).map((a) => `${new Date(a.updatedAt).toLocaleString()} | ${a.status} | ${a.title}`).join('\n')
   } catch {
     $id('workspace-activities').textContent = '(活动加载失败)'
   }
+}
+
+async function showWorkspaceDetail(item: { title: string; path: string; exists: boolean; readable: boolean; writable: boolean; freeBytes: number | null; sessions: number | null }): Promise<void> {
+  await openWorkspaceByPath(item.path, item)
 }
 
 async function loadHealth(): Promise<void> {
@@ -488,12 +535,34 @@ async function loadQueue(): Promise<void> {
     }
     const renderRow = (item: { id: string; description: string; status: string; attempts: number; maxAttempts: number; nextAttemptAt: number | null; error?: string; source: string }): void => {
       const row = document.createElement('div')
-      row.className = selectedQueueId === item.id ? 'interaction-row queue-row selected' : 'interaction-row queue-row'
+      row.className = selectedQueueId === item.id ? 'queue-row selected' : 'queue-row'
       const retryIn = item.status === 'failed' && item.nextAttemptAt !== null
         ? ` / ${Math.max(1, Math.ceil((item.nextAttemptAt - Date.now()) / 1000))}s 后自动重试`
         : ''
       const state = item.status === 'failed' ? `失败(尝试 ${item.attempts}/${item.maxAttempts})${retryIn}` : item.status === 'running' ? '运行中' : item.status === 'queued' ? '排队中' : item.status
-      row.textContent = `${item.source} | ${state}\n${item.description.slice(0, 100)}${item.error === undefined || item.error === '' ? '' : `\n${item.error.slice(0, 120)}`}`
+      const label = document.createElement('div')
+      label.className = 'queue-label'
+      label.textContent = `${item.source} | ${state}\n${item.description.slice(0, 100)}${item.error === undefined || item.error === '' ? '' : `\n${item.error.slice(0, 120)}`}`
+      row.appendChild(label)
+      if (item.status === 'running' || item.status === 'queued') {
+        const cancel = document.createElement('button')
+        cancel.className = 'btn btn-sm btn-danger queue-act'
+        cancel.textContent = '取消'
+        cancel.addEventListener('click', (event) => {
+          event.stopPropagation()
+          void API.queue.cancel(item.id).then((result) => { S.toast(result, 'ok'); void loadQueue() })
+        })
+        row.appendChild(cancel)
+      } else if (item.status === 'failed' || item.status === 'cancelled') {
+        const retry = document.createElement('button')
+        retry.className = 'btn btn-sm queue-act'
+        retry.textContent = '重试'
+        retry.addEventListener('click', (event) => {
+          event.stopPropagation()
+          void API.queue.retry(item.id).then((result) => { S.toast(result, 'ok'); void loadQueue() })
+        })
+        row.appendChild(retry)
+      }
       row.addEventListener('click', () => {
         selectedQueueId = item.id
         void loadQueue()
@@ -1328,6 +1397,31 @@ function bind(): void {
   $id('nav-workspaces').addEventListener('click', () => switchView('workspaces'))
   $id('nav-session').addEventListener('click', () => switchView('session'))
   $id('btn-workspace-refresh').addEventListener('click', () => void loadWorkspaces())
+  $id('btn-workspace-changes').addEventListener('click', () => void loadWorkspaceChanges(false))
+  $id('btn-workspace-diff').addEventListener('click', () => void loadWorkspaceChanges(true))
+  $id('btn-workspace-open').addEventListener('click', async () => {
+    if (selectedWorkspacePath === null) { S.toast('请先选择工作区', 'error'); return }
+    const result = await API.workspace.openFolder(selectedWorkspacePath)
+    if (result !== 'ok') S.toast(`打开失败:${result}`, 'error')
+  })
+  $id('btn-memory-pick').addEventListener('click', async () => {
+    const path = await pickDirectoryInto('memory-path')
+    if (path !== null) await openWorkspaceByPath(path)
+  })
+  $id('btn-qq-target-pick').addEventListener('click', async () => {
+    const path = await pickDirectoryInto('qq-target')
+    if (path !== null) {
+      await API.qq.setConfig({ defaultTarget: path })
+      S.toast(`默认工作区已设为:${path}`, 'ok')
+    }
+  })
+  $id('btn-ss-cwd-pick').addEventListener('click', async () => {
+    const path = await pickDirectoryInto('ss-cwd')
+    if (path !== null) {
+      await API.screensaver.setConfig({ taskCwd: path })
+      S.toast(`屏保任务目录已设为:${path}`, 'ok')
+    }
+  })
   switchView('workbench')
   $id('btn-retry').addEventListener('click', () => {
     void API.harness.restart()
@@ -1425,30 +1519,29 @@ function bind(): void {
   })
   $id('btn-usage-refresh').addEventListener('click', () => void loadUsageReport())
   $id('btn-health-refresh').addEventListener('click', () => void loadHealth())
+  $id('btn-health-manage').addEventListener('click', () => switchView('workspaces'))
+  // 概览统计卡点击滚动到对应面板。
+  const statScrollMap: Array<[string, string]> = [
+    ['stat-interactions', 'interaction-list'],
+    ['stat-running', 'activity-list'],
+    ['stat-usage', 'usage-report'],
+  ]
+  statScrollMap.forEach(([statId, targetId]) => {
+    $id(statId).parentElement?.addEventListener('click', () => {
+      document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
+  })
   $id('btn-queue-refresh').addEventListener('click', () => void loadQueue())
   $id('ad-close').addEventListener('click', () => $id('activity-detail').classList.add('hidden'))
-  $id('btn-queue-retry').addEventListener('click', async () => {
-    if (selectedQueueId === null) { S.toast('请先点击选中一个队列项', 'error'); return }
-    const result = await API.queue.retry(selectedQueueId)
-    S.toast(result, 'ok')
-    await loadQueue()
+  // 弹层背景点击关闭。
+  $id('activity-detail').addEventListener('click', (event) => {
+    if (event.target === $id('activity-detail')) $id('activity-detail').classList.add('hidden')
   })
-  $id('btn-queue-cancel').addEventListener('click', async () => {
-    if (selectedQueueId === null) { S.toast('请先点击选中一个队列项', 'error'); return }
-    const result = await API.queue.cancel(selectedQueueId)
-    S.toast(result, 'ok')
-    await loadQueue()
-  })
-  $id('btn-usage-config-save').addEventListener('click', async () => {
-    const value = Number(($id('usage-multiplier') as HTMLInputElement).value)
-    if (!Number.isFinite(value) || value <= 0) {
-      S.toast('倍率必须是大于 0 的数字', 'error')
-      await loadUsageConfig()
-      return
-    }
-    await API.usage.setConfig({ multiplier: value })
-    S.toast(`费用倍率已设为 ${value}(官方价 × ${value})`, 'ok')
-    await loadUsageReport()
+  // Esc 关闭抽屉/弹层。
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return
+    if (!$id('activity-detail').classList.contains('hidden')) { $id('activity-detail').classList.add('hidden'); return }
+    if (!$id('drawer').classList.contains('hidden')) closeDrawer()
   })
   $id('btn-interactions-refresh').addEventListener('click', () => void loadInteractions())
   $id('btn-activity-refresh').addEventListener('click', () => void loadActivities())
@@ -1459,7 +1552,21 @@ function bind(): void {
   $id('btn-memory-save').addEventListener('click', () => void saveMemory())
   $id('btn-memory-clear').addEventListener('click', () => void clearMemory())
   $id('btn-memory-suggest').addEventListener('click', () => void suggestMemory())
-  $id('btn-notify-save').addEventListener('click', () => void saveNotificationConfig())
+  // 通知设置:全部即改即存(与其他配置一致)。
+  const notifyFields: Record<string, string> = {
+    'notify-enabled': 'enabled',
+    'notify-approval': 'approval',
+    'notify-question': 'question',
+    'notify-task-done': 'taskDone',
+    'notify-task-fail': 'taskFail',
+    'notify-quiet': 'quietHoursEnabled',
+    'notify-urgent-bypass': 'urgentBypassQuiet',
+  }
+  Object.entries(notifyFields).forEach(([id, field]) => {
+    input(id).addEventListener('change', () => void saveNotificationConfig({ [field]: input(id).checked }))
+  })
+  input('notify-quiet-start').addEventListener('change', () => void saveNotificationConfig({ quietStart: Number(input('notify-quiet-start').value) }))
+  input('notify-quiet-end').addEventListener('change', () => void saveNotificationConfig({ quietEnd: Number(input('notify-quiet-end').value) }))
   $id('btn-config-backup').addEventListener('click', async () => {
     const path = await API.config.backup()
     $id('config-status').textContent = `已备份:${path}`

@@ -11,6 +11,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
 import { readFileSync, existsSync, mkdirSync, readdirSync, statSync, accessSync, constants, statfsSync } from 'node:fs'
 import { extname, join, resolve, sep, basename } from 'node:path'
@@ -417,6 +418,10 @@ export class RemoteGateway {
       await this.serveWorkspaceHealth(res)
       return
     }
+    if (body.action === 'workspace.changes') {
+      await this.serveWorkspaceChanges(res, body as { path?: unknown; diff?: unknown })
+      return
+    }
     if (body.action === 'fs.list') {
       await this.serveFsList(res, body as { path?: unknown })
       return
@@ -627,6 +632,16 @@ export class RemoteGateway {
   }
 
   /** 列出目录内容(单层;目录在前,文件带大小,最多 200 项)。 */
+  /** 读取工作区 Git 变更摘要与受限 diff(只读)。 */
+  async changesReport(path: string, diff = false): Promise<Record<string, unknown>> {
+    if (!(await this.fsAllowed(path))) throw new Error('path not allowed')
+    const args = diff ? ['-C', path, 'diff', '--no-ext-diff', '--stat', '--', '.'] : ['-C', path, 'status', '--short']
+    const summary = execFileSync('git', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 128 * 1024, windowsHide: true })
+    if (!diff) return { path, status: summary.slice(0, 16000) }
+    const text = execFileSync('git', ['-C', path, 'diff', '--no-ext-diff', '--', '.'], { encoding: 'utf8', timeout: 5000, maxBuffer: 128 * 1024, windowsHide: true })
+    return { path, summary: summary.slice(0, 16000), diff: text.slice(0, 64 * 1024), truncated: text.length > 64 * 1024 }
+  }
+
   /** 工作区健康报告(桌面端与 PWA 共用)。 */
   async healthReport(): Promise<Array<{ workspaceId: string | null; title: string; path: string; exists: boolean; readable: boolean; writable: boolean; freeBytes: number | null; sessions: number | null }>> {
     const workspaces = await this.harness.client().rpc<{ items: Array<{ workspaceId?: string; title?: string; path?: string; sessions?: unknown[] }> }>('workspace.list', {}, 20000)
@@ -651,6 +666,30 @@ export class RemoteGateway {
       }
       return { workspaceId: workspace.workspaceId ?? null, title: workspace.title ?? path, path, exists, readable, writable, freeBytes, sessions: Array.isArray(workspace.sessions) ? workspace.sessions.length : null }
     })
+  }
+
+  private async serveWorkspaceChanges(res: ServerResponse, body: { path?: unknown; diff?: unknown }): Promise<void> {
+    const path = typeof body.path === 'string' ? body.path.trim() : ''
+    if (!(await this.fsAllowed(path))) {
+      this.json(res, 403, { error: 'path not allowed' })
+      return
+    }
+    try {
+      if (!existsSync(path) || !statSync(path).isDirectory()) {
+        this.json(res, 400, { error: 'not a directory' })
+        return
+      }
+      const args = body.diff === true ? ['-C', path, 'diff', '--no-ext-diff', '--stat', '--', '.'] : ['-C', path, 'status', '--short']
+      const text = execFileSync('git', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 128 * 1024, windowsHide: true })
+      if (body.diff === true) {
+        const diff = execFileSync('git', ['-C', path, 'diff', '--no-ext-diff', '--', '.'], { encoding: 'utf8', timeout: 5000, maxBuffer: 128 * 1024, windowsHide: true })
+        this.json(res, 200, { ok: true, path, summary: text.slice(0, 16000), diff: diff.slice(0, 64 * 1024), truncated: diff.length > 64 * 1024 })
+      } else {
+        this.json(res, 200, { ok: true, path, status: text.slice(0, 16000) })
+      }
+    } catch (error) {
+      this.json(res, 200, { ok: true, path, status: '', unavailable: true, message: error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160) })
+    }
   }
 
   private async serveWorkspaceHealth(res: ServerResponse): Promise<void> {

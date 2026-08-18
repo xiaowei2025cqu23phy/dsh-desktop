@@ -137,6 +137,8 @@ interface DesktopApi {
   }
   workspace: {
     health(): Promise<Array<{ workspaceId: string | null; title: string; path: string; exists: boolean; readable: boolean; writable: boolean; freeBytes: number | null; sessions: number | null }>>
+    changes(path: string, diff?: boolean): Promise<{ path: string; status?: string; summary?: string; diff?: string; truncated?: boolean; unavailable?: boolean; message?: string }>
+    openFolder(path: string): Promise<string>
   }
   audit: {
     list(): Promise<Array<{ id: string; time: number; type: string; sessionId?: string; activityId?: string; detail: string }>>

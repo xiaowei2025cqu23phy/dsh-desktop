@@ -134,6 +134,14 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('queue:retry', (_event, id: string) => deps.commands?.retryQueueEntry(id) ?? '队列不可用')
   ipcMain.handle('activity:list', () => deps.config.activities())
   ipcMain.handle('workspace:health', () => deps.gateway?.healthReport() ?? Promise.resolve([]))
+  ipcMain.handle('workspace:changes', (_event, path: string, diff = false) => deps.gateway?.changesReport(path, diff) ?? { path, status: '', unavailable: true })
+  ipcMain.handle('workspace:openFolder', async (_event, path: string) => {
+    const { shell } = await import('electron')
+    const { existsSync, statSync } = await import('node:fs')
+    if (typeof path !== 'string' || path.trim() === '' || !existsSync(path) || !statSync(path).isDirectory()) return '路径无效'
+    const error = await shell.openPath(path)
+    return error === '' ? 'ok' : error
+  })
   ipcMain.handle('audit:list', () => deps.config.auditList())
   ipcMain.handle('audit:clear', () => deps.config.clearAudit())
   ipcMain.handle('audit:export', async () => {
