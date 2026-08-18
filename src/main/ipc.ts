@@ -27,6 +27,7 @@ export interface IpcDeps {
   telegramBot?: TelegramBotAdapter
   updater?: UpdateChecker
   commands?: RemoteCommandProcessor
+  diagnostics?: () => Record<string, unknown>
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -120,8 +121,56 @@ export function registerIpc(deps: IpcDeps): void {
     deps.config.update('usage', patch)
     return deps.config.get().usage
   })
+  ipcMain.handle('notifications:getConfig', () => deps.config.get().notifications)
+  ipcMain.handle('notifications:setConfig', (_event, patch: object) => deps.config.update('notifications', patch))
   // ---- 用量报告(QQ/PWA/桌面端共用同一统计) ----
   ipcMain.handle('usage:report', () => deps.commands?.usageReport() ?? null)
+  ipcMain.handle('interactions:list', () => deps.commands?.pendingInteractions() ?? [])
+  ipcMain.handle('interactions:respondApproval', (_event, sessionId: string, approvalId: string, outcome: 'allowed-once' | 'rejected') => deps.commands?.respondApprovalDesktop(sessionId, approvalId, outcome) ?? '不可用')
+  ipcMain.handle('interactions:respondQuestion', (_event, sessionId: string, questionId: string, optionIndex: number) => deps.commands?.respondQuestionDesktop(sessionId, questionId, optionIndex) ?? '不可用')
+  ipcMain.handle('tasks:history', () => deps.config.get().taskHistory ?? [])
+  ipcMain.handle('activity:list', () => deps.config.activities())
+  ipcMain.handle('audit:list', () => deps.config.get().auditLog ?? [])
+  ipcMain.handle('audit:clear', () => deps.config.update('auditLog', []))
+  ipcMain.handle('audit:export', async () => {
+    const result = await dialog.showSaveDialog({ title: '导出本地审计记录', defaultPath: 'dsh-audit.json', filters: [{ name: 'JSON', extensions: ['json'] }] })
+    if (result.canceled || result.filePath === undefined) return null
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(result.filePath, JSON.stringify(deps.config.get().auditLog ?? [], null, 2), 'utf8')
+    return result.filePath
+  })
+  ipcMain.handle('memory:list', () => deps.config.get().workspaceMemories ?? {})
+  ipcMain.handle('memory:get', (_event, path: string) => deps.config.memory(path))
+  ipcMain.handle('memory:set', (_event, path: string, memory: { enabled: boolean; summary: string; conventions: string; commands: string; notes: string }) => {
+    deps.config.setMemory(path, { ...memory, updatedAt: Date.now() })
+    deps.config.appendAudit({ time: Date.now(), type: 'memory.updated', detail: `更新工作区记忆:${path}` })
+    return deps.config.memory(path)
+  })
+  ipcMain.handle('memory:clear', (_event, path: string) => {
+    deps.config.clearMemory(path)
+    deps.config.appendAudit({ time: Date.now(), type: 'memory.cleared', detail: `清空工作区记忆:${path}` })
+    return true
+  })
+  ipcMain.handle('diagnostics:collect', () => deps.diagnostics?.() ?? { error: '诊断不可用' })
+  ipcMain.handle('diagnostics:export', async () => {
+    const result = await dialog.showSaveDialog({ title: '导出脱敏诊断报告', defaultPath: 'dsh-diagnostics.json', filters: [{ name: 'JSON', extensions: ['json'] }] })
+    if (result.canceled || result.filePath === undefined) return null
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(result.filePath, JSON.stringify(deps.diagnostics?.() ?? {}, null, 2), 'utf8')
+    return result.filePath
+  })
+  ipcMain.handle('config:backup', () => deps.config.backup())
+  ipcMain.handle('config:exportSafe', async () => {
+    const result = await dialog.showSaveDialog({ title: '导出脱敏配置', defaultPath: 'dsh-config-safe.json', filters: [{ name: 'JSON', extensions: ['json'] }] })
+    if (result.canceled || result.filePath === undefined) return null
+    deps.config.exportSafe(result.filePath)
+    return result.filePath
+  })
+  ipcMain.handle('config:importSafe', async () => {
+    const result = await dialog.showOpenDialog({ title: '导入脱敏配置', properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] })
+    if (result.canceled || result.filePaths[0] === undefined) return null
+    return deps.config.importSafe(result.filePaths[0])
+  })
   // ---- 机器人指令集(桌面端可查看) ----
   ipcMain.handle('bot:help', () => deps.commands?.fullHelp() ?? '(指令集不可用)')
 

@@ -72,10 +72,45 @@ const api = {
     setConfig: (patch: { taskPrompt?: string; chatPrompt?: string }) => ipcRenderer.invoke('bot:setConfig', patch),
     help: () => ipcRenderer.invoke('bot:help'),
   },
+  notifications: {
+    getConfig: () => ipcRenderer.invoke('notifications:getConfig'),
+    setConfig: (patch: object) => ipcRenderer.invoke('notifications:setConfig', patch),
+  },
   usage: {
     getConfig: () => ipcRenderer.invoke('usage:getConfig'),
     setConfig: (patch: { multiplier?: number }) => ipcRenderer.invoke('usage:setConfig', patch),
     report: () => ipcRenderer.invoke('usage:report'),
+  },
+  interactions: {
+    list: () => ipcRenderer.invoke('interactions:list'),
+    respondApproval: (sessionId: string, approvalId: string, outcome: 'allowed-once' | 'rejected') => ipcRenderer.invoke('interactions:respondApproval', sessionId, approvalId, outcome),
+    respondQuestion: (sessionId: string, questionId: string, optionIndex: number) => ipcRenderer.invoke('interactions:respondQuestion', sessionId, questionId, optionIndex),
+  },
+  tasks: {
+    history: () => ipcRenderer.invoke('tasks:history'),
+  },
+  activity: {
+    list: () => ipcRenderer.invoke('activity:list'),
+  },
+  audit: {
+    list: () => ipcRenderer.invoke('audit:list'),
+    clear: () => ipcRenderer.invoke('audit:clear'),
+    export: () => ipcRenderer.invoke('audit:export'),
+  },
+  memory: {
+    list: () => ipcRenderer.invoke('memory:list'),
+    get: (path: string) => ipcRenderer.invoke('memory:get', path),
+    set: (path: string, memory: { enabled: boolean; summary: string; conventions: string; commands: string; notes: string }) => ipcRenderer.invoke('memory:set', path, memory),
+    clear: (path: string) => ipcRenderer.invoke('memory:clear', path),
+  },
+  diagnostics: {
+    collect: () => ipcRenderer.invoke('diagnostics:collect'),
+    export: () => ipcRenderer.invoke('diagnostics:export'),
+  },
+  config: {
+    backup: () => ipcRenderer.invoke('config:backup'),
+    exportSafe: () => ipcRenderer.invoke('config:exportSafe'),
+    importSafe: () => ipcRenderer.invoke('config:importSafe'),
   },
   appearance: {
     getConfig: () => ipcRenderer.invoke('appearance:getConfig'),

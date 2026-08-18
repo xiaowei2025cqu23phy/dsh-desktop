@@ -110,10 +110,45 @@ interface DesktopApi {
     setConfig(patch: { taskPrompt?: string; chatPrompt?: string }): Promise<BotPromptConfigView>
     help(): Promise<string>
   }
+  notifications: {
+    getConfig(): Promise<{ enabled: boolean; approval: boolean; question: boolean; taskDone: boolean; taskFail: boolean; quietHoursEnabled: boolean; quietStart: number; quietEnd: number; urgentBypassQuiet: boolean }>
+    setConfig(patch: object): Promise<unknown>
+  }
   usage: {
     getConfig(): Promise<{ multiplier: number; inputPricePerM: number; outputPricePerM: number; cachePricePerM: number }>
     setConfig(patch: { multiplier?: number }): Promise<{ multiplier: number; inputPricePerM: number; outputPricePerM: number; cachePricePerM: number }>
     report(): Promise<UsageReportView | null>
+  }
+  interactions: {
+    list(): Promise<Array<{ kind: 'approval' | 'question'; sessionId: string; approvalId?: string; questionId?: string; options?: string[]; title: string; detail: string; createdAt: number }>>
+    respondApproval(sessionId: string, approvalId: string, outcome: 'allowed-once' | 'rejected'): Promise<string>
+    respondQuestion(sessionId: string, questionId: string, optionIndex: number): Promise<string>
+  }
+  tasks: {
+    history(): Promise<Array<{ id: string; description: string; sessionId: string | null; status: string; attempts: number; error?: string; createdAt: number; updatedAt: number }>>
+  }
+  activity: {
+    list(): Promise<Array<{ id: string; type: string; source: string; workspace: string | null; sessionId: string | null; status: string; title: string; lastEvent: string; createdAt: number; updatedAt: number }>>
+  }
+  audit: {
+    list(): Promise<Array<{ id: string; time: number; type: string; sessionId?: string; activityId?: string; detail: string }>>
+    clear(): Promise<unknown>
+    export(): Promise<string | null>
+  }
+  memory: {
+    list(): Promise<Record<string, { enabled: boolean; summary: string; conventions: string; commands: string; notes: string; updatedAt: number }>>
+    get(path: string): Promise<{ enabled: boolean; summary: string; conventions: string; commands: string; notes: string; updatedAt: number }>
+    set(path: string, memory: { enabled: boolean; summary: string; conventions: string; commands: string; notes: string }): Promise<unknown>
+    clear(path: string): Promise<boolean>
+  }
+  config: {
+    backup(): Promise<string>
+    exportSafe(): Promise<string | null>
+    importSafe(): Promise<unknown | null>
+  }
+  diagnostics: {
+    collect(): Promise<Record<string, unknown>>
+    export(): Promise<string | null>
   }
   harness: {
     getStatus(): Promise<HarnessStatus>

@@ -12,7 +12,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
-import { readFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, readdirSync, statSync, accessSync, constants, statfsSync } from 'node:fs'
 import { extname, join, resolve, sep, basename } from 'node:path'
 import { app, nativeImage } from 'electron'
 import type { ConfigStore } from './config'
@@ -413,6 +413,10 @@ export class RemoteGateway {
       this.json(res, 200, { ok: true, roots: this.listPresetSubdirs() })
       return
     }
+    if (body.action === 'workspace.health') {
+      await this.serveWorkspaceHealth(res)
+      return
+    }
     if (body.action === 'fs.list') {
       await this.serveFsList(res, body as { path?: unknown })
       return
@@ -487,6 +491,43 @@ export class RemoteGateway {
       } catch (error) {
         this.json(res, 502, { error: error instanceof Error ? error.message : String(error) })
       }
+      return
+    }
+    if (body.action === 'interactions.get') {
+      this.json(res, 200, { ok: true, items: this.commands?.pendingInteractions() ?? [] })
+      return
+    }
+    if (body.action === 'interactions.respondApproval') {
+      const b = body as { sessionId?: unknown; approvalId?: unknown; outcome?: unknown }
+      const result = await this.commands?.respondApprovalDesktop(String(b.sessionId ?? ''), String(b.approvalId ?? ''), b.outcome === 'rejected' ? 'rejected' : 'allowed-once')
+      this.json(res, 200, { ok: true, result })
+      return
+    }
+    if (body.action === 'interactions.respondQuestion') {
+      const b = body as { sessionId?: unknown; questionId?: unknown; optionIndex?: unknown }
+      const result = await this.commands?.respondQuestionDesktop(String(b.sessionId ?? ''), String(b.questionId ?? ''), Number(b.optionIndex))
+      this.json(res, 200, { ok: true, result })
+      return
+    }
+    if (body.action === 'tasks.get') {
+      this.json(res, 200, { ok: true, items: this.config.get().taskHistory ?? [] })
+      return
+    }
+    if (body.action === 'activity.get') {
+      this.json(res, 200, { ok: true, items: this.config.activities() })
+      return
+    }
+    if (body.action === 'audit.get') {
+      this.json(res, 200, { ok: true, items: this.config.get().auditLog ?? [] })
+      return
+    }
+    if (body.action === 'memory.getAll') {
+      this.json(res, 200, { ok: true, items: this.config.get().workspaceMemories ?? {} })
+      return
+    }
+    if (body.action === 'diagnostics.get') {
+      const config = this.config.get().remote
+      this.json(res, 200, { ok: true, report: { schemaVersion: 1, harness: this.harness.status(), gateway: { enabled: config.enabled, port: config.port, addresses: this.lanAddresses() }, pendingInteractions: this.commands?.pendingInteractions().length ?? 0 } })
       return
     }
     this.json(res, 403, { error: `action not allowed: ${String(body.action)}` })
@@ -582,6 +623,36 @@ export class RemoteGateway {
   }
 
   /** 列出目录内容(单层;目录在前,文件带大小,最多 200 项)。 */
+  private async serveWorkspaceHealth(res: ServerResponse): Promise<void> {
+    try {
+      const workspaces = await this.harness.client().rpc<{ items: Array<{ workspaceId?: string; title?: string; path?: string; sessions?: unknown[] }> }>('workspace.list', {}, 20000)
+      const items = (workspaces.items ?? []).map((workspace) => {
+        const path = workspace.path ?? ''
+        let exists = false
+        let readable = false
+        let writable = false
+        let freeBytes: number | null = null
+        try {
+          exists = path !== '' && existsSync(path)
+          if (exists) {
+            accessSync(path, constants.R_OK)
+            readable = true
+            accessSync(path, constants.W_OK)
+            writable = true
+            const fs = statfsSync(path)
+            freeBytes = fs.bavail * fs.bsize
+          }
+        } catch {
+          // 权限或磁盘信息不可用时保留明确的 false/null 状态。
+        }
+        return { workspaceId: workspace.workspaceId ?? null, title: workspace.title ?? path, path, exists, readable, writable, freeBytes, sessions: Array.isArray(workspace.sessions) ? workspace.sessions.length : null }
+      })
+      this.json(res, 200, { ok: true, items })
+    } catch (error) {
+      this.json(res, 502, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   private async serveFsList(res: ServerResponse, body: { path?: unknown }): Promise<void> {
     const path = typeof body.path === 'string' ? body.path.trim() : ''
     if (path === '') {

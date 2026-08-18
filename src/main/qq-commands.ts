@@ -13,6 +13,7 @@ export type QQCommand =
   | { kind: 'open'; sessionId: string }
   | { kind: 'progress'; sessionId: string }
   | { kind: 'run'; description: string }
+  | { kind: 'retry'; taskId: string }
   | { kind: 'enter'; target: string }
   | { kind: 'exit' }
   | { kind: 'allow'; sessionId: string }
@@ -80,6 +81,9 @@ export function parseCommand(content: string): QQCommand {
   // 角色扮演:角色 <设定> / 角色 无(清除)
   if (parts[0] === '角色' || parts[0] === '扮演' || parts[0] === 'character') {
     return { kind: 'character', text: content.trim().slice(parts[0].length).trim() }
+  }
+  if (parts[0] === '重试' || parts[0] === 'retry') {
+    return { kind: 'retry', taskId: parts[1] ?? '' }
   }
   if (parts[0] === '停止' || parts[0] === 'cancel') {
     return { kind: 'cancel', sessionId: parts[1] ?? '' }
