@@ -90,6 +90,20 @@ interface BotPromptConfigView {
   chatPrompt: string
 }
 
+interface UsageReportView {
+  todaySessions: number
+  totalSessions: number
+  todayTurns: number
+  totalTurns: number
+  todayLlmMs: number
+  totalLlmMs: number
+  tokens: { input: number; output: number; cache: number; total: number }
+  byModel: Array<{ provider: string; model: string; input: number; output: number; cache: number; calls: number }>
+  cost: { input: number; output: number; cache: number; total: number }
+  prices: { inputPerM: number; outputPerM: number; cachePerM: number; multiplier: number }
+  todayList: Array<{ title: string; turns: number }>
+}
+
 interface DesktopApi {
   bot: {
     getConfig(): Promise<BotPromptConfigView>
@@ -99,6 +113,7 @@ interface DesktopApi {
   usage: {
     getConfig(): Promise<{ multiplier: number; inputPricePerM: number; outputPricePerM: number; cachePricePerM: number }>
     setConfig(patch: { multiplier?: number }): Promise<{ multiplier: number; inputPricePerM: number; outputPricePerM: number; cachePricePerM: number }>
+    report(): Promise<UsageReportView | null>
   }
   harness: {
     getStatus(): Promise<HarnessStatus>

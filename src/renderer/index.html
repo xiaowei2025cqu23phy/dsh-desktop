@@ -178,6 +178,11 @@
           <input id="usage-multiplier" type="number" step="0.1" min="0.1" placeholder="1" />
           <p class="hint">官方参考价:输入 ¥2/百万 token、输出 ¥8/百万、缓存命中 ¥0.5/百万(DeepSeek)。QQ 发送「用量」或手机 PWA「设置 → 用量与费用」查看估算。</p>
         </div>
+        <div class="field">
+          <label>今日用量(按模型分开统计)</label>
+          <pre id="usage-report" class="help-pre">加载中…</pre>
+          <button id="btn-usage-refresh" class="btn btn-sm">刷新</button>
+        </div>
       </section>
 
       <section class="panel">

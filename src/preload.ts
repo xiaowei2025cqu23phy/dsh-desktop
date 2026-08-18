@@ -75,6 +75,7 @@ const api = {
   usage: {
     getConfig: () => ipcRenderer.invoke('usage:getConfig'),
     setConfig: (patch: { multiplier?: number }) => ipcRenderer.invoke('usage:setConfig', patch),
+    report: () => ipcRenderer.invoke('usage:report'),
   },
   appearance: {
     getConfig: () => ipcRenderer.invoke('appearance:getConfig'),

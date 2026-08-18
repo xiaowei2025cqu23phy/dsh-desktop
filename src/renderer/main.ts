@@ -204,7 +204,7 @@ async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
   await Promise.all([loadHarnessConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(),
-    loadWallpaperPacks(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), loadUsageConfig(), refreshWebhookEndpoint(),
+    loadWallpaperPacks(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), loadUsageConfig(), loadUsageReport(), refreshWebhookEndpoint(),
     loadUpdateInfo(), refreshLogs()])
   if (logsTimer === null) {
     logsTimer = setInterval(() => { if (drawerOpen) void refreshLogs() }, 3000)
@@ -903,6 +903,39 @@ async function loadUsageConfig(): Promise<void> {
   }
 }
 
+/** 今日用量报告(按模型分开统计 + 费用估算;与 QQ/PWA 同一数据源)。 */
+async function loadUsageReport(): Promise<void> {
+  const pre = $id('usage-report')
+  try {
+    const r = await API.usage.report()
+    if (r === null) {
+      pre.textContent = '(用量统计不可用)'
+      return
+    }
+    const lines: string[] = [
+      `今日会话:${r.todaySessions} 个(总 ${r.totalSessions} 个)`,
+      `今日回合:${r.todayTurns} 次 / 模型耗时:${(r.todayLlmMs / 60000).toFixed(1)} 分钟`,
+    ]
+    if (r.tokens.total > 0) {
+      lines.push(`Token:${(r.tokens.total / 1000).toFixed(1)}K(输入 ${(r.tokens.input / 1000).toFixed(1)}K / 输出 ${(r.tokens.output / 1000).toFixed(1)}K${r.tokens.cache > 0 ? ` / 缓存 ${(r.tokens.cache / 1000).toFixed(1)}K` : ''})`)
+      lines.push(`💰 费用估算:¥${r.cost.total.toFixed(3)}(倍率 ${r.prices.multiplier})`)
+    }
+    if (r.byModel.length > 0) {
+      lines.push('')
+      lines.push('按模型(今日):')
+      for (const m of r.byModel) {
+        lines.push(`  ${m.provider}/${m.model}:${((m.input + m.output) / 1000).toFixed(1)}K Token,${m.calls} 次调用`)
+      }
+    }
+    if (r.tokens.total === 0 && r.byModel.length === 0) {
+      lines.push('(今日暂无 Token 消耗;有请求后自动累计)')
+    }
+    pre.textContent = lines.join('\n')
+  } catch (error) {
+    pre.textContent = `加载失败:${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
 async function refreshWebhookEndpoint(): Promise<void> {
   try {
     const remote = await API.remote.getConfig()
@@ -1053,7 +1086,9 @@ function bind(): void {
     }
     await API.usage.setConfig({ multiplier: value })
     S.toast(`费用倍率已设为 ${value}(官方价 × ${value})`, 'ok')
+    await loadUsageReport()
   })
+  $id('btn-usage-refresh').addEventListener('click', () => void loadUsageReport())
   $id('bot-chat-prompt').addEventListener('change', async () => {
     await API.bot.setConfig({ chatPrompt: ($id('bot-chat-prompt') as HTMLTextAreaElement).value.trim() })
     S.toast('对话模式提示词已保存', 'ok')

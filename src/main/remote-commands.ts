@@ -662,6 +662,30 @@ export class RemoteCommandProcessor {
 
   // ---- 用量统计 ----
 
+  /** 会话模型兜底查询:事件流未记录时,从会话历史最近的 request/header 事件获取。 */
+  private async sessionModelOf(sessionId: string): Promise<{ provider: string; model: string } | null> {
+    const known = this.sessionModels.get(sessionId)
+    if (known !== undefined) return known
+    try {
+      const client = this.harness.client()
+      const h = await client.rpc<{ events: Array<{ event?: { type?: string; data?: { header?: { config?: { provider?: string; model?: string } } } } }> }>(
+        'session.history', { sessionId, maxMessages: 50 }, 20000,
+      )
+      for (const entry of h.events ?? []) {
+        const ev = entry.event
+        if (ev?.type === 'request/header' && ev.data?.header?.config &&
+            typeof ev.data.header.config.provider === 'string' && typeof ev.data.header.config.model === 'string') {
+          const info = { provider: ev.data.header.config.provider, model: ev.data.header.config.model }
+          this.sessionModels.set(sessionId, info)
+          return info
+        }
+      }
+    } catch {
+      // 查询失败:保持未知。
+    }
+    return null
+  }
+
   /** 用量与费用估算(结构化;命令端与 PWA 共用)。 */
   async usageReport(): Promise<{
     todaySessions: number
@@ -687,17 +711,18 @@ export class RemoteCommandProcessor {
       arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.turns ?? 0), 0)
     const sumLlms = (arr: Array<{ projections?: { values?: { sessionStats?: { llmMs?: number } } } }>) =>
       arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.llmMs ?? 0), 0)
-    // Token:本次运行内累计,按今日会话聚合;再按会话模型分组。
+    // Token:本次运行内累计,按今日会话聚合;再按会话模型分组(事件缺失时查历史兜底)。
     const todayIds = new Set(today.map((s) => s.sessionId))
     let inTok = 0, outTok = 0, cacheTok = 0
     const byModel = new Map<string, { provider: string; model: string; input: number; output: number; cache: number; calls: number }>()
-    for (const [sid, rec] of this.tokenUsage) {
+    for (const sid of this.tokenUsage.keys()) {
       if (!todayIds.has(sid)) continue
+      const rec = this.tokenUsage.get(sid)!
       inTok += rec.input
       outTok += rec.output
       cacheTok += rec.cache
-      const sm = this.sessionModels.get(sid)
-      const key = sm === undefined ? '未知/未知' : `${sm.provider}/${sm.model}`
+      const sm = await this.sessionModelOf(sid)
+      const key = sm === null ? '未知/未知' : `${sm.provider}/${sm.model}`
       const entry = byModel.get(key) ?? { provider: sm?.provider ?? '未知', model: sm?.model ?? '未知', input: 0, output: 0, cache: 0, calls: 0 }
       entry.input += rec.input
       entry.output += rec.output
