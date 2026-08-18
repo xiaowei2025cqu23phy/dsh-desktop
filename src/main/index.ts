@@ -14,6 +14,8 @@ import { EventHub } from './event-hub'
 import { RemoteGateway } from './gateway'
 import { HarnessManager } from './harness'
 import { ModelManager } from './models'
+import { DesktopNotifications } from './notifications'
+import { collectDiagnostics } from './diagnostics'
 import { QQBotAdapter } from './qq-bot'
 import { RemoteCommandProcessor } from './remote-commands'
 import { ScreensaverController } from './screensaver'
@@ -57,6 +59,7 @@ if (!gotLock) {
     const models = new ModelManager(() => harness.client())
     screensaver = new ScreensaverController(config, harness)
     const appearance = new AppearanceManager(config)
+    const notifications = new DesktopNotifications(config)
     // mux 事件中枢:由 EventHub 管理,订阅者包括屏保窗口与远程客户端。
     const events = new EventHub(harness)
     events.subscribe((frame) => screensaver.forwardFrame(frame))
@@ -65,9 +68,15 @@ if (!gotLock) {
     let telegramBot: TelegramBotAdapter | null = null
     let qqBot: QQBotAdapter | null = null
     // 审批/提问等交互帧转发给命令核心(应答走 /api/respond,与 PWA 同一路径)。
-    events.subscribe((frame) => commands.handleInteractionFrame(frame))
+    events.subscribe((frame) => {
+      commands.handleInteractionFrame(frame)
+      const payload = frame.payload !== null && typeof frame.payload === 'object' ? frame.payload as Record<string, unknown> : {}
+      if (frame.method === 'approval/requested') notifications.show('approval', '需要审批', `会话 ${String(payload.sessionId ?? '').slice(0, 16)} 等待工具审批`)
+      if (frame.method === 'question/requested') notifications.show('question', '需要回答', `会话 ${String(payload.sessionId ?? '').slice(0, 16)} 等待你的选择`)
+    })
     // 主动推送:Telegram 与 QQ(交互后 48h 窗口)都能即时通知审批/提问。
     commands.setPush((channel, userId, text, meta, target) => {
+      if (text.startsWith('✅') || text.startsWith('❌')) notifications.show(text.startsWith('✅') ? 'taskDone' : 'taskFail', text.startsWith('✅') ? '任务完成' : '任务失败', text)
       if (channel === 'telegram' && telegramBot !== null) void telegramBot.sendMessage(Number(userId), text)
       else if (channel === 'qq' && qqBot !== null) void qqBot.sendToUser(userId, text, meta, target)
     })
@@ -85,7 +94,8 @@ if (!gotLock) {
     qqBot = new QQBotAdapter(config, commands)
     telegramBot = new TelegramBotAdapter(config, commands)
     const updater = new UpdateChecker()
-    registerIpc({ config, harness, models, screensaver, appearance, gateway, qqBot, telegramBot, updater, commands })
+    registerIpc({ config, harness, models, screensaver, appearance, gateway, qqBot, telegramBot, updater, commands,
+      diagnostics: () => collectDiagnostics({ config, harness, gateway, qqBot, telegramBot }) })
 
     if (isScreensaverLaunch()) {
       // 系统屏保模式:只启动屏保窗口,不创建主窗口与托盘。

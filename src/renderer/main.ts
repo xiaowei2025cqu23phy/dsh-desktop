@@ -200,11 +200,142 @@ async function applyModelSelection(): Promise<void> {
 
 // ---- 设置抽屉 ----
 
+async function loadActivities(): Promise<void> {
+  const host = $id('activity-list')
+  try {
+    const items = await API.activity.list()
+    host.textContent = items.length === 0 ? '暂无活动。' : items.slice(0, 30).map((item) => `${item.status} | ${item.source}/${item.type} | ${item.title}\n${item.lastEvent}${item.workspace === null ? '' : `\n工作区:${item.workspace}`}`).join('\n\n')
+  } catch (error) {
+    host.textContent = `加载失败:${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+async function loadAudit(): Promise<void> {
+  const host = $id('audit-list')
+  try {
+    const items = await API.audit.list()
+    host.textContent = items.length === 0 ? '暂无审计记录。' : items.slice(0, 50).map((item) => `${new Date(item.time).toLocaleString()} | ${item.type}\n${item.detail}`).join('\n\n')
+  } catch (error) {
+    host.textContent = `加载失败:${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+async function loadMemory(): Promise<void> {
+  const path = input('memory-path').value.trim()
+  if (path === '') { $id('memory-status').textContent = '请先填写工作区路径。'; return }
+  const memory = await API.memory.get(path)
+  input('memory-enabled').checked = memory.enabled
+  ;(input('memory-summary') as unknown as HTMLTextAreaElement).value = memory.summary
+  ;(input('memory-conventions') as unknown as HTMLTextAreaElement).value = memory.conventions
+  ;(input('memory-commands') as unknown as HTMLTextAreaElement).value = memory.commands
+  ;(input('memory-notes') as unknown as HTMLTextAreaElement).value = memory.notes
+  $id('memory-status').textContent = memory.updatedAt === 0 ? '该工作区尚无本地记忆。' : `已读取，更新于 ${new Date(memory.updatedAt).toLocaleString()}`
+}
+
+async function saveMemory(): Promise<void> {
+  const path = input('memory-path').value.trim()
+  if (path === '') { $id('memory-status').textContent = '请先填写工作区路径。'; return }
+  await API.memory.set(path, {
+    enabled: input('memory-enabled').checked,
+    summary: (input('memory-summary') as unknown as HTMLTextAreaElement).value,
+    conventions: (input('memory-conventions') as unknown as HTMLTextAreaElement).value,
+    commands: (input('memory-commands') as unknown as HTMLTextAreaElement).value,
+    notes: (input('memory-notes') as unknown as HTMLTextAreaElement).value,
+  })
+  $id('memory-status').textContent = '已保存到本机。'
+  await loadAudit()
+}
+
+async function clearMemory(): Promise<void> {
+  const path = input('memory-path').value.trim()
+  if (path === '') return
+  await API.memory.clear(path)
+  await loadMemory()
+  await loadAudit()
+}
+
+async function loadNotificationConfig(): Promise<void> {
+  const config = await API.notifications.getConfig()
+  input('notify-enabled').checked = config.enabled
+  input('notify-approval').checked = config.approval
+  input('notify-question').checked = config.question
+  input('notify-task-done').checked = config.taskDone
+  input('notify-task-fail').checked = config.taskFail
+  input('notify-quiet').checked = config.quietHoursEnabled
+  input('notify-quiet-start').value = String(config.quietStart)
+  input('notify-quiet-end').value = String(config.quietEnd)
+  input('notify-urgent-bypass').checked = config.urgentBypassQuiet
+}
+
+async function saveNotificationConfig(): Promise<void> {
+  await API.notifications.setConfig({
+    enabled: input('notify-enabled').checked,
+    approval: input('notify-approval').checked,
+    question: input('notify-question').checked,
+    taskDone: input('notify-task-done').checked,
+    taskFail: input('notify-task-fail').checked,
+    quietHoursEnabled: input('notify-quiet').checked,
+    quietStart: Number(input('notify-quiet-start').value),
+    quietEnd: Number(input('notify-quiet-end').value),
+    urgentBypassQuiet: input('notify-urgent-bypass').checked,
+  })
+  S.toast('通知设置已保存', 'ok')
+}
+
+async function loadTaskHistory(): Promise<void> {
+  const host = $id('task-history-report')
+  try {
+    const tasks = await API.tasks.history()
+    host.textContent = tasks.length === 0 ? '暂无任务记录。' : tasks.slice(0, 20).map((task) => `${task.status} | ${task.description.slice(0, 80)} | 尝试 ${task.attempts} 次${task.error === undefined ? '' : ` | ${task.error}`}`).join('\n')
+  } catch (error) {
+    host.textContent = `加载失败:${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+async function loadInteractions(): Promise<void> {
+  const host = $id('interaction-list')
+  try {
+    const items = await API.interactions.list()
+    host.textContent = ''
+    if (items.length === 0) {
+      host.textContent = '当前没有待审批或待回答的问题。'
+      return
+    }
+    items.forEach((item) => {
+      const row = document.createElement('div')
+      row.className = 'interaction-row'
+      row.textContent = `${item.kind === 'approval' ? '⚠️' : '❓'} ${item.title}\n${item.detail}\n会话:${item.sessionId}`
+      if (item.kind === 'approval' && item.approvalId) {
+        const allow = document.createElement('button')
+        allow.className = 'btn btn-sm'
+        allow.textContent = '允许'
+        allow.addEventListener('click', async () => { allow.disabled = true; allow.textContent = await API.interactions.respondApproval(item.sessionId, item.approvalId!, 'allowed-once'); await loadInteractions() })
+        const reject = document.createElement('button')
+        reject.className = 'btn btn-sm btn-danger'
+        reject.textContent = '拒绝'
+        reject.addEventListener('click', async () => { reject.disabled = true; reject.textContent = await API.interactions.respondApproval(item.sessionId, item.approvalId!, 'rejected'); await loadInteractions() })
+        row.append(allow, reject)
+      } else if (item.kind === 'question' && item.questionId && item.options) {
+        item.options.forEach((label, index) => {
+          const button = document.createElement('button')
+          button.className = 'btn btn-sm'
+          button.textContent = `${index + 1}. ${label}`
+          button.addEventListener('click', async () => { button.disabled = true; button.textContent = await API.interactions.respondQuestion(item.sessionId, item.questionId!, index); await loadInteractions() })
+          row.appendChild(button)
+        })
+      }
+      host.appendChild(row)
+    })
+  } catch (error) {
+    host.textContent = `加载失败:${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
 async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
   await Promise.all([loadHarnessConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(),
-    loadWallpaperPacks(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), loadUsageConfig(), loadUsageReport(), refreshWebhookEndpoint(),
+    loadWallpaperPacks(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), loadUsageConfig(), loadUsageReport(), loadInteractions(), loadTaskHistory(), loadActivities(), loadAudit(), loadNotificationConfig(), refreshWebhookEndpoint(),
     loadUpdateInfo(), refreshLogs()])
   if (logsTimer === null) {
     logsTimer = setInterval(() => { if (drawerOpen) void refreshLogs() }, 3000)
@@ -1089,6 +1220,35 @@ function bind(): void {
     await loadUsageReport()
   })
   $id('btn-usage-refresh').addEventListener('click', () => void loadUsageReport())
+  $id('btn-interactions-refresh').addEventListener('click', () => void loadInteractions())
+  $id('btn-activity-refresh').addEventListener('click', () => void loadActivities())
+  $id('btn-audit-refresh').addEventListener('click', () => void loadAudit())
+  $id('btn-audit-export').addEventListener('click', async () => { const path = await API.audit.export(); if (path !== null) S.toast(`审计记录已导出:${path}`, 'ok') })
+  $id('btn-audit-clear').addEventListener('click', async () => { await API.audit.clear(); await loadAudit(); S.toast('审计记录已清空', 'ok') })
+  $id('btn-memory-load').addEventListener('click', () => void loadMemory())
+  $id('btn-memory-save').addEventListener('click', () => void saveMemory())
+  $id('btn-memory-clear').addEventListener('click', () => void clearMemory())
+  $id('btn-notify-save').addEventListener('click', () => void saveNotificationConfig())
+  $id('btn-config-backup').addEventListener('click', async () => {
+    const path = await API.config.backup()
+    $id('config-status').textContent = `已备份:${path}`
+  })
+  $id('btn-config-export').addEventListener('click', async () => {
+    const path = await API.config.exportSafe()
+    $id('config-status').textContent = path === null ? '已取消导出' : `已导出脱敏配置:${path}`
+  })
+  $id('btn-config-import').addEventListener('click', async () => {
+    const result = await API.config.importSafe()
+    $id('config-status').textContent = result === null ? '已取消导入' : '配置已导入,部分设置将在重启后生效'
+  })
+  $id('btn-diagnostics').addEventListener('click', async () => {
+    const report = await API.diagnostics.collect()
+    $id('diagnostics-report').textContent = JSON.stringify(report, null, 2)
+  })
+  $id('btn-diagnostics-export').addEventListener('click', async () => {
+    const path = await API.diagnostics.export()
+    $id('diagnostics-report').textContent = path === null ? '已取消导出' : `已导出:${path}`
+  })
   $id('bot-chat-prompt').addEventListener('change', async () => {
     await API.bot.setConfig({ chatPrompt: ($id('bot-chat-prompt') as HTMLTextAreaElement).value.trim() })
     S.toast('对话模式提示词已保存', 'ok')

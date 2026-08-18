@@ -133,6 +133,49 @@ export interface UsageConfig {
   cachePricePerM: number
 }
 
+export interface ActivityRecord {
+  id: string
+  type: 'task' | 'chat' | 'scheduled' | 'screensaver' | 'workflow'
+  source: 'desktop' | 'pwa' | 'qq' | 'telegram' | 'system'
+  workspace: string | null
+  sessionId: string | null
+  status: 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+  title: string
+  lastEvent: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface WorkspaceMemory {
+  enabled: boolean
+  summary: string
+  conventions: string
+  commands: string
+  notes: string
+  updatedAt: number
+}
+
+export interface AuditEntry {
+  id: string
+  time: number
+  type: string
+  sessionId?: string
+  activityId?: string
+  detail: string
+}
+
+export interface NotificationConfig {
+  enabled: boolean
+  approval: boolean
+  question: boolean
+  taskDone: boolean
+  taskFail: boolean
+  quietHoursEnabled: boolean
+  quietStart: number
+  quietEnd: number
+  urgentBypassQuiet: boolean
+}
+
 export interface AppConfig {
   harness: HarnessConfig
   screensaver: ScreensaverConfig
@@ -157,6 +200,24 @@ export interface AppConfig {
   }>
   /** 用量与费用估算配置。 */
   usage: UsageConfig
+  /** 任务执行记录,用于队列状态/失败重试/历史展示。 */
+  taskHistory: Array<{
+    id: string
+    description: string
+    sessionId: string | null
+    status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+    attempts: number
+    error?: string
+    createdAt: number
+    updatedAt: number
+  }>
+  notifications: NotificationConfig
+  /** 跨入口统一活动记录。 */
+  activities: ActivityRecord[]
+  /** 工作区路径到本地记忆的映射。 */
+  workspaceMemories: Record<string, WorkspaceMemory>
+  /** 本地审计时间线,不含模型请求正文。 */
+  auditLog: AuditEntry[]
 }
 
 const DEFAULTS: AppConfig = {
@@ -225,6 +286,11 @@ const DEFAULTS: AppConfig = {
     outputPricePerM: 8,
     cachePricePerM: 0.5,
   },
+  taskHistory: [],
+  notifications: { enabled: true, approval: true, question: true, taskDone: true, taskFail: true, quietHoursEnabled: false, quietStart: 22, quietEnd: 8, urgentBypassQuiet: true },
+  activities: [],
+  workspaceMemories: {},
+  auditLog: [],
 }
 
 export class ConfigStore {
@@ -258,6 +324,10 @@ export class ConfigStore {
       if (config.scheduledTasks !== null && typeof config.scheduledTasks === 'object' && !Array.isArray(config.scheduledTasks)) {
         config.scheduledTasks = Object.values(config.scheduledTasks as Record<string, never>)
       }
+      if (!Array.isArray(config.taskHistory)) config.taskHistory = []
+      if (!Array.isArray(config.activities)) config.activities = []
+      if (!Array.isArray(config.auditLog)) config.auditLog = []
+      if (config.workspaceMemories === null || typeof config.workspaceMemories !== 'object' || Array.isArray(config.workspaceMemories)) config.workspaceMemories = {}
       return config
     } catch (error) {
       console.error('[config] 配置文件解析失败,使用默认值:', String(error))
@@ -282,6 +352,77 @@ export class ConfigStore {
 
   get(): AppConfig {
     return this.config
+  }
+
+  /** 配置文件路径,仅用于本地备份与诊断元数据。 */
+  filePath(): string {
+    return this.path
+  }
+
+  /** 将不含凭据的配置快照写入指定文件。 */
+  exportSafe(target: string): void {
+    const safe = structuredClone(this.config)
+    safe.remote.token = ''
+    safe.qq.appSecret = ''
+    safe.telegram.token = ''
+    writeFileSync(target, JSON.stringify(safe, null, 2), 'utf8')
+  }
+
+  /** 从备份恢复非敏感配置,保留当前令牌和机器人凭据。 */
+  importSafe(source: string): AppConfig {
+    const raw = JSON.parse(readFileSync(source, 'utf8').replace(/^\uFEFF/, '')) as Partial<AppConfig>
+    const currentSecrets = { remoteToken: this.config.remote.token, qqSecret: this.config.qq.appSecret, telegramToken: this.config.telegram.token }
+    const next = this.merge(this.config, raw)
+    next.remote.token = currentSecrets.remoteToken
+    next.qq.appSecret = currentSecrets.qqSecret
+    next.telegram.token = currentSecrets.telegramToken
+    this.config = next
+    this.save()
+    return this.config
+  }
+
+  /** 创建带时间戳的脱敏本地配置备份。 */
+  backup(): string {
+    const target = join(dirname(this.path), `config.backup-safe-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
+    this.exportSafe(target)
+    return target
+  }
+
+  /** 返回最近活动,供主窗口和 PWA 离线查看。 */
+  activities(): ActivityRecord[] {
+    return [...this.config.activities].sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  /** 更新或创建一条活动。 */
+  upsertActivity(activity: ActivityRecord): void {
+    const next = this.config.activities.filter((item) => item.id !== activity.id)
+    this.config.activities = [activity, ...next].slice(0, 200)
+    this.save()
+  }
+
+  /** 添加本地审计摘要,不记录请求正文。 */
+  appendAudit(entry: Omit<AuditEntry, 'id'>): void {
+    this.config.auditLog = [{ ...entry, id: `audit-${entry.time}-${Math.random().toString(36).slice(2, 8)}` }, ...this.config.auditLog].slice(0, 500)
+    this.save()
+  }
+
+  /** 读取指定工作区的本地记忆。 */
+  memory(path: string): WorkspaceMemory {
+    return this.config.workspaceMemories[path] ?? { enabled: false, summary: '', conventions: '', commands: '', notes: '', updatedAt: 0 }
+  }
+
+  /** 保存指定工作区的本地记忆。 */
+  setMemory(path: string, memory: WorkspaceMemory): void {
+    this.config.workspaceMemories = { ...this.config.workspaceMemories, [path]: { ...memory, updatedAt: Date.now() } }
+    this.save()
+  }
+
+  /** 删除指定工作区的本地记忆。 */
+  clearMemory(path: string): void {
+    const memories = { ...this.config.workspaceMemories }
+    delete memories[path]
+    this.config.workspaceMemories = memories
+    this.save()
   }
 
   /** 合并指定分区后持久化。数组分区(如 scheduledTasks)整体替换。 */

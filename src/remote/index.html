@@ -171,9 +171,44 @@
           <div id="set-models" class="value-text"></div>
         </div>
         <div class="field">
+          <label>工作区健康</label>
+          <div id="set-health" class="value-text"><p class="empty">加载中…</p></div>
+          <button id="btn-health-refresh" class="btn btn-sm">刷新健康状态</button>
+        </div>
+        <div class="field">
+          <label>待处理中心</label>
+          <div id="set-interactions" class="value-text"><p class="empty">加载中…</p></div>
+          <button id="btn-interactions-refresh" class="btn btn-sm">刷新审批/提问</button>
+        </div>
+        <div class="field">
+          <label>诊断</label>
+          <pre id="set-diagnostics" class="value-text">点击收集诊断查看脱敏状态。</pre>
+          <button id="btn-diagnostics" class="btn btn-sm">收集诊断</button>
+        </div>
+        <div class="field">
+          <label>配置备份</label>
+          <p class="hint">桌面端设置支持导出脱敏配置。PWA 不会读取或传输本地密钥。</p>
+        </div>
+        <div class="field">
           <label>用量与费用(今日)</label>
           <div id="set-usage" class="value-text"><p class="empty">加载中…</p></div>
           <button id="btn-usage-refresh" class="btn btn-sm">刷新</button>
+        </div>
+        <div class="field">
+          <label>AI 活动中心</label>
+          <pre id="set-activities" class="value-text">加载中…</pre>
+        </div>
+        <div class="field">
+          <label>工作区本地记忆(只读)</label>
+          <pre id="set-memories" class="value-text">加载中…</pre>
+        </div>
+        <div class="field">
+          <label>审计时间线</label>
+          <pre id="set-audit" class="value-text">加载中…</pre>
+        </div>
+        <div class="field">
+          <label>任务记录</label>
+          <pre id="set-task-history" class="value-text">加载中…</pre>
         </div>
         <div class="field">
           <label>Harness</label>

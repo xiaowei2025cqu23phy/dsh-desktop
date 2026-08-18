@@ -1604,6 +1604,88 @@
     })
   }
 
+  function loadHealth() {
+    var host = $('set-health')
+    apiAction('workspace.health').then(function (data) {
+      var items = data.items || []
+      host.textContent = items.length === 0 ? '暂无已注册工作区。' : items.map(function (item) {
+        var state = item.exists && item.readable && item.writable ? '正常' : '需检查'
+        var free = item.freeBytes === null ? '' : ' / 可用 ' + (item.freeBytes / 1073741824).toFixed(1) + ' GB'
+        return (state === '正常' ? '✓ ' : '⚠️ ') + (item.title || item.path) + ': ' + state + free + ' / 会话 ' + (item.sessions === null ? '?' : item.sessions)
+      }).join('\n')
+    }).catch(function (err) { host.textContent = '检查失败:' + err.message })
+  }
+
+  function loadInteractions() {
+    var host = $('set-interactions')
+    apiAction('interactions.get').then(function (data) {
+      var items = data.items || []
+      host.innerHTML = ''
+      if (items.length === 0) { host.textContent = '当前没有待审批或待回答的问题。'; return }
+      items.forEach(function (item) {
+        var row = document.createElement('div')
+        row.className = 'interaction-row'
+        row.textContent = (item.kind === 'approval' ? '⚠️ ' : '❓ ') + item.title + '\n' + item.detail + '\n会话:' + item.sessionId
+        if (item.kind === 'approval' && item.approvalId) {
+          ;[['允许', 'allowed-once'], ['拒绝', 'rejected']].forEach(function (action) {
+            var button = document.createElement('button')
+            button.className = 'btn btn-sm'
+            button.textContent = action[0]
+            button.addEventListener('click', function () {
+              button.disabled = true
+              apiAction('interactions.respondApproval', { sessionId: item.sessionId, approvalId: item.approvalId, outcome: action[1] }).then(function (result) { S.toast(result.result || result, 'ok'); loadInteractions() }).catch(function (err) { S.toast(err.message, 'error') })
+            })
+            row.appendChild(button)
+          })
+        } else if (item.kind === 'question' && item.questionId && item.options) {
+          item.options.forEach(function (label, index) {
+            var button = document.createElement('button')
+            button.className = 'btn btn-sm'
+            button.textContent = (index + 1) + '. ' + label
+            button.addEventListener('click', function () {
+              button.disabled = true
+              apiAction('interactions.respondQuestion', { sessionId: item.sessionId, questionId: item.questionId, optionIndex: index }).then(function (result) { S.toast(result.result || result, 'ok'); loadInteractions() }).catch(function (err) { S.toast(err.message, 'error') })
+            })
+            row.appendChild(button)
+          })
+        }
+        host.appendChild(row)
+      })
+    }).catch(function (err) { host.textContent = '加载失败:' + err.message })
+  }
+
+  function loadWorkbench() {
+    apiAction('activity.get').then(function (data) {
+      var items = data.items || []
+      $('set-activities').textContent = items.length === 0 ? '暂无活动。' : items.slice(0, 20).map(function (item) { return item.status + ' | ' + item.source + '/' + item.type + ' | ' + item.title + '\n' + item.lastEvent }).join('\n\n')
+    }).catch(function (err) { $('set-activities').textContent = '加载失败:' + err.message })
+    apiAction('audit.get').then(function (data) {
+      var items = data.items || []
+      $('set-audit').textContent = items.length === 0 ? '暂无审计记录。' : items.slice(0, 30).map(function (item) { return new Date(item.time).toLocaleString() + ' | ' + item.type + '\n' + item.detail }).join('\n\n')
+    }).catch(function (err) { $('set-audit').textContent = '加载失败:' + err.message })
+    apiAction('memory.getAll').then(function (data) {
+      var items = data.items || {}
+      var paths = Object.keys(items)
+      $('set-memories').textContent = paths.length === 0 ? '暂无工作区记忆。' : paths.map(function (path) { var m = items[path]; return path + '\n' + (m.summary || '(未填写简介)') }).join('\n\n')
+    }).catch(function (err) { $('set-memories').textContent = '加载失败:' + err.message })
+  }
+
+  function loadTaskHistory() {
+    var host = $('set-task-history')
+    apiAction('tasks.get').then(function (data) {
+      var items = data.items || []
+      host.textContent = items.length === 0 ? '暂无任务记录。' : items.slice(0, 20).map(function (item) {
+        return item.status + ' | ' + item.description.slice(0, 70) + ' | 尝试 ' + item.attempts + (item.error ? ' | ' + item.error : '')
+      }).join('\n')
+    }).catch(function (err) { host.textContent = '加载失败:' + err.message })
+  }
+
+  function loadDiagnostics() {
+    apiAction('diagnostics.get').then(function (data) {
+      $('set-diagnostics').textContent = JSON.stringify(data.report || data, null, 2)
+    }).catch(function (err) { $('set-diagnostics').textContent = '加载失败:' + err.message })
+  }
+
   // ---- 初始化 ----
   function init() {
     var params = new URLSearchParams(window.location.search)
@@ -1682,10 +1764,18 @@
       loadScheduled()
       loadPresetRoots()
       loadUsage()
+      loadHealth()
+      loadInteractions()
+      loadWorkbench()
+      loadTaskHistory()
+      loadDiagnostics()
       openSheet($('view-settings'))
     })
     $('btn-settings-close').addEventListener('click', function () { closeSheet($('view-settings')) })
     $('btn-usage-refresh').addEventListener('click', loadUsage)
+    $('btn-health-refresh').addEventListener('click', loadHealth)
+    $('btn-interactions-refresh').addEventListener('click', loadInteractions)
+    $('btn-diagnostics').addEventListener('click', loadDiagnostics)
     $('btn-chat-model').addEventListener('click', openModelSheet)
     $('btn-model-close').addEventListener('click', function () { closeSheet($('view-model')) })
     $('btn-sched-add').addEventListener('click', addScheduled)

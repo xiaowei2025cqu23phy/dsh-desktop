@@ -47,6 +47,7 @@ interface PendingApproval {
   approvalId: string
   toolName: string
   reason?: string
+  createdAt: number
 }
 
 /** 待回答的提问批次(选择题)。 */
@@ -55,6 +56,7 @@ interface PendingQuestion {
   sessionId: string
   questions: AskUserQuestionItem[]
   answers: Map<string, { selected: string[]; custom?: string }>
+  createdAt: number
 }
 
 /** 提问条目的 wire 结构(与 harness dsh-user-questions 对齐)。 */
@@ -137,6 +139,58 @@ export class RemoteCommandProcessor {
     this.push = push
   }
 
+  /** 当前待处理审批/提问的脱敏摘要,供桌面端与 PWA 统一展示。 */
+  pendingInteractions(): Array<{ kind: 'approval' | 'question'; sessionId: string; approvalId?: string; questionId?: string; options?: string[]; title: string; detail: string; createdAt: number }> {
+    const approvals = [...this.pendingApprovals.values()].map((item) => ({
+      kind: 'approval' as const,
+      sessionId: item.sessionId,
+      approvalId: item.approvalId,
+      title: `审批:${item.toolName}`,
+      detail: item.reason?.slice(0, 240) ?? '等待确认工具调用',
+      createdAt: item.createdAt,
+    }))
+    const questions = [...this.pendingQuestions.values()].map((item) => ({
+      kind: 'question' as const,
+      sessionId: item.sessionId,
+      questionId: item.questions[0]?.id,
+      options: item.questions[0]?.options?.map((option) => option.label),
+      title: `提问:${item.questions[0]?.question.slice(0, 80) ?? '等待回答'}`,
+      detail: item.questions.map((q) => q.question).join('；').slice(0, 240),
+      createdAt: item.createdAt,
+    }))
+    return [...approvals, ...questions].sort((a, b) => a.createdAt - b.createdAt)
+  }
+
+  /** 桌面端直接应答待审批项,不依赖 QQ/Telegram 用户归属。 */
+  async respondApprovalDesktop(sessionId: string, approvalId: string, outcome: 'allowed-once' | 'rejected'): Promise<string> {
+    const pending = this.pendingApprovals.get(`${sessionId}:${approvalId}`)
+    if (pending === undefined) return '该审批已处理或已过期。'
+    try {
+      const receipt = await this.harness.client().respond(pending.rpcId, { ok: true, value: { sessionId, approvalId, outcome } })
+      if (!receipt.accepted) return `应答未被接受:${receipt.reason ?? '未知原因'}`
+      this.pendingApprovals.delete(`${sessionId}:${approvalId}`)
+      return outcome === 'allowed-once' ? `✓ 已允许:${pending.toolName}` : `✗ 已拒绝:${pending.toolName}`
+    } catch (error) {
+      return `应答失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  /** 桌面端直接回答单选问题。 */
+  async respondQuestionDesktop(sessionId: string, questionId: string, optionIndex: number): Promise<string> {
+    const pending = this.pendingQuestions.get(sessionId)
+    const question = pending?.questions.find((item) => item.id === questionId)
+    const option = question?.options?.[optionIndex]
+    if (pending === undefined || question === undefined || option === undefined) return '该提问已处理或选项已失效。'
+    try {
+      const receipt = await this.harness.client().respond(pending.rpcId, { ok: true, value: { sessionId, answer: { answers: pending.questions.map((item) => item.id === questionId ? { id: item.id, selected: [option.label] } : { id: item.id, selected: [] }) } } })
+      if (!receipt.accepted) return `回答未被接受:${receipt.reason ?? '未知原因'}`
+      this.pendingQuestions.delete(sessionId)
+      return `✓ 已选择:${option.label}`
+    } catch (error) {
+      return `回答失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
   /** 对话会话持久化:创建/退出对话时同步到配置,重启后恢复同一会话。 */
   private persistChat(key: string): void {
     if (this.config === undefined) return
@@ -148,6 +202,67 @@ export class RemoteCommandProcessor {
       return
     }
     this.config.update('chatSessions', { ...this.config.get().chatSessions, [key]: { sessionId: ctx.sessionId, label: ctx.label } })
+  }
+
+  private appendAudit(entry: { time: number; type: string; sessionId?: string; activityId?: string; detail: string }): void {
+    const target = this.config as (ConfigStore & { appendAudit?: ConfigStore['appendAudit'] }) | undefined
+    if (typeof target?.appendAudit === 'function') target.appendAudit(entry)
+  }
+
+  private recordTask(patch: { description?: string; sessionId?: string | null; workspace?: string | null; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; error?: string }): void {
+    if (this.config === undefined) return
+    const now = Date.now()
+    const history = this.config.get().taskHistory ?? []
+    const index = patch.sessionId === undefined ? -1 : history.findIndex((item) => item.sessionId === patch.sessionId)
+    const previous = index >= 0 ? history[index] : undefined
+    const next = {
+      id: previous?.id ?? `task-${now}-${Math.random().toString(36).slice(2, 8)}`,
+      description: patch.description ?? previous?.description ?? '',
+      sessionId: patch.sessionId === undefined ? previous?.sessionId ?? null : patch.sessionId,
+      status: patch.status,
+      attempts: (previous?.attempts ?? 0) + (patch.status === 'running' && previous?.status !== 'running' ? 1 : 0),
+      ...(patch.error === undefined ? {} : { error: patch.error.slice(0, 500) }),
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now,
+    }
+    const nextHistory = index >= 0 ? history.map((item, i) => i === index ? next : item) : [next, ...history]
+    this.config.update('taskHistory', nextHistory.slice(0, 100))
+    const activityId = `activity-${next.id}`
+    const activityConfig = this.config as ConfigStore & { activities?: ConfigStore['activities']; upsertActivity?: ConfigStore['upsertActivity'] }
+    if (typeof activityConfig.activities === 'function' && typeof activityConfig.upsertActivity === 'function') {
+      const existingActivity = activityConfig.activities().find((item) => item.id === activityId)
+      const owner = next.sessionId === null ? undefined : this.sessionOwners.get(next.sessionId)
+      activityConfig.upsertActivity({
+        id: activityId,
+        type: 'task',
+        source: owner?.channel === 'qq' || owner?.channel === 'telegram' ? owner.channel : 'system',
+        workspace: patch.workspace === undefined ? existingActivity?.workspace ?? null : patch.workspace,
+        sessionId: next.sessionId,
+        status: next.status,
+        title: next.description.slice(0, 120) || '未命名任务',
+        lastEvent: next.error ?? (next.status === 'running' ? '任务已启动' : `任务状态:${next.status}`),
+        createdAt: existingActivity?.createdAt ?? next.createdAt,
+        updatedAt: now,
+      })
+    }
+    this.appendAudit({ time: now, type: `task.${next.status}`, sessionId: next.sessionId ?? undefined, activityId, detail: next.error ?? next.description.slice(0, 240) })
+  }
+
+  private withWorkspaceMemory(path: string | null, text: string): string {
+    if (path === null || this.config === undefined) return text
+    const target = this.config as ConfigStore & { memory?: ConfigStore['memory'] }
+    if (typeof target.memory !== 'function') return text
+    const memory = target.memory(path)
+    if (!memory.enabled) return text
+    const sections = [
+      memory.summary === '' ? '' : `[项目简介]\n${memory.summary}`,
+      memory.conventions === '' ? '' : `[项目约定]\n${memory.conventions}`,
+      memory.commands === '' ? '' : `[常用命令]\n${memory.commands}`,
+      memory.notes === '' ? '' : `[本地笔记]\n${memory.notes}`,
+    ].filter((item) => item !== '')
+    if (sections.length === 0) return text
+    this.appendAudit({ time: Date.now(), type: 'memory.injected', detail: `任务使用工作区记忆:${path}` })
+    return `[工作区本地记忆]\n${sections.join('\n\n')}\n\n[当前任务]\n${text}`
   }
 
   /** 注入模式提示词:工作=助手,对话=朋友(桌面端可自定义;空则不注入);角色设定叠加。 */
@@ -396,6 +511,8 @@ export class RemoteCommandProcessor {
         return this.cmdProgress(command.sessionId)
       case 'run':
         return this.cmdRun(key, command.description, pushTarget)
+      case 'retry':
+        return this.cmdRetry(key, command.taskId, pushTarget)
       case 'enter':
         return this.cmdEnter(key, command.target, pushTarget)
       case 'exit':
@@ -1014,6 +1131,14 @@ export class RemoteCommandProcessor {
     }
   }
 
+  private async cmdRetry(key: string, taskId: string, pushTarget?: { scope: string; targetId: string }): Promise<string> {
+    if (this.config === undefined) return '任务记录不可用'
+    const task = (this.config.get().taskHistory ?? []).find((item) => item.id === taskId || item.sessionId === taskId)
+    if (task === undefined) return `未找到任务「${taskId}」,可从桌面端任务记录查看 ID`
+    if (task.status !== 'failed' && task.status !== 'cancelled') return '只有失败或已取消的任务可以重试。'
+    return this.cmdRun(key, task.description, pushTarget)
+  }
+
   private async cmdRun(
     key: string,
     description: string,
@@ -1057,10 +1182,11 @@ export class RemoteCommandProcessor {
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
       this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
       this.taskDescriptions.set(created.sessionId, taskText)
+      this.recordTask({ description: taskText, sessionId: created.sessionId, workspace: cwd ?? workspaceId, status: 'running' })
       await client.rpc('session.prompt', {
         sessionId: created.sessionId,
         mode: 'queue',
-        content: [{ type: 'text', text: this.withModePrompt('task', taskText) }],
+        content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(cwd, taskText)) }],
       })
       return `任务已启动 ✓\n会话: ${created.sessionId}\n描述: ${taskText.slice(0, 80)}\n发送「进展 ${created.sessionId}」查看进展`
     } catch (error) {
@@ -1234,8 +1360,10 @@ export class RemoteCommandProcessor {
           approvalId,
           toolName: String(payload.toolName ?? '?'),
           reason: payload.reason !== undefined ? String(payload.reason) : undefined,
+          createdAt: Date.now(),
         }
         this.pendingApprovals.set(`${sessionId}:${approvalId}`, pending)
+        this.appendAudit({ time: pending.createdAt, type: 'approval.requested', sessionId, detail: `${pending.toolName}${pending.reason === undefined ? '' : `:${pending.reason.slice(0, 180)}`}` })
         this.notifyOwner(sessionId, this.formatApproval(pending), {
           kind: 'approval',
           sessionId,
@@ -1246,25 +1374,34 @@ export class RemoteCommandProcessor {
       case 'approval/resolved': {
         const sessionId = String(payload.sessionId ?? '')
         const approvalId = String(payload.approvalId ?? '')
-        if (sessionId !== '') this.pendingApprovals.delete(`${sessionId}:${approvalId}`)
+        if (sessionId !== '') {
+          this.pendingApprovals.delete(`${sessionId}:${approvalId}`)
+          this.appendAudit({ time: Date.now(), type: 'approval.resolved', sessionId, detail: `审批已处理:${approvalId}` })
+        }
         break
       }
       case 'question/requested': {
         const sessionId = String(payload.sessionId ?? '')
         const questions = Array.isArray(payload.questions) ? (payload.questions as AskUserQuestionItem[]) : []
         if (sessionId === '' || questions.length === 0) return
+        const createdAt = Date.now()
         this.pendingQuestions.set(sessionId, {
           rpcId: frame.rpcId,
           sessionId,
           questions,
           answers: new Map(),
+          createdAt,
         })
+        this.appendAudit({ time: createdAt, type: 'question.requested', sessionId, detail: questions.map((item) => item.question).join('；').slice(0, 240) })
         this.notifyOwner(sessionId, this.formatQuestion(sessionId, questions, 0), this.questionMeta(sessionId, questions))
         break
       }
       case 'question/resolved': {
         const sessionId = String(payload.sessionId ?? '')
-        if (sessionId !== '') this.pendingQuestions.delete(sessionId)
+        if (sessionId !== '') {
+          this.pendingQuestions.delete(sessionId)
+          this.appendAudit({ time: Date.now(), type: 'question.resolved', sessionId, detail: '提问已回答' })
+        }
         break
       }
       case 'session/event': {
@@ -1351,6 +1488,7 @@ export class RemoteCommandProcessor {
     if (failed) record.fail = now
     else record.done = now
     this.lastTurnReports.set(sessionId, record)
+    this.recordTask({ sessionId, status: failed ? 'failed' : 'completed', ...(failed && message !== '' ? { error: message } : {}) })
     const text = failed
       ? `❌ 任务失败(会话 ${sessionId})${message !== '' ? `\n${message.slice(0, 200)}` : ''}` +
         (isTransport
