@@ -120,6 +120,8 @@ export function registerIpc(deps: IpcDeps): void {
     deps.config.update('usage', patch)
     return deps.config.get().usage
   })
+  // ---- 用量报告(QQ/PWA/桌面端共用同一统计) ----
+  ipcMain.handle('usage:report', () => deps.commands?.usageReport() ?? null)
   // ---- 机器人指令集(桌面端可查看) ----
   ipcMain.handle('bot:help', () => deps.commands?.fullHelp() ?? '(指令集不可用)')
 
