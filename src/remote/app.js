@@ -554,8 +554,8 @@
         if (state.presetRoots[i].path === state.currentWsPath) state.currentWsRoot = state.currentWsPath
       }
     }
-    $('btn-chat-model').classList.remove('hidden')
     clearChat()
+    $('btn-chat-model').classList.remove('hidden')
     $('chat-title').textContent = '会话'
     setChatStatus('加载中…', '')
     closeSidebar()
