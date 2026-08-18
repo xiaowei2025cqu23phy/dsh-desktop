@@ -513,12 +513,16 @@ export class RemoteGateway {
       this.json(res, 200, { ok: true, items: this.config.get().taskHistory ?? [] })
       return
     }
+    if (body.action === 'queue.get') {
+      this.json(res, 200, { ok: true, items: this.commands?.queueList() ?? [] })
+      return
+    }
     if (body.action === 'activity.get') {
       this.json(res, 200, { ok: true, items: this.config.activities() })
       return
     }
     if (body.action === 'audit.get') {
-      this.json(res, 200, { ok: true, items: this.config.get().auditLog ?? [] })
+      this.json(res, 200, { ok: true, items: this.config.auditList() })
       return
     }
     if (body.action === 'memory.getAll') {
@@ -623,31 +627,35 @@ export class RemoteGateway {
   }
 
   /** 列出目录内容(单层;目录在前,文件带大小,最多 200 项)。 */
+  /** 工作区健康报告(桌面端与 PWA 共用)。 */
+  async healthReport(): Promise<Array<{ workspaceId: string | null; title: string; path: string; exists: boolean; readable: boolean; writable: boolean; freeBytes: number | null; sessions: number | null }>> {
+    const workspaces = await this.harness.client().rpc<{ items: Array<{ workspaceId?: string; title?: string; path?: string; sessions?: unknown[] }> }>('workspace.list', {}, 20000)
+    return (workspaces.items ?? []).map((workspace) => {
+      const path = workspace.path ?? ''
+      let exists = false
+      let readable = false
+      let writable = false
+      let freeBytes: number | null = null
+      try {
+        exists = path !== '' && existsSync(path)
+        if (exists) {
+          accessSync(path, constants.R_OK)
+          readable = true
+          accessSync(path, constants.W_OK)
+          writable = true
+          const fs = statfsSync(path)
+          freeBytes = fs.bavail * fs.bsize
+        }
+      } catch {
+        // 权限或磁盘信息不可用时保留明确的 false/null 状态。
+      }
+      return { workspaceId: workspace.workspaceId ?? null, title: workspace.title ?? path, path, exists, readable, writable, freeBytes, sessions: Array.isArray(workspace.sessions) ? workspace.sessions.length : null }
+    })
+  }
+
   private async serveWorkspaceHealth(res: ServerResponse): Promise<void> {
     try {
-      const workspaces = await this.harness.client().rpc<{ items: Array<{ workspaceId?: string; title?: string; path?: string; sessions?: unknown[] }> }>('workspace.list', {}, 20000)
-      const items = (workspaces.items ?? []).map((workspace) => {
-        const path = workspace.path ?? ''
-        let exists = false
-        let readable = false
-        let writable = false
-        let freeBytes: number | null = null
-        try {
-          exists = path !== '' && existsSync(path)
-          if (exists) {
-            accessSync(path, constants.R_OK)
-            readable = true
-            accessSync(path, constants.W_OK)
-            writable = true
-            const fs = statfsSync(path)
-            freeBytes = fs.bavail * fs.bsize
-          }
-        } catch {
-          // 权限或磁盘信息不可用时保留明确的 false/null 状态。
-        }
-        return { workspaceId: workspace.workspaceId ?? null, title: workspace.title ?? path, path, exists, readable, writable, freeBytes, sessions: Array.isArray(workspace.sessions) ? workspace.sessions.length : null }
-      })
-      this.json(res, 200, { ok: true, items })
+      this.json(res, 200, { ok: true, items: await this.healthReport() })
     } catch (error) {
       this.json(res, 502, { error: error instanceof Error ? error.message : String(error) })
     }
@@ -691,9 +699,11 @@ export class RemoteGateway {
     }
   }
 
-  /** 读取文本文件内容用于预览(≤64KB)。 */
-  private async serveFsRead(res: ServerResponse, body: { path?: unknown }): Promise<void> {
+  /** 读取文件用于预览:文本支持 offset/length 分片(单次 ≤64KB);图片返回 data URL(≤2MB)。 */
+  private async serveFsRead(res: ServerResponse, body: { path?: unknown; offset?: unknown; length?: unknown }): Promise<void> {
     const path = typeof body.path === 'string' ? body.path.trim() : ''
+    const offset = typeof body.offset === 'number' && Number.isFinite(body.offset) && body.offset >= 0 ? Math.floor(body.offset) : 0
+    const length = typeof body.length === 'number' && Number.isFinite(body.length) && body.length > 0 ? Math.min(Math.floor(body.length), 64 * 1024) : 64 * 1024
     if (!(await this.fsAllowed(path))) {
       this.json(res, 403, { error: 'path not allowed' })
       return
@@ -708,11 +718,32 @@ export class RemoteGateway {
         return
       }
       const size = statSync(path).size
-      if (size > 64 * 1024) {
-        this.json(res, 400, { error: `文件过大(${Math.round(size / 1024)}KB),仅支持 64KB 以内` })
+      const isImage = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(extname(path).toLowerCase())
+      if (isImage) {
+        if (size > 2 * 1024 * 1024) {
+          this.json(res, 400, { error: `图片过大(${Math.round(size / 1024)}KB),仅支持 2MB 以内预览` })
+          return
+        }
+        const data = readFileSync(path)
+        const mime = extname(path).toLowerCase() === '.jpg' ? 'jpeg' : extname(path).toLowerCase().slice(1)
+        this.json(res, 200, { ok: true, path, name: basename(path), size, image: true, dataUrl: `data:image/${mime};base64,${data.toString('base64')}` })
         return
       }
-      this.json(res, 200, { ok: true, path, name: basename(path), size, text: readFileSync(path, 'utf8') })
+      // 文本:按字节分片,避免超大文件一次性读入。
+      const buffer = readFileSync(path)
+      const chunk = buffer.subarray(offset, offset + length)
+      const nextOffset = offset + chunk.length
+      this.json(res, 200, {
+        ok: true,
+        path,
+        name: basename(path),
+        size,
+        offset,
+        length: chunk.length,
+        text: chunk.toString('utf8'),
+        truncated: nextOffset < size,
+        nextOffset: nextOffset < size ? nextOffset : null,
+      })
     } catch (error) {
       this.json(res, 500, { error: error instanceof Error ? error.message : String(error) })
     }

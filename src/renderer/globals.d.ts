@@ -127,8 +127,16 @@ interface DesktopApi {
   tasks: {
     history(): Promise<Array<{ id: string; description: string; sessionId: string | null; status: string; attempts: number; error?: string; createdAt: number; updatedAt: number }>>
   }
+  queue: {
+    list(): Promise<Array<{ id: string; description: string; sessionId: string | null; status: string; attempts: number; maxAttempts: number; nextAttemptAt: number | null; error?: string; workspace: string | null; source: string; createdAt: number; updatedAt: number }>>
+    cancel(id: string): Promise<string>
+    retry(id: string): Promise<string>
+  }
   activity: {
     list(): Promise<Array<{ id: string; type: string; source: string; workspace: string | null; sessionId: string | null; status: string; title: string; lastEvent: string; createdAt: number; updatedAt: number }>>
+  }
+  workspace: {
+    health(): Promise<Array<{ workspaceId: string | null; title: string; path: string; exists: boolean; readable: boolean; writable: boolean; freeBytes: number | null; sessions: number | null }>>
   }
   audit: {
     list(): Promise<Array<{ id: string; time: number; type: string; sessionId?: string; activityId?: string; detail: string }>>
@@ -140,6 +148,7 @@ interface DesktopApi {
     get(path: string): Promise<{ enabled: boolean; summary: string; conventions: string; commands: string; notes: string; updatedAt: number }>
     set(path: string, memory: { enabled: boolean; summary: string; conventions: string; commands: string; notes: string }): Promise<unknown>
     clear(path: string): Promise<boolean>
+    suggest(path: string): Promise<{ summary: string; commands: string; conventions: string }>
   }
   config: {
     backup(): Promise<string>

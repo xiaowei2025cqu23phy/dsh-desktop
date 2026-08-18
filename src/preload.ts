@@ -89,8 +89,16 @@ const api = {
   tasks: {
     history: () => ipcRenderer.invoke('tasks:history'),
   },
+  queue: {
+    list: () => ipcRenderer.invoke('queue:list'),
+    cancel: (id: string) => ipcRenderer.invoke('queue:cancel', id),
+    retry: (id: string) => ipcRenderer.invoke('queue:retry', id),
+  },
   activity: {
     list: () => ipcRenderer.invoke('activity:list'),
+  },
+  workspace: {
+    health: () => ipcRenderer.invoke('workspace:health'),
   },
   audit: {
     list: () => ipcRenderer.invoke('audit:list'),
@@ -102,6 +110,7 @@ const api = {
     get: (path: string) => ipcRenderer.invoke('memory:get', path),
     set: (path: string, memory: { enabled: boolean; summary: string; conventions: string; commands: string; notes: string }) => ipcRenderer.invoke('memory:set', path, memory),
     clear: (path: string) => ipcRenderer.invoke('memory:clear', path),
+    suggest: (path: string) => ipcRenderer.invoke('memory:suggest', path),
   },
   diagnostics: {
     collect: () => ipcRenderer.invoke('diagnostics:collect'),

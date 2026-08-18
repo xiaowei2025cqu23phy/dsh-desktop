@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -11,9 +11,13 @@
     <header id="topbar">
       <div class="brand">
         <span class="logo-dot"></span>
-        <span class="brand-name">DeepSeek Harness Desktop</span>
-        <span id="status-pill" class="pill pill-idle">未启动</span>
+        <span class="brand-name" title="DeepSeek Harness Desktop">DSH Desktop</span>
       </div>
+      <nav id="main-nav" class="main-nav">
+        <button id="nav-workbench" class="nav-tab active" type="button">🏠 工作台</button>
+        <button id="nav-workspaces" class="nav-tab" type="button">📁 工作区</button>
+        <button id="nav-session" class="nav-tab" type="button">💬 会话</button>
+      </nav>
       <div class="topbar-center">
         <label class="model-label" for="model-select">默认模型</label>
         <select id="model-select" disabled>
@@ -28,6 +32,92 @@
 
     <main id="content">
       <webview id="harness-view" class="harness-view"></webview>
+      <div id="view-workbench" class="workbench hidden">
+        <div class="wb-overview">
+          <div class="wb-stat"><span class="wb-stat-label">Harness</span><span id="stat-harness" class="wb-stat-value wb-stat-value-sm">未启动</span></div>
+          <div class="wb-stat"><span class="wb-stat-label">待处理</span><span id="stat-interactions" class="wb-stat-value">–</span></div>
+          <div class="wb-stat"><span class="wb-stat-label">运行中活动</span><span id="stat-running" class="wb-stat-value">–</span></div>
+          <div class="wb-stat"><span class="wb-stat-label">今日用量</span><span id="stat-usage" class="wb-stat-value">–</span></div>
+        </div>
+
+        <div class="wb-grid">
+          <section class="panel">
+            <h3>⏳ 待处理中心</h3>
+            <div id="interaction-list" class="help-pre">加载中…</div>
+            <button id="btn-interactions-refresh" class="btn btn-sm">刷新审批/提问</button>
+          </section>
+
+          <section class="panel">
+            <h3>📋 AI 活动中心</h3>
+            <pre id="activity-list" class="help-pre">加载中…</pre>
+            <button id="btn-activity-refresh" class="btn btn-sm">刷新活动</button>
+          </section>
+
+          <section class="panel">
+            <h3>🩺 工作区健康</h3>
+            <pre id="health-list" class="help-pre wb-scroll">加载中…</pre>
+            <button id="btn-health-refresh" class="btn btn-sm">刷新健康状态</button>
+          </section>
+        </div>
+
+        <div class="wb-grid">
+          <section class="panel">
+            <h3>📥 任务队列</h3>
+            <pre id="queue-list" class="help-pre wb-scroll">加载中…</pre>
+            <div class="field-row"><button id="btn-queue-refresh" class="btn btn-sm">刷新</button><button id="btn-queue-retry" class="btn btn-sm">重试选中</button><button id="btn-queue-cancel" class="btn btn-sm btn-danger">取消选中</button></div>
+          </section>
+
+          <section class="panel">
+            <h3>🧾 任务记录</h3>
+            <pre id="task-history-report" class="help-pre wb-scroll">加载中…</pre>
+          </section>
+
+          <section class="panel">
+            <h3>💰 用量与费用(今日)</h3>
+            <pre id="usage-report" class="help-pre wb-scroll">加载中…</pre>
+            <button id="btn-usage-refresh" class="btn btn-sm">刷新</button>
+          </section>
+        </div>
+
+        <section class="panel">
+          <h3>🛡️ 审计时间线</h3>
+          <pre id="audit-list" class="help-pre wb-scroll">加载中…</pre>
+          <div class="field-row"><button id="btn-audit-refresh" class="btn btn-sm">刷新</button><button id="btn-audit-export" class="btn btn-sm">导出</button><button id="btn-audit-clear" class="btn btn-sm btn-danger">清空</button></div>
+        </section>
+      </div>
+
+      <div id="view-workspaces" class="workbench hidden">
+        <div class="wb-grid">
+          <section class="panel">
+            <h3>🗂️ 工作区列表</h3>
+            <pre id="workspace-list" class="help-pre">加载中…</pre>
+            <button id="btn-workspace-refresh" class="btn btn-sm">刷新</button>
+          </section>
+
+          <section class="panel">
+            <h3>🔍 工作区详情</h3>
+            <pre id="workspace-detail" class="help-pre">点击左侧工作区查看详情。</pre>
+            <div id="workspace-memory-box" class="hidden">
+              <p class="hint">本地记忆仅保存在本机配置中，不自动发送给模型；勾选启用后才注入该工作区的任务。</p>
+              <label class="check-row"><input id="memory-enabled" type="checkbox" />执行该工作区任务时注入这份记忆</label>
+              <div class="field"><label for="memory-path">工作区路径</label><input id="memory-path" type="text" placeholder="D:\\项目路径" /></div>
+              <div class="field"><label for="memory-summary">项目简介</label><textarea id="memory-summary" rows="2"></textarea></div>
+              <div class="field"><label for="memory-conventions">项目约定</label><textarea id="memory-conventions" rows="2"></textarea></div>
+              <div class="field"><label for="memory-commands">常用命令</label><textarea id="memory-commands" rows="2"></textarea></div>
+              <div class="field"><label for="memory-notes">其他笔记</label><textarea id="memory-notes" rows="2"></textarea></div>
+              <div class="field-row">
+                <button id="btn-memory-suggest" class="btn btn-sm">从项目文件生成草稿</button>
+                <button id="btn-memory-load" class="btn">读取</button>
+                <button id="btn-memory-save" class="btn btn-primary">保存</button>
+                <button id="btn-memory-clear" class="btn btn-danger">清空</button>
+              </div>
+              <p id="memory-status" class="hint"></p>
+            </div>
+            <h3 style="margin-top:14px">该工作区最近活动</h3>
+            <pre id="workspace-activities" class="help-pre">(无)</pre>
+          </section>
+        </div>
+      </div>
       <div id="view-error" class="view-error hidden">
         <div class="view-error-box">
           <h2>harness 不可用</h2>
@@ -44,41 +134,6 @@
       </div>
 
       <section class="panel">
-        <h3>AI 活动中心</h3>
-        <pre id="activity-list" class="help-pre">加载中…</pre>
-        <button id="btn-activity-refresh" class="btn btn-sm">刷新活动</button>
-      </section>
-
-      <section class="panel">
-        <h3>工作区本地记忆</h3>
-        <p class="hint">仅保存在本机配置中，不自动发送给模型。填写工作区绝对路径后编辑。</p>
-        <label class="check-row"><input id="memory-enabled" type="checkbox" />执行该工作区任务时注入这份记忆</label>
-        <div class="field"><label for="memory-path">工作区路径</label><input id="memory-path" type="text" placeholder="D:\\项目路径" /></div>
-        <div class="field"><label for="memory-summary">项目简介</label><textarea id="memory-summary" rows="3"></textarea></div>
-        <div class="field"><label for="memory-conventions">项目约定</label><textarea id="memory-conventions" rows="3"></textarea></div>
-        <div class="field"><label for="memory-commands">常用命令</label><textarea id="memory-commands" rows="3"></textarea></div>
-        <div class="field"><label for="memory-notes">其他笔记</label><textarea id="memory-notes" rows="3"></textarea></div>
-        <div class="field-row">
-          <button id="btn-memory-load" class="btn">读取</button>
-          <button id="btn-memory-save" class="btn btn-primary">保存</button>
-          <button id="btn-memory-clear" class="btn btn-danger">清空</button>
-        </div>
-        <p id="memory-status" class="hint"></p>
-      </section>
-
-      <section class="panel">
-        <h3>审计时间线</h3>
-        <pre id="audit-list" class="help-pre">加载中…</pre>
-        <div class="field-row"><button id="btn-audit-refresh" class="btn btn-sm">刷新</button><button id="btn-audit-export" class="btn btn-sm">导出</button><button id="btn-audit-clear" class="btn btn-sm btn-danger">清空</button></div>
-      </section>
-
-      <section class="panel">
-        <h3>待处理中心</h3>
-        <div id="interaction-list" class="help-pre">加载中…</div>
-        <button id="btn-interactions-refresh" class="btn btn-sm">刷新审批/提问</button>
-      </section>
-
-      <section class="panel">
         <h3>通知与勿扰</h3>
         <label class="check-row"><input id="notify-enabled" type="checkbox" />启用桌面通知</label>
         <label class="check-row"><input id="notify-approval" type="checkbox" />审批请求</label>
@@ -89,6 +144,16 @@
         <div class="field-row"><label>开始 <input id="notify-quiet-start" type="number" min="0" max="23" /></label><label>结束 <input id="notify-quiet-end" type="number" min="0" max="23" /></label></div>
         <label class="check-row"><input id="notify-urgent-bypass" type="checkbox" />审批和失败可绕过勿扰</label>
         <button id="btn-notify-save" class="btn btn-primary">保存通知设置</button>
+      </section>
+
+      <section class="panel">
+        <h3>用量费用</h3>
+        <div class="field">
+          <label for="usage-multiplier">费用倍率(1 = 官方价;中转站可按实际价格调整)</label>
+          <input id="usage-multiplier" type="number" step="0.1" min="0.1" placeholder="1" />
+          <button id="btn-usage-config-save" class="btn btn-sm">保存倍率</button>
+          <p class="hint">官方参考价:输入 ¥2/百万 token、输出 ¥8/百万、缓存命中 ¥0.5/百万(DeepSeek)。今日用量在工作台查看。</p>
+        </div>
       </section>
 
       <section class="panel">
@@ -237,25 +302,6 @@
           <pre id="bot-help-text" class="help-pre hidden"></pre>
         </div>
         <div id="qq-status" class="hint"></div>
-      </section>
-
-      <section class="panel">
-        <h3>任务记录</h3>
-        <pre id="task-history-report" class="help-pre">加载中…</pre>
-      </section>
-
-      <section class="panel">
-        <h3>用量与费用</h3>
-        <div class="field">
-          <label for="usage-multiplier">费用倍率(1 = 官方价;中转站可按实际价格调整)</label>
-          <input id="usage-multiplier" type="number" step="0.1" min="0.1" placeholder="1" />
-          <p class="hint">官方参考价:输入 ¥2/百万 token、输出 ¥8/百万、缓存命中 ¥0.5/百万(DeepSeek)。QQ 发送「用量」或手机 PWA「设置 → 用量与费用」查看估算。</p>
-        </div>
-        <div class="field">
-          <label>今日用量(按模型分开统计)</label>
-          <pre id="usage-report" class="help-pre">加载中…</pre>
-          <button id="btn-usage-refresh" class="btn btn-sm">刷新</button>
-        </div>
       </section>
 
       <section class="panel">
@@ -409,6 +455,17 @@
         <pre id="log-view" class="log-view"></pre>
       </section>
     </aside>
+  </div>
+
+  <!-- 活动详情弹层 -->
+  <div id="activity-detail" class="modal hidden">
+    <div class="modal-box">
+      <div class="we-head">
+        <h3 id="ad-title">活动详情</h3>
+        <button id="ad-close" class="btn btn-ghost">✕</button>
+      </div>
+      <pre id="ad-body" class="help-pre"></pre>
+    </div>
   </div>
 
   <!-- 壁纸编辑器:裁剪 + 布设区域预览 -->

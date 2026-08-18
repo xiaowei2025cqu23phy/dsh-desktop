@@ -126,9 +126,13 @@ async function refreshStatus(): Promise<void> {
   }
   // 桌面宠物:连接/运行状态驱动动画节奏。
   petBusy = status.state === 'running' || status.state === 'external'
-  const pill = $id('status-pill')
-  pill.className = `pill pill-${status.state}`
-  pill.textContent = `${STATE_LABEL[status.state] ?? status.state} · ${status.baseUrl}`
+  // 工作台概览:Harness 状态卡(顶栏已精简)。
+  const harnessStat = $id('stat-harness')
+  harnessStat.textContent = STATE_LABEL[status.state] ?? status.state
+  harnessStat.className = 'wb-stat-value wb-stat-value-sm' +
+    (status.state === 'running' || status.state === 'external' ? ' stat-ok'
+      : status.state === 'error' ? ' stat-err'
+        : status.state === 'idle' || status.state === 'stopped' ? ' stat-dim' : ' stat-warn')
   const view = harnessView()
   if (status.baseUrl !== lastBaseUrl) {
     lastBaseUrl = status.baseUrl
@@ -204,10 +208,48 @@ async function loadActivities(): Promise<void> {
   const host = $id('activity-list')
   try {
     const items = await API.activity.list()
-    host.textContent = items.length === 0 ? '暂无活动。' : items.slice(0, 30).map((item) => `${item.status} | ${item.source}/${item.type} | ${item.title}\n${item.lastEvent}${item.workspace === null ? '' : `\n工作区:${item.workspace}`}`).join('\n\n')
+    host.textContent = ''
+    if (items.length === 0) {
+      host.textContent = '暂无活动。'
+      return
+    }
+    items.slice(0, 30).forEach((item) => {
+      const row = document.createElement('div')
+      row.className = 'queue-row'
+      row.textContent = `${new Date(item.updatedAt).toLocaleString()} | ${item.status} | ${item.source}/${item.type} | ${item.title}\n${item.lastEvent}${item.workspace === null ? '' : `\n工作区:${item.workspace}`}`
+      row.title = '点击查看详情'
+      row.addEventListener('click', () => void showActivityDetail(item))
+      host.appendChild(row)
+    })
   } catch (error) {
     host.textContent = `加载失败:${error instanceof Error ? error.message : String(error)}`
   }
+}
+
+async function showActivityDetail(item: { id: string; type: string; source: string; workspace: string | null; sessionId: string | null; status: string; title: string; lastEvent: string; createdAt: number; updatedAt: number }): Promise<void> {
+  $id('ad-title').textContent = `活动详情:${item.title.slice(0, 40)}`
+  let related = ''
+  try {
+    const audits = await API.audit.list()
+    const filtered = audits.filter((entry) => (entry.activityId === item.id) || (item.sessionId !== null && entry.sessionId === item.sessionId))
+    related = filtered.length === 0 ? '(无关联审计记录)' : filtered.map((entry) => `${new Date(entry.time).toLocaleString()} | ${entry.type}\n${entry.detail}`).join('\n\n')
+  } catch {
+    related = '(审计加载失败)'
+  }
+  $id('ad-body').textContent = [
+    `ID: ${item.id}`,
+    `类型: ${item.source}/${item.type}`,
+    `状态: ${item.status}`,
+    `会话: ${item.sessionId ?? '(无)'}`,
+    `工作区: ${item.workspace ?? '(无)'}`,
+    `创建: ${new Date(item.createdAt).toLocaleString()}`,
+    `更新: ${new Date(item.updatedAt).toLocaleString()}`,
+    `最近事件: ${item.lastEvent}`,
+    '',
+    '── 关联审计 ──',
+    related,
+  ].join('\n')
+  $id('activity-detail').classList.remove('hidden')
 }
 
 async function loadAudit(): Promise<void> {
@@ -217,6 +259,25 @@ async function loadAudit(): Promise<void> {
     host.textContent = items.length === 0 ? '暂无审计记录。' : items.slice(0, 50).map((item) => `${new Date(item.time).toLocaleString()} | ${item.type}\n${item.detail}`).join('\n\n')
   } catch (error) {
     host.textContent = `加载失败:${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+async function suggestMemory(): Promise<void> {
+  const path = input('memory-path').value.trim()
+  if (path === '') { $id('memory-status').textContent = '请先选择或填写工作区路径。'; return }
+  try {
+    const suggest = await API.memory.suggest(path)
+    if (suggest.summary === '' && suggest.commands === '') {
+      $id('memory-status').textContent = '未找到 README 或 package.json,无法生成草稿。'
+      return
+    }
+    const summary = (input('memory-summary') as unknown as HTMLTextAreaElement)
+    const commands = (input('memory-commands') as unknown as HTMLTextAreaElement)
+    if (suggest.summary !== '' && summary.value.trim() === '') summary.value = suggest.summary
+    if (suggest.commands !== '' && commands.value.trim() === '') commands.value = suggest.commands
+    $id('memory-status').textContent = '已生成草稿(未保存),请确认后点击保存。'
+  } catch (error) {
+    $id('memory-status').textContent = `生成草稿失败:${error instanceof Error ? error.message : String(error)}`
   }
 }
 
@@ -331,11 +392,149 @@ async function loadInteractions(): Promise<void> {
   }
 }
 
+function switchView(view: 'workbench' | 'workspaces' | 'session'): void {
+  const isWorkbench = view === 'workbench'
+  const isWorkspaces = view === 'workspaces'
+  $id('view-workbench').classList.toggle('hidden', !isWorkbench)
+  $id('view-workspaces').classList.toggle('hidden', !isWorkspaces)
+  harnessView().classList.toggle('hidden', isWorkbench || isWorkspaces)
+  $id('nav-workbench').classList.toggle('active', isWorkbench)
+  $id('nav-workspaces').classList.toggle('active', isWorkspaces)
+  $id('nav-session').classList.toggle('active', !isWorkbench && !isWorkspaces)
+  if (isWorkbench) void loadWorkbench()
+  if (isWorkspaces) void loadWorkspaces()
+}
+
+let selectedWorkspacePath: string | null = null
+
+async function loadWorkspaces(): Promise<void> {
+  const host = $id('workspace-list')
+  try {
+    const items = await API.workspace.health()
+    host.textContent = ''
+    if (items.length === 0) {
+      host.textContent = '暂无已注册工作区。'
+      return
+    }
+    items.forEach((item) => {
+      const row = document.createElement('div')
+      row.className = 'queue-row'
+      const state = item.exists && item.readable && item.writable ? '✓ 正常' : '⚠️ 需检查'
+      const free = item.freeBytes === null ? '' : ` / 可用 ${(item.freeBytes / 1073741824).toFixed(1)} GB`
+      row.textContent = `${state} ${item.title ?? item.path}${free}\n${item.path}`
+      if (selectedWorkspacePath !== null && item.path === selectedWorkspacePath) row.classList.add('selected')
+      row.addEventListener('click', () => {
+        selectedWorkspacePath = item.path
+        void showWorkspaceDetail(item)
+        void loadWorkspaces()
+      })
+      host.appendChild(row)
+    })
+  } catch (error) {
+    host.textContent = `加载失败:${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+async function showWorkspaceDetail(item: { title: string; path: string; exists: boolean; readable: boolean; writable: boolean; freeBytes: number | null; sessions: number | null }): Promise<void> {
+  const free = item.freeBytes === null ? '未知' : `${(item.freeBytes / 1073741824).toFixed(1)} GB`
+  $id('workspace-detail').textContent = [
+    `名称: ${item.title}`,
+    `路径: ${item.path}`,
+    `存在: ${item.exists ? '是' : '否'}`,
+    `可读: ${item.readable ? '是' : '否'}`,
+    `可写: ${item.writable ? '是' : '否'}`,
+    `磁盘可用: ${free}`,
+    `会话数: ${item.sessions === null ? '未知' : item.sessions}`,
+  ].join('\n')
+  $id('workspace-memory-box').classList.remove('hidden')
+  input('memory-path').value = item.path
+  await loadMemory()
+  try {
+    const acts = await API.activity.list()
+    const filtered = acts.filter((a) => a.workspace === item.path || a.workspace === item.title)
+    $id('workspace-activities').textContent = filtered.length === 0 ? '(无关联活动)' : filtered.slice(0, 10).map((a) => `${new Date(a.updatedAt).toLocaleString()} | ${a.status} | ${a.title}`).join('\n')
+  } catch {
+    $id('workspace-activities').textContent = '(活动加载失败)'
+  }
+}
+
+async function loadHealth(): Promise<void> {
+  const host = $id('health-list')
+  try {
+    const items = await API.workspace.health()
+    host.textContent = items.length === 0 ? '暂无已注册工作区。' : items.map((item) => {
+      const state = item.exists && item.readable && item.writable ? '正常' : '需检查'
+      const free = item.freeBytes === null ? '' : ` ${(item.freeBytes / 1073741824).toFixed(1)}GB`
+      const title = (item.title ?? item.path).length > 22 ? `${(item.title ?? item.path).slice(0, 21)}…` : (item.title ?? item.path)
+      return `${state === '正常' ? '✓' : '⚠️'} ${title}${free} · ${item.sessions === null ? '?会话' : `${item.sessions}会话`}`
+    }).join('\n')
+  } catch (error) {
+    host.textContent = `检查失败:${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+let selectedQueueId: string | null = null
+
+async function loadQueue(): Promise<void> {
+  const host = $id('queue-list')
+  try {
+    const items = await API.queue.list()
+    host.textContent = ''
+    const active = items.filter((item) => item.status === 'queued' || item.status === 'running' || item.status === 'failed')
+    const finished = items.filter((item) => item.status === 'completed' || item.status === 'cancelled')
+    if (active.length === 0 && finished.length === 0) {
+      host.textContent = '队列为空。'
+      return
+    }
+    const renderRow = (item: { id: string; description: string; status: string; attempts: number; maxAttempts: number; nextAttemptAt: number | null; error?: string; source: string }): void => {
+      const row = document.createElement('div')
+      row.className = selectedQueueId === item.id ? 'interaction-row queue-row selected' : 'interaction-row queue-row'
+      const retryIn = item.status === 'failed' && item.nextAttemptAt !== null
+        ? ` / ${Math.max(1, Math.ceil((item.nextAttemptAt - Date.now()) / 1000))}s 后自动重试`
+        : ''
+      const state = item.status === 'failed' ? `失败(尝试 ${item.attempts}/${item.maxAttempts})${retryIn}` : item.status === 'running' ? '运行中' : item.status === 'queued' ? '排队中' : item.status
+      row.textContent = `${item.source} | ${state}\n${item.description.slice(0, 100)}${item.error === undefined || item.error === '' ? '' : `\n${item.error.slice(0, 120)}`}`
+      row.addEventListener('click', () => {
+        selectedQueueId = item.id
+        void loadQueue()
+      })
+      host.appendChild(row)
+    }
+    active.forEach(renderRow)
+    if (finished.length > 0) {
+      const sep = document.createElement('div')
+      sep.className = 'queue-sep'
+      sep.textContent = '── 已完成/已取消 ──'
+      host.appendChild(sep)
+      finished.slice(0, 10).forEach(renderRow)
+    }
+  } catch (error) {
+    host.textContent = `加载失败:${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+async function loadWorkbench(): Promise<void> {
+  await Promise.all([
+    loadInteractions(), loadActivities(), loadAudit(), loadTaskHistory(), loadUsageReport(), loadHealth(), loadQueue(),
+  ])
+  try {
+    const interactions = await API.interactions.list()
+    $id('stat-interactions').textContent = String(interactions.length)
+    const activities = await API.activity.list()
+    $id('stat-running').textContent = String(activities.filter((item) => item.status === 'running' || item.status === 'queued' || item.status === 'waiting').length)
+    const usage = await API.usage.report()
+    const tokens = usage?.tokens?.total ?? 0
+    $id('stat-usage').textContent = tokens > 0 ? `${(tokens / 1000).toFixed(1)}K` : '0'
+  } catch {
+    /* 统计数字加载失败时保留占位符。 */
+  }
+}
+
 async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
   await Promise.all([loadHarnessConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(),
-    loadWallpaperPacks(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), loadUsageConfig(), loadUsageReport(), loadInteractions(), loadTaskHistory(), loadActivities(), loadAudit(), loadNotificationConfig(), refreshWebhookEndpoint(),
+    loadWallpaperPacks(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), loadUsageConfig(), loadNotificationConfig(), refreshWebhookEndpoint(),
     loadUpdateInfo(), refreshLogs()])
   if (logsTimer === null) {
     logsTimer = setInterval(() => { if (drawerOpen) void refreshLogs() }, 3000)
@@ -1125,6 +1324,11 @@ function bind(): void {
   })
   $id('btn-drawer').addEventListener('click', () => void openDrawer())
   $id('btn-drawer-close').addEventListener('click', closeDrawer)
+  $id('nav-workbench').addEventListener('click', () => switchView('workbench'))
+  $id('nav-workspaces').addEventListener('click', () => switchView('workspaces'))
+  $id('nav-session').addEventListener('click', () => switchView('session'))
+  $id('btn-workspace-refresh').addEventListener('click', () => void loadWorkspaces())
+  switchView('workbench')
   $id('btn-retry').addEventListener('click', () => {
     void API.harness.restart()
   })
@@ -1220,6 +1424,32 @@ function bind(): void {
     await loadUsageReport()
   })
   $id('btn-usage-refresh').addEventListener('click', () => void loadUsageReport())
+  $id('btn-health-refresh').addEventListener('click', () => void loadHealth())
+  $id('btn-queue-refresh').addEventListener('click', () => void loadQueue())
+  $id('ad-close').addEventListener('click', () => $id('activity-detail').classList.add('hidden'))
+  $id('btn-queue-retry').addEventListener('click', async () => {
+    if (selectedQueueId === null) { S.toast('请先点击选中一个队列项', 'error'); return }
+    const result = await API.queue.retry(selectedQueueId)
+    S.toast(result, 'ok')
+    await loadQueue()
+  })
+  $id('btn-queue-cancel').addEventListener('click', async () => {
+    if (selectedQueueId === null) { S.toast('请先点击选中一个队列项', 'error'); return }
+    const result = await API.queue.cancel(selectedQueueId)
+    S.toast(result, 'ok')
+    await loadQueue()
+  })
+  $id('btn-usage-config-save').addEventListener('click', async () => {
+    const value = Number(($id('usage-multiplier') as HTMLInputElement).value)
+    if (!Number.isFinite(value) || value <= 0) {
+      S.toast('倍率必须是大于 0 的数字', 'error')
+      await loadUsageConfig()
+      return
+    }
+    await API.usage.setConfig({ multiplier: value })
+    S.toast(`费用倍率已设为 ${value}(官方价 × ${value})`, 'ok')
+    await loadUsageReport()
+  })
   $id('btn-interactions-refresh').addEventListener('click', () => void loadInteractions())
   $id('btn-activity-refresh').addEventListener('click', () => void loadActivities())
   $id('btn-audit-refresh').addEventListener('click', () => void loadAudit())
@@ -1228,6 +1458,7 @@ function bind(): void {
   $id('btn-memory-load').addEventListener('click', () => void loadMemory())
   $id('btn-memory-save').addEventListener('click', () => void saveMemory())
   $id('btn-memory-clear').addEventListener('click', () => void clearMemory())
+  $id('btn-memory-suggest').addEventListener('click', () => void suggestMemory())
   $id('btn-notify-save').addEventListener('click', () => void saveNotificationConfig())
   $id('btn-config-backup').addEventListener('click', async () => {
     const path = await API.config.backup()

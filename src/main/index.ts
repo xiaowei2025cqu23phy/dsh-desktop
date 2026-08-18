@@ -149,6 +149,8 @@ if (!gotLock) {
     tray.create()
 
     await harness.start()
+    // 恢复任务队列:上次运行中被退出中断的项标记失败,等待手动重试。
+    commands.recoverQueue()
 
     // 启动后延迟自动检查更新(设置面板可关闭);有新版本时托盘刷新提示。
     if (config.get().updater.autoCheck) {
@@ -157,10 +159,13 @@ if (!gotLock) {
       }, 20000)
     }
 
-    // 定时任务调度(每 30 秒检查一次到期任务)。
+    // 定时任务调度 + 失败队列自动重试(每 30 秒检查一次)。
     setInterval(() => {
       void commands.tickScheduled().catch((error) => {
         console.error('[sched] 定时任务执行失败:', error)
+      })
+      void commands.tickQueue().catch((error) => {
+        console.error('[queue] 队列重试执行失败:', error)
       })
     }, 30000)
 
@@ -176,6 +181,7 @@ if (!gotLock) {
         tray?.dispose()
         events.dispose()
         gateway.stop()
+        config.close()
         await qqBot?.stop()
         telegramBot?.stop()
         quitCleanupDone = true

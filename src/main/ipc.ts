@@ -129,14 +129,18 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('interactions:respondApproval', (_event, sessionId: string, approvalId: string, outcome: 'allowed-once' | 'rejected') => deps.commands?.respondApprovalDesktop(sessionId, approvalId, outcome) ?? '不可用')
   ipcMain.handle('interactions:respondQuestion', (_event, sessionId: string, questionId: string, optionIndex: number) => deps.commands?.respondQuestionDesktop(sessionId, questionId, optionIndex) ?? '不可用')
   ipcMain.handle('tasks:history', () => deps.config.get().taskHistory ?? [])
+  ipcMain.handle('queue:list', () => deps.commands?.queueList() ?? [])
+  ipcMain.handle('queue:cancel', (_event, id: string) => deps.commands?.cancelQueueEntry(id) ?? '队列不可用')
+  ipcMain.handle('queue:retry', (_event, id: string) => deps.commands?.retryQueueEntry(id) ?? '队列不可用')
   ipcMain.handle('activity:list', () => deps.config.activities())
-  ipcMain.handle('audit:list', () => deps.config.get().auditLog ?? [])
-  ipcMain.handle('audit:clear', () => deps.config.update('auditLog', []))
+  ipcMain.handle('workspace:health', () => deps.gateway?.healthReport() ?? Promise.resolve([]))
+  ipcMain.handle('audit:list', () => deps.config.auditList())
+  ipcMain.handle('audit:clear', () => deps.config.clearAudit())
   ipcMain.handle('audit:export', async () => {
     const result = await dialog.showSaveDialog({ title: '导出本地审计记录', defaultPath: 'dsh-audit.json', filters: [{ name: 'JSON', extensions: ['json'] }] })
     if (result.canceled || result.filePath === undefined) return null
     const { writeFileSync } = await import('node:fs')
-    writeFileSync(result.filePath, JSON.stringify(deps.config.get().auditLog ?? [], null, 2), 'utf8')
+    writeFileSync(result.filePath, JSON.stringify(deps.config.auditList(), null, 2), 'utf8')
     return result.filePath
   })
   ipcMain.handle('memory:list', () => deps.config.get().workspaceMemories ?? {})
@@ -150,6 +154,46 @@ export function registerIpc(deps: IpcDeps): void {
     deps.config.clearMemory(path)
     deps.config.appendAudit({ time: Date.now(), type: 'memory.cleared', detail: `清空工作区记忆:${path}` })
     return true
+  })
+  ipcMain.handle('memory:suggest', async (_event, path: string) => {
+    const { readFileSync, existsSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const suggest: { summary: string; commands: string; conventions: string } = { summary: '', commands: '', conventions: '' }
+    // README → 简介草稿(跳过标题/图片/链接行,取前 3 行正文)。
+    for (const name of ['README.md', 'README', 'readme.md', 'readme']) {
+      const file = join(path, name)
+      if (existsSync(file)) {
+        try {
+          const text = readFileSync(file, 'utf8').slice(0, 8192)
+          const lines = text.split('\n').map((line) => line.trim())
+            .filter((line) => line !== '' && !line.startsWith('#') && !line.startsWith('![') && !line.startsWith('[') && !line.startsWith('---'))
+          suggest.summary = lines.slice(0, 3).join('\n').slice(0, 300)
+        } catch {
+          /* 读取失败时跳过 README。 */
+        }
+        break
+      }
+    }
+    // package.json → 常用命令草稿 + 技术栈。
+    const pkgFile = join(path, 'package.json')
+    if (existsSync(pkgFile)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgFile, 'utf8')) as { scripts?: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> }
+        const scripts = pkg.scripts ?? {}
+        const lines: string[] = []
+        for (const name of ['build', 'test', 'dev', 'lint', 'start']) {
+          if (typeof scripts[name] === 'string') lines.push(`${name}: ${scripts[name]}`)
+        }
+        suggest.commands = lines.join('\n').slice(0, 300)
+        if (suggest.summary === '') {
+          const deps = Object.keys(pkg.dependencies ?? {}).slice(0, 10).join(', ')
+          if (deps !== '') suggest.summary = `技术栈: ${deps}`
+        }
+      } catch {
+        /* package.json 解析失败时跳过。 */
+      }
+    }
+    return suggest
   })
   ipcMain.handle('diagnostics:collect', () => deps.diagnostics?.() ?? { error: '诊断不可用' })
   ipcMain.handle('diagnostics:export', async () => {
