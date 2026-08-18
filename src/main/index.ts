@@ -1,4 +1,4 @@
-/**
+﻿/**
  * dsh-desktop 入口。
  *
  * 启动参数:
@@ -118,7 +118,7 @@ if (!gotLock) {
     gateway.start()
     void qqBot.start()
     void telegramBot.start()
-    mainWindow = createMainWindow(join(__dirname, '..', 'preload.js'))
+    mainWindow = createMainWindow(join(__dirname, '..', 'preload.js'), config)
     mainWindow.on('closed', () => { mainWindow = null })
 
     screensaver.start()
@@ -127,10 +127,10 @@ if (!gotLock) {
       screensaver,
       showMainWindow: () => {
         if (mainWindow === null) {
-          mainWindow = createMainWindow(join(__dirname, '..', 'preload.js'))
+          mainWindow = createMainWindow(join(__dirname, '..', 'preload.js'), config)
           mainWindow.on('closed', () => { mainWindow = null })
         } else if (mainWindow.isDestroyed()) {
-          mainWindow = createMainWindow(join(__dirname, '..', 'preload.js'))
+          mainWindow = createMainWindow(join(__dirname, '..', 'preload.js'), config)
           mainWindow.on('closed', () => { mainWindow = null })
         }
         if (mainWindow.isMinimized()) mainWindow.restore()

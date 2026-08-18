@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -56,7 +56,7 @@
           <section class="panel">
             <h3>🩺 工作区健康</h3>
             <pre id="health-list" class="help-pre wb-scroll">加载中…</pre>
-            <button id="btn-health-refresh" class="btn btn-sm">刷新健康状态</button>
+            <div class="field-row"><button id="btn-health-refresh" class="btn btn-sm">刷新健康状态</button><button id="btn-health-manage" class="btn btn-sm">🗂️ 管理工作区</button></div>
           </section>
         </div>
 
@@ -64,7 +64,7 @@
           <section class="panel">
             <h3>📥 任务队列</h3>
             <pre id="queue-list" class="help-pre wb-scroll">加载中…</pre>
-            <div class="field-row"><button id="btn-queue-refresh" class="btn btn-sm">刷新</button><button id="btn-queue-retry" class="btn btn-sm">重试选中</button><button id="btn-queue-cancel" class="btn btn-sm btn-danger">取消选中</button></div>
+            <div class="field-row"><button id="btn-queue-refresh" class="btn btn-sm">刷新</button></div>
           </section>
 
           <section class="panel">
@@ -100,7 +100,7 @@
             <div id="workspace-memory-box" class="hidden">
               <p class="hint">本地记忆仅保存在本机配置中，不自动发送给模型；勾选启用后才注入该工作区的任务。</p>
               <label class="check-row"><input id="memory-enabled" type="checkbox" />执行该工作区任务时注入这份记忆</label>
-              <div class="field"><label for="memory-path">工作区路径</label><input id="memory-path" type="text" placeholder="D:\\项目路径" /></div>
+              <div class="field"><label for="memory-path">工作区路径</label><div class="field-row"><input id="memory-path" type="text" placeholder="D:\\项目路径" /><button id="btn-memory-pick" class="btn btn-sm">📁 选择文件夹</button></div></div>
               <div class="field"><label for="memory-summary">项目简介</label><textarea id="memory-summary" rows="2"></textarea></div>
               <div class="field"><label for="memory-conventions">项目约定</label><textarea id="memory-conventions" rows="2"></textarea></div>
               <div class="field"><label for="memory-commands">常用命令</label><textarea id="memory-commands" rows="2"></textarea></div>
@@ -113,6 +113,9 @@
               </div>
               <p id="memory-status" class="hint"></p>
             </div>
+            <h3 style="margin-top:14px">🧪 工作区变更</h3>
+            <pre id="workspace-changes" class="help-pre wb-scroll">点击「检查变更」查看 Git 状态。</pre>
+            <div class="field-row"><button id="btn-workspace-changes" class="btn btn-sm">检查变更</button><button id="btn-workspace-diff" class="btn btn-sm">查看 diff</button><button id="btn-workspace-open" class="btn btn-sm">📂 打开文件夹</button></div>
             <h3 style="margin-top:14px">该工作区最近活动</h3>
             <pre id="workspace-activities" class="help-pre">(无)</pre>
           </section>
@@ -133,6 +136,7 @@
         <button id="btn-drawer-close" class="btn btn-ghost">✕</button>
       </div>
 
+      <div class="drawer-group">⚙️ 通用设置</div>
       <section class="panel">
         <h3>通知与勿扰</h3>
         <label class="check-row"><input id="notify-enabled" type="checkbox" />启用桌面通知</label>
@@ -143,7 +147,6 @@
         <label class="check-row"><input id="notify-quiet" type="checkbox" />启用勿扰时段</label>
         <div class="field-row"><label>开始 <input id="notify-quiet-start" type="number" min="0" max="23" /></label><label>结束 <input id="notify-quiet-end" type="number" min="0" max="23" /></label></div>
         <label class="check-row"><input id="notify-urgent-bypass" type="checkbox" />审批和失败可绕过勿扰</label>
-        <button id="btn-notify-save" class="btn btn-primary">保存通知设置</button>
       </section>
 
       <section class="panel">
@@ -151,7 +154,6 @@
         <div class="field">
           <label for="usage-multiplier">费用倍率(1 = 官方价;中转站可按实际价格调整)</label>
           <input id="usage-multiplier" type="number" step="0.1" min="0.1" placeholder="1" />
-          <button id="btn-usage-config-save" class="btn btn-sm">保存倍率</button>
           <p class="hint">官方参考价:输入 ¥2/百万 token、输出 ¥8/百万、缓存命中 ¥0.5/百万(DeepSeek)。今日用量在工作台查看。</p>
         </div>
       </section>
@@ -167,6 +169,7 @@
         <p id="config-status" class="hint"></p>
       </section>
 
+      <div class="drawer-group">🔌 服务与通道</div>
       <section class="panel">
         <h3>Harness 服务</h3>
         <div class="field">
@@ -278,7 +281,7 @@
         </div>
         <div class="field">
           <label for="qq-target">默认工作区/目录(任务未指定时使用)</label>
-          <input id="qq-target" type="text" placeholder="例如 qqbot 或 D:\work\qqbot" />
+          <div class="field-row"><input id="qq-target" type="text" placeholder="例如 qqbot 或 D:\work\qqbot" /><button id="btn-qq-target-pick" class="btn btn-sm">📁 选择文件夹</button></div>
         </div>
         <label class="check-row">
           <input id="qq-autochat" type="checkbox" />
@@ -340,6 +343,7 @@
         <p class="hint">调用示例:<br />POST /api/command<br />Header: Authorization: Bearer &lt;令牌&gt;<br />Body: {"text":"状态"}</p>
       </section>
 
+      <div class="drawer-group">🎨 外观与扩展</div>
       <section class="panel">
         <h3>外观 · 壁纸</h3>
         <div class="field">
@@ -397,7 +401,7 @@
         </div>
         <div class="field">
           <label for="ss-cwd">任务工作目录(可选)</label>
-          <input id="ss-cwd" type="text" placeholder="留空使用 harness 默认目录" />
+          <div class="field-row"><input id="ss-cwd" type="text" placeholder="留空使用 harness 默认目录" /><button id="btn-ss-cwd-pick" class="btn btn-sm">📁 选择文件夹</button></div>
         </div>
         <div class="field">
           <label for="ss-max">任务超时(分钟,防失控自动停止)</label>
