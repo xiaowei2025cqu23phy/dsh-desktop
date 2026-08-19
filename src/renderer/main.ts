@@ -16,6 +16,7 @@ function select(id: string): HTMLSelectElement { return $id(id) as HTMLSelectEle
 
 const S = window.DSHShared
 const API = window.dshDesktop
+let discoveredGatewayModels: Array<{ id: string; name?: string; contextWindow?: number; maxTokens?: number }> = []
 
 interface HarnessConfigView {
   mode: 'auto' | 'external' | 'managed'
@@ -599,6 +600,29 @@ async function loadWorkbench(): Promise<void> {
   }
 }
 
+function applyDrawerGroup(group: string): void {
+  const panels = Array.from(document.querySelectorAll<HTMLElement>('#drawer > .panel'))
+  const groups: Record<string, string[]> = {
+    general: ['通知与勿扰', '用量费用', '配置备份与恢复'],
+    service: ['Harness 服务', '远程访问', 'QQ 机器人', 'Telegram 机器人', 'Webhook'],
+    appearance: ['外观', 'AI 屏保'],
+    maintenance: ['诊断与支持', '软件更新', '添加自定义 Provider', '服务日志'],
+  }
+  const allowed = groups[group] ?? groups.general
+  panels.forEach((panel) => {
+    const title = panel.querySelector('h3')?.textContent ?? ''
+    panel.classList.toggle('drawer-panel-hidden', !allowed.some((name) => title.includes(name)))
+  })
+  document.querySelectorAll<HTMLButtonElement>('.drawer-tab').forEach((button) => button.classList.toggle('active', button.dataset.drawerGroup === group))
+}
+
+function bindDrawerNavigation(): void {
+  document.querySelectorAll<HTMLButtonElement>('.drawer-tab').forEach((button) => {
+    button.addEventListener('click', () => applyDrawerGroup(button.dataset.drawerGroup ?? 'general'))
+  })
+  applyDrawerGroup('general')
+}
+
 async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
@@ -704,6 +728,7 @@ async function discoverGatewayModels(): Promise<void> {
   S.toast('正在从网关拉取模型…')
   try {
     const models = await API.models.discover(baseURL, api, apiKey)
+    discoveredGatewayModels = models
     if (models.length === 0) {
       S.toast('网关没有返回模型,请手动填写', 'error')
       return
@@ -723,9 +748,11 @@ async function saveGatewayProvider(): Promise<void> {
     api: input('gw-api').value.trim(),
     apiKey: input('gw-key').value,
     models: input('gw-models').value,
+    modelDetails: discoveredGatewayModels.filter((model) => input('gw-models').value.split(',').map((id) => id.trim()).includes(model.id)),
   }
   try {
     await API.models.addProvider(spec)
+    discoveredGatewayModels = []
     S.toast('Provider 已保存并热生效', 'ok')
     input('gw-key').value = ''
     void loadModels()
@@ -1212,12 +1239,53 @@ async function loadRemoteConfig(): Promise<void> {
     input('remote-enabled').checked = config.enabled
     input('remote-port').value = '' + config.port
     input('remote-token').value = '' + config.token
+    await renderRemoteDevices()
+    const expiry = $id('remote-expiry') as HTMLSelectElement
+    if (config.expiresAt === null) expiry.value = '0'
+    else {
+      const minutes = Math.max(1, Math.round((config.expiresAt - Date.now()) / 60000))
+      expiry.value = minutes <= 30 ? '30' : minutes <= 120 ? '120' : '480'
+      $id('remote-expiry-status').textContent = `将在 ${new Date(config.expiresAt).toLocaleString()} 自动关闭`
+    }
     const presetRootsEl = $id('remote-preset-roots') as HTMLTextAreaElement
     presetRootsEl.value = (config.presetWorkspaceRoots ?? []).join('\n')
     await renderQr()
   } catch (error) {
     S.toast(`读取远程配置失败:${String(error)}`, 'error')
   }
+}
+
+async function renderRemoteDevices(): Promise<void> {
+  const pending = await API.remote.pendingDevices()
+  const approved = await API.remote.approvedDevices()
+  const pendingHost = $id('remote-pending-devices')
+  const approvedHost = $id('remote-approved-devices')
+  pendingHost.textContent = pending.length === 0 ? '暂无待批准设备' : ''
+  pending.forEach((device) => {
+    const row = document.createElement('div')
+    row.textContent = `${device.label} · ${device.address} `
+    const allow = document.createElement('button')
+    allow.className = 'btn btn-sm'
+    allow.textContent = '允许'
+    allow.onclick = async () => { await API.remote.approveDevice(device.id); await renderRemoteDevices() }
+    const reject = document.createElement('button')
+    reject.className = 'btn btn-sm btn-danger'
+    reject.textContent = '拒绝'
+    reject.onclick = async () => { await API.remote.rejectDevice(device.id); await renderRemoteDevices() }
+    row.append(allow, reject)
+    pendingHost.appendChild(row)
+  })
+  approvedHost.textContent = approved.length === 0 ? '暂无已批准设备' : ''
+  approved.forEach((device) => {
+    const row = document.createElement('div')
+    row.textContent = `${device.label} · ${device.address} `
+    const revoke = document.createElement('button')
+    revoke.className = 'btn btn-sm btn-danger'
+    revoke.textContent = '撤销'
+    revoke.onclick = async () => { await API.remote.revokeDevice(device.id); await renderRemoteDevices() }
+    row.appendChild(revoke)
+    approvedHost.appendChild(row)
+  })
 }
 
 async function renderQr(): Promise<void> {
@@ -1393,6 +1461,7 @@ function bind(): void {
   })
   $id('btn-drawer').addEventListener('click', () => void openDrawer())
   $id('btn-drawer-close').addEventListener('click', closeDrawer)
+  bindDrawerNavigation()
   $id('nav-workbench').addEventListener('click', () => switchView('workbench'))
   $id('nav-workspaces').addEventListener('click', () => switchView('workspaces'))
   $id('nav-session').addEventListener('click', () => switchView('session'))
@@ -1438,9 +1507,17 @@ function bind(): void {
 
   // 远程访问
   input('remote-enabled').addEventListener('change', async () => {
-    await API.remote.setConfig({ enabled: input('remote-enabled').checked })
+    const enabled = input('remote-enabled').checked
+    await API.remote.setConfig({ enabled, expiresAt: enabled ? Date.now() + 120 * 60 * 1000 : null })
     await renderQr()
-    S.toast(input('remote-enabled').checked ? '远程访问已启用' : '远程访问已关闭', 'ok')
+    S.toast(enabled ? '远程访问已启用(默认 2 小时后自动关闭)' : '远程访问已关闭', 'ok')
+  })
+  select('remote-expiry').addEventListener('change', async () => {
+    const minutes = Number(select('remote-expiry').value)
+    const expiresAt = minutes === 0 ? null : Date.now() + minutes * 60 * 1000
+    await API.remote.setConfig({ expiresAt })
+    $id('remote-expiry-status').textContent = expiresAt === null ? '不会自动关闭;不用时请手动关闭。' : `将在 ${new Date(expiresAt).toLocaleString()} 自动关闭`
+    S.toast('远程访问过期策略已更新', 'ok')
   })
   input('remote-port').addEventListener('change', async () => {
     await API.remote.setConfig({ port: Math.max(1024, Math.min(65535, Number(input('remote-port').value) || 3082)) })

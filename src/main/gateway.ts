@@ -26,6 +26,9 @@ export interface RemoteConfig {
   enabled: boolean
   port: number
   token: string
+  expiresAt: number | null
+  approvedDevices: Array<{ id: string; label: string; address: string; approvedAt: number; lastSeenAt: number }>
+  pendingDevices: Array<{ id: string; label: string; address: string; requestedAt: number; lastSeenAt: number }>
   presetWorkspaceRoots: string[]
 }
 
@@ -33,6 +36,9 @@ export const REMOTE_DEFAULTS: RemoteConfig = {
   enabled: false,
   port: 3082,
   token: '',
+  expiresAt: null,
+  approvedDevices: [],
+  pendingDevices: [],
   presetWorkspaceRoots: [],
 }
 
@@ -49,7 +55,6 @@ const ALLOWED_METHODS = new Set([
   'workspace.list',
   'workspace.create',
   'workspace.rename',
-  'workspace.delete',
   'workspace.archiveSession',
   'llm.models',
   'llm.providers',
@@ -66,6 +71,8 @@ interface RpcBody {
 
 export class RemoteGateway {
   private server: ReturnType<typeof createServer> | null = null
+  private expiryTimer: ReturnType<typeof setTimeout> | null = null
+  private sseTickets = new Map<string, { deviceId: string; expiresAt: number }>()
   private remoteDir: string
 
   constructor(
@@ -79,6 +86,12 @@ export class RemoteGateway {
 
   getConfig(): RemoteConfig {
     const config = this.config.get().remote
+    if (config.expiresAt !== null && Date.now() >= config.expiresAt) {
+      config.enabled = false
+      config.expiresAt = null
+      this.config.update('remote', { enabled: false, expiresAt: null })
+      this.stop()
+    }
     if (config.token === '') {
       config.token = randomBytes(16).toString('hex')
       this.config.update('remote', { token: config.token })
@@ -109,7 +122,9 @@ export class RemoteGateway {
     const addresses = this.lanAddresses()
     const host = addresses[0] ?? '127.0.0.1'
     const config = this.getConfig()
-    return `http://${host}:${config.port}/?token=${config.token}`
+    // Token 放在 URL fragment:浏览器不会把 fragment 发送给网关,避免进入 HTTP 日志/Referer。
+    const server = `http://${host}:${config.port}`
+    return `${server}/#server=${encodeURIComponent(server)}&token=${encodeURIComponent(config.token)}`
   }
 
   /** 二维码 data URL(主进程用 qrcode 生成,渲染进程直接显示)。 */
@@ -135,14 +150,26 @@ export class RemoteGateway {
       console.error('[gateway] 监听失败:', error.message)
     })
     server.listen(config.port, '0.0.0.0', () => {
-      console.log(`[gateway] 远程网关已启动,端口 ${config.port}`)
+      console.log(`[gateway] 远程网关已启动,端口 ${config.port} (仅可信局域网客户端)`)
     })
+    if (config.expiresAt !== null) {
+      const delay = Math.max(0, config.expiresAt - Date.now())
+      this.expiryTimer = setTimeout(() => {
+        this.config.update('remote', { enabled: false, expiresAt: null })
+        this.stop()
+        console.warn('[gateway] 远程访问已自动过期并关闭')
+      }, delay)
+    }
     this.server = server
   }
 
   stop(): void {
     this.server?.close()
     this.server = null
+    if (this.expiryTimer !== null) {
+      clearTimeout(this.expiryTimer)
+      this.expiryTimer = null
+    }
   }
 
   restart(): void {
@@ -177,6 +204,10 @@ export class RemoteGateway {
       }
       if (req.method === 'GET' && path === '/api/wallpapers') {
         this.serveWallpaperList(url, req, res)
+        return
+      }
+      if (req.method === 'POST' && path === '/api/events/ticket') {
+        await this.issueSseTicket(url, req, res)
         return
       }
       if (req.method === 'GET' && path === '/api/events') {
@@ -231,11 +262,67 @@ export class RemoteGateway {
     return null
   }
 
-  private authorized(url: URL, req: IncomingMessage): boolean {
+  private auditRemote(req: IncomingMessage, detail: string): void {
+    this.config.appendAudit({ time: Date.now(), type: 'remote.request', detail: `局域网 ${req.socket.remoteAddress ?? '?'}: ${detail}`.slice(0, 300) })
+  }
+
+  private authorization(url: URL, req: IncomingMessage): 'ok' | 'pending' | 'denied' {
+    const remote = req.socket.remoteAddress ?? ''
+    if (!trustedLanClient(remote)) return 'denied'
     const token = this.authToken(url, req)
-    if (token === null) return false
-    const expected = this.getConfig().token
-    return expected !== '' && token === expected
+    if (token === null) return 'denied'
+    const config = this.getConfig()
+    if (config.expiresAt !== null && Date.now() >= config.expiresAt) return 'denied'
+    if (config.token === '' || token !== config.token) return 'denied'
+    if (remote === '127.0.0.1' || remote === '::1' || remote.endsWith('::ffff:127.0.0.1')) return 'ok'
+    const id = req.headers['x-dsh-device'] ?? url.searchParams.get('device') ?? ''
+    const deviceId = typeof id === 'string' && id.trim() !== '' ? id.trim().slice(0, 120) : ''
+    const address = remote.replace(/^::ffff:/i, '')
+    if (deviceId === '') return 'pending'
+    const approved = config.approvedDevices.find((device) => device.id === deviceId)
+    if (approved !== undefined) {
+      if (Date.now() - approved.lastSeenAt > 60_000) {
+        approved.lastSeenAt = Date.now()
+        this.config.update('remote', { approvedDevices: config.approvedDevices })
+      }
+      return 'ok'
+    }
+    if (!config.pendingDevices.some((device) => device.id === deviceId)) {
+      const labelHeader = req.headers['x-dsh-device-label']
+      const label = typeof labelHeader === 'string' && labelHeader !== '' ? labelHeader.slice(0, 80) : '未命名设备'
+      this.config.update('remote', { pendingDevices: [...config.pendingDevices, { id: deviceId, label, address, requestedAt: Date.now(), lastSeenAt: Date.now() }] })
+      this.auditRemote(req, `新设备请求批准:${label}`)
+    }
+    return 'pending'
+  }
+
+  private authorized(url: URL, req: IncomingMessage): boolean {
+    return this.authorization(url, req) === 'ok'
+  }
+
+  pendingDevices(): RemoteConfig['pendingDevices'] { return this.config.get().remote.pendingDevices }
+  approvedDevices(): RemoteConfig['approvedDevices'] { return this.config.get().remote.approvedDevices }
+  approveDevice(id: string): void {
+    const remote = this.config.get().remote
+    const pending = remote.pendingDevices.find((device) => device.id === id)
+    if (pending === undefined) return
+    this.config.update('remote', {
+      pendingDevices: remote.pendingDevices.filter((device) => device.id !== id),
+      approvedDevices: [...remote.approvedDevices.filter((device) => device.id !== id), { id: pending.id, label: pending.label, address: pending.address, approvedAt: Date.now(), lastSeenAt: pending.lastSeenAt }],
+    })
+    this.config.appendAudit({ time: Date.now(), type: 'remote.device.approved', detail: `批准远程设备:${pending.label} ${pending.address}` })
+  }
+  rejectDevice(id: string): void {
+    const remote = this.config.get().remote
+    const pending = remote.pendingDevices.find((device) => device.id === id)
+    this.config.update('remote', { pendingDevices: remote.pendingDevices.filter((device) => device.id !== id) })
+    if (pending !== undefined) this.config.appendAudit({ time: Date.now(), type: 'remote.device.rejected', detail: `拒绝远程设备:${pending.label} ${pending.address}` })
+  }
+  revokeDevice(id: string): void {
+    const remote = this.config.get().remote
+    const device = remote.approvedDevices.find((item) => item.id === id)
+    this.config.update('remote', { approvedDevices: remote.approvedDevices.filter((item) => item.id !== id) })
+    if (device !== undefined) this.config.appendAudit({ time: Date.now(), type: 'remote.device.revoked', detail: `撤销远程设备:${device.label} ${device.address}` })
   }
 
   private serveStatic(path: string, res: ServerResponse): void {
@@ -259,11 +346,29 @@ export class RemoteGateway {
     res.end(readFileSync(file))
   }
 
-  private async handleRpc(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.authorized(url, req)) {
-      this.json(res, 401, { error: 'unauthorized' })
+  private async issueSseTicket(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const auth = this.authorization(url, req)
+    if (auth !== 'ok') {
+      this.json(res, auth === 'pending' ? 428 : 401, { error: auth === 'pending' ? 'desktop approval required' : 'unauthorized' })
       return
     }
+    const device = req.headers['x-dsh-device']
+    if (typeof device !== 'string' || device === '') {
+      this.json(res, 400, { error: 'device id required' })
+      return
+    }
+    const ticket = randomBytes(24).toString('hex')
+    this.sseTickets.set(ticket, { deviceId: device.slice(0, 120), expiresAt: Date.now() + 60_000 })
+    this.json(res, 200, { ok: true, ticket })
+  }
+
+  private async handleRpc(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const auth = this.authorization(url, req)
+    if (auth !== 'ok') {
+      this.json(res, auth === 'pending' ? 428 : 401, { error: auth === 'pending' ? 'desktop approval required' : 'unauthorized' })
+      return
+    }
+    this.auditRemote(req, 'rpc')
     const chunks: Buffer[] = []
     for await (const chunk of req) {
       chunks.push(chunk as Buffer)
@@ -313,6 +418,7 @@ export class RemoteGateway {
       this.json(res, 401, { error: 'unauthorized' })
       return
     }
+    this.auditRemote(req, 'command')
     const chunks: Buffer[] = []
     for await (const chunk of req) {
       chunks.push(chunk as Buffer)
@@ -353,6 +459,7 @@ export class RemoteGateway {
       this.json(res, 401, { error: 'unauthorized' })
       return
     }
+    this.auditRemote(req, 'respond')
     const chunks: Buffer[] = []
     for await (const chunk of req) {
       chunks.push(chunk as Buffer)
@@ -394,6 +501,7 @@ export class RemoteGateway {
       this.json(res, 401, { error: 'unauthorized' })
       return
     }
+    this.auditRemote(req, 'action')
     const chunks: Buffer[] = []
     for await (const chunk of req) {
       chunks.push(chunk as Buffer)
@@ -406,8 +514,7 @@ export class RemoteGateway {
       return
     }
     if (body.action === 'harness.restart') {
-      await this.harness.restart()
-      this.json(res, 200, { ok: true })
+      this.json(res, 403, { error: '此危险操作必须在桌面端确认' })
       return
     }
     if (body.action === 'workspace.subdirs') {
@@ -435,7 +542,7 @@ export class RemoteGateway {
       return
     }
     if (body.action === 'fs.removeRoot') {
-      this.serveFsRemoveRoot(res, body as { path?: unknown })
+      this.json(res, 403, { error: '移除预设根目录必须在桌面端确认' })
       return
     }
     if (body.action === 'workspace.createNew') {
@@ -815,17 +922,6 @@ export class RemoteGateway {
     this.json(res, 200, { ok: true, roots })
   }
 
-  /** 从预设根列表移除(仅移除注册,不删除目录)。 */
-  private serveFsRemoveRoot(res: ServerResponse, body: { path?: unknown }): void {
-    const path = typeof body.path === 'string' ? body.path.trim() : ''
-    const current = this.config.get().remote.presetWorkspaceRoots ?? []
-    const normalized = resolve(path)
-    const next = current.filter((p) => resolve(p) !== normalized)
-    this.config.update('remote', { presetWorkspaceRoots: next })
-    const roots = next.filter((p): p is string => typeof p === 'string').map((p) => resolve(p))
-    this.json(res, 200, { ok: true, roots })
-  }
-
   /**
    * 在预设根目录下新建文件夹工作区(远程端仅允许此路径;防越权校验):
    * root 必须是预设根目录之一,name 不能含路径分隔符/.. /以点开头。
@@ -968,10 +1064,13 @@ export class RemoteGateway {
   }
 
   private serveEvents(url: URL, req: IncomingMessage, res: ServerResponse): void {
-    if (!this.authorized(url, req)) {
-      this.json(res, 401, { error: 'unauthorized' })
+    const ticket = url.searchParams.get('ticket')
+    const session = ticket === null ? undefined : this.sseTickets.get(ticket)
+    if (session === undefined || Date.now() >= session.expiresAt) {
+      this.json(res, 401, { error: 'invalid or expired event ticket' })
       return
     }
+    this.sseTickets.delete(ticket as string)
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
@@ -1003,6 +1102,14 @@ export class RemoteGateway {
  * - 169.254.x.x:链路本地;
  * - 虚拟网卡(WSL/Hyper-V/Docker/VMware/VirtualBox/TUN 等)的接口名。
  */
+function trustedLanClient(address: string): boolean {
+  const value = address.replace(/^::ffff:/i, '')
+  if (value === '127.0.0.1' || value === '::1') return true
+  const parts = value.split('.').map(Number)
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false
+  return parts[0] === 10 || parts[0] === 192 && parts[1] === 168 || parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31
+}
+
 function usableLanAddress(address: string, interfaceName: string): boolean {
   if (/virtual|vethernet|wsl|hyper-v|docker|vmware|virtualbox|loopback|bluetooth|tun|tap|utun|ppp|meta/i.test(interfaceName)) {
     return false

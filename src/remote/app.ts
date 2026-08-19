@@ -29,6 +29,7 @@
     questionCards: {},    // sessionId -> DOM 元素
     fsPath: '',           // 文件夹浏览当前路径('' = 根列表)
     defaultModel: null,   // { provider, model } 桌面端预设模型(host.describe)
+    deviceId: localStorage.getItem('dsh-device-id') || (function () { var id = crypto.randomUUID(); localStorage.setItem('dsh-device-id', id); return id })(),
     sidebarOpen: false,   // 左侧抽屉开关状态
   }
 
@@ -68,9 +69,10 @@
   function apiRpc(method: string, payload?: unknown): Promise<any> {
     return fetch(state.server + '/api/rpc', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token },
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId, 'x-dsh-device-label': navigator.userAgent.slice(0, 60) },
       body: JSON.stringify({ method: method, payload: payload || {} }),
     }).then(function (res) {
+      if (res.status === 428) throw new Error('等待桌面端批准此设备')
       return res.json()
     }).then(function (data) {
       if (!data.ok) {
@@ -86,7 +88,7 @@
   function apiRespond(rpcId, result) {
     return fetch(state.server + '/api/respond', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token },
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId, 'x-dsh-device-label': navigator.userAgent.slice(0, 60) },
       body: JSON.stringify({ type: 'client-response', rpcId: rpcId, result: result }),
     }).then(function (res) {
       if (!res.ok) throw new Error('HTTP ' + res.status)
@@ -98,7 +100,7 @@
   function apiAction(action: string, extra?: Record<string, unknown>): Promise<any> {
     return fetch(state.server + '/api/action', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token },
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId, 'x-dsh-device-label': navigator.userAgent.slice(0, 60) },
       body: JSON.stringify(Object.assign({ action: action }, extra || {})),
     }).then(function (res) {
       return res.json()
@@ -246,6 +248,8 @@
     el.textContent = text
     el.className = 'chat-status' + (cls === 'running' ? ' running' : '')
     state.running = cls === 'running'
+    $('btn-chat-stop').classList.toggle('hidden', !state.running)
+    $('btn-chat-stop').disabled = false
     updateSteerButton()
   }
 
@@ -280,15 +284,22 @@
   // ---- 事件流 ----
   function connectEvents() {
     if (state.es) state.es.close()
-    var es = new EventSource(state.server + '/api/events?token=' + encodeURIComponent(state.token))
-    state.es = es
-    es.onopen = function () { setConnDot(true) }
-    es.onerror = function () { setConnDot(false) }
-    es.onmessage = function (event) {
-      var frame
-      try { frame = JSON.parse(event.data) } catch (e) { return }
-      handleFrame(frame)
-    }
+    fetch(state.server + '/api/events/ticket', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId, 'x-dsh-device-label': navigator.userAgent.slice(0, 60) },
+      body: '{}',
+    }).then(function (res) { return res.json() }).then(function (data) {
+      if (!data.ok || typeof data.ticket !== 'string') { setConnDot(false); return }
+      var es = new EventSource(state.server + '/api/events?ticket=' + encodeURIComponent(data.ticket))
+      state.es = es
+      es.onopen = function () { setConnDot(true) }
+      es.onerror = function () { setConnDot(false) }
+      es.onmessage = function (event) {
+        var frame
+        try { frame = JSON.parse(event.data) } catch (e) { return }
+        handleFrame(frame)
+      }
+    }).catch(function () { setConnDot(false) })
   }
 
   function handleFrame(frame) {
@@ -784,10 +795,12 @@
     head.appendChild(browse)
     var del = document.createElement('button')
     del.className = 'row-act'
-    del.textContent = '✕'
-    del.title = '移除预设根(不删除文件夹)'
+    del.textContent = '🔒'
+    del.title = '移除预设根请在桌面端确认'
+    del.disabled = true
     del.addEventListener('click', function (event) {
       event.stopPropagation()
+      if (!window.confirm('移除预设根「' + root.path + '」？只移除注册,不会删除文件。')) return
       apiAction('fs.removeRoot', { path: root.path }).then(function () {
         S.toast('已移除预设根', 'ok')
         loadSidebar()
@@ -1732,8 +1745,12 @@
   // ---- 初始化 ----
   function init() {
     var params = new URLSearchParams(window.location.search)
-    var serverParam = params.get('server')
-    var tokenParam = params.get('token')
+    var hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    var serverParam = params.get('server') || hashParams.get('server')
+    var tokenParam = params.get('token') || hashParams.get('token')
+    if (window.location.hash !== '' && (hashParams.has('token') || hashParams.has('server'))) {
+      history.replaceState(null, '', window.location.pathname + window.location.search)
+    }
     var savedServer = localStorage.getItem('dsh-server')
     var savedToken = localStorage.getItem('dsh-token')
     if (serverParam) $('conn-server').value = serverParam
@@ -1776,6 +1793,7 @@
     })
     $('btn-chat-stop').addEventListener('click', function () {
       if (state.sessionId !== null) {
+        $('btn-chat-stop').disabled = true
         apiRpc('session.cancel', { sessionId: state.sessionId }).then(function () {
           S.toast('已请求停止', 'ok')
         }).catch(function (err) { S.toast('停止失败:' + err.message, 'error') })
@@ -1839,14 +1857,15 @@
       clearAllCache()
       S.toast('本机会话缓存已清除', 'ok')
     })
-    $('btn-restart-service').addEventListener('click', function () {
+      $('btn-restart-service').addEventListener('click', function () {
       if (!state.connected) {
         S.toast('未连接', 'error')
         return
       }
+      if (!window.confirm('重启 Harness 会中断当前服务连接,确定继续吗？')) return
       fetch(state.server + '/api/action', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token },
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId, 'x-dsh-device-label': navigator.userAgent.slice(0, 60) },
         body: JSON.stringify({ action: 'harness.restart' }),
       }).then(function (res) {
         return res.json()

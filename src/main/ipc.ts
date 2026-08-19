@@ -75,6 +75,11 @@ export function registerIpc(deps: IpcDeps): void {
     ipcMain.handle('remote:lanAddresses', () => gateway.lanAddresses())
     ipcMain.handle('remote:pairUrl', () => gateway.pairUrl())
     ipcMain.handle('remote:qrDataUrl', () => gateway.qrDataUrl())
+  ipcMain.handle('remote:pendingDevices', () => gateway.pendingDevices())
+  ipcMain.handle('remote:approvedDevices', () => gateway.approvedDevices())
+  ipcMain.handle('remote:approveDevice', (_event, id: string) => gateway.approveDevice(id))
+  ipcMain.handle('remote:rejectDevice', (_event, id: string) => gateway.rejectDevice(id))
+  ipcMain.handle('remote:revokeDevice', (_event, id: string) => gateway.revokeDevice(id))
     // 用系统文件资源管理器挑选预设工作区根目录(多选)。
     ipcMain.handle('dialog:pickDirectories', async (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)

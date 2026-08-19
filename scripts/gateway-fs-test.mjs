@@ -6,7 +6,7 @@
 import { readdirSync, statSync } from 'node:fs'
 
 const base = process.argv[2] || 'http://127.0.0.1:3082'
-const token = process.env.GATEWAY_TOKEN || 'REPLACED_WITH_GATEWAY_TOKEN'
+const token = process.env.GATEWAY_TOKEN || ''
 
 let failures = 0
 function check(name, actual, expected) {
