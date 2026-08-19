@@ -46,7 +46,7 @@
           <span id="conn-dot" class="conn-dot" title="连接状态"></span>
           <button id="btn-chat-model" class="btn btn-ghost hidden" title="切换会话模型">模型</button>
           <button id="btn-chat-export" class="btn btn-ghost hidden" title="导出会话为 Markdown">📄</button>
-          <button id="btn-chat-stop" class="btn btn-ghost">停止</button>
+          <button id="btn-chat-stop" class="btn btn-ghost hidden">停止</button>
         </div>
       </header>
       <main id="chat-stream" class="chat-stream">
@@ -244,7 +244,7 @@
         <button id="btn-clear-cache" class="btn">清除本机会话缓存</button>
         <div class="field">
           <label>服务操作</label>
-          <button id="btn-restart-service" class="btn btn-block">重启 Harness 服务</button>
+          <button id="btn-restart-service" class="btn btn-block" disabled title="危险操作必须在桌面端确认">重启 Harness 服务(请在桌面端确认)</button>
         </div>
         <button id="btn-add-home" class="btn">添加到主屏幕</button>
         <button id="btn-forget" class="btn btn-danger">清除连接信息</button>

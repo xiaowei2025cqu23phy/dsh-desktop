@@ -23,6 +23,11 @@ body {
   background: var(--bg);
   color: var(--text);
   -webkit-tap-highlight-color: transparent;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
 }
 button { font-family: inherit; }
 
@@ -197,7 +202,8 @@ textarea { resize: vertical; }
 .wallpaper-cell.active span { color: var(--accent); font-weight: 600; }
 
 .composer {
-  flex: 0 0 auto; display: flex; gap: 8px; padding: 10px 10px;
+  flex: 0 0 auto; display: flex; gap: 8px;
+  padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
   border-top: 1px solid rgba(232, 179, 57, 0.18);
   background: rgba(18, 22, 31, 0.08);
   

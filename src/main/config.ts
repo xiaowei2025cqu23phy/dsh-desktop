@@ -71,6 +71,12 @@ export interface RemoteConfig {
   port: number
   /** Bearer 令牌(首次启用时自动生成)。 */
   token: string
+  /** 远程访问过期时间;null 表示不自动过期(不建议长期启用)。 */
+  expiresAt: number | null
+  /** 已获得桌面批准的远程设备。 */
+  approvedDevices: Array<{ id: string; label: string; address: string; approvedAt: number; lastSeenAt: number }>
+  /** 等待桌面批准的远程设备。 */
+  pendingDevices: Array<{ id: string; label: string; address: string; requestedAt: number; lastSeenAt: number }>
   /**
    * 预设工作区根目录:手机端只能在这些目录下新建文件夹工作区并发布任务;
    * 已有工作区(含电脑端创建的)不受限,均可选择。
@@ -273,6 +279,9 @@ const DEFAULTS: AppConfig = {
     enabled: false,
     port: 3082,
     token: '',
+    expiresAt: null,
+    approvedDevices: [],
+    pendingDevices: [],
     presetWorkspaceRoots: [],
   },
   qq: {
@@ -362,6 +371,8 @@ export class ConfigStore {
       if (config.scheduledTasks !== null && typeof config.scheduledTasks === 'object' && !Array.isArray(config.scheduledTasks)) {
         config.scheduledTasks = Object.values(config.scheduledTasks as Record<string, never>)
       }
+      if (!Array.isArray(config.remote.approvedDevices)) config.remote.approvedDevices = []
+      if (!Array.isArray(config.remote.pendingDevices)) config.remote.pendingDevices = []
       if (!Array.isArray(config.taskHistory)) config.taskHistory = []
       if (!Array.isArray(config.taskQueue)) config.taskQueue = []
       if (!Array.isArray(config.activities)) config.activities = []

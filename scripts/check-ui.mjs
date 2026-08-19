@@ -72,7 +72,7 @@ try {
 
 // 2. 打开 PWA 并检查元素
 try {
-  const token = 'REPLACED_WITH_GATEWAY_TOKEN'
+  const token = process.env.GATEWAY_TOKEN || ''
   const pwaUrl = 'http://127.0.0.1:3082/?token=' + token
   const targetId = await openTarget(desktopWs, pwaUrl)
   await new Promise((r) => setTimeout(r, 2500))

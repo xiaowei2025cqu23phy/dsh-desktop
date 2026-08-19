@@ -21,6 +21,27 @@ export interface ModelEntry {
   id: string
   name?: string
   description?: string
+  contextWindow?: number
+  maxTokens?: number
+}
+
+/**
+ * 根据模型 ID 推断上下文上限。网关明确返回 contextWindow 时由网关值优先;
+ * 未声明的未知模型使用 1M,避免继续退回 Harness 的 256K 默认值。
+ */
+export function inferContextWindow(modelId: string): number {
+  const id = modelId.trim().toLowerCase()
+  if (/^gemini-3\.\d+-pro/.test(id)) return 2_000_000
+  if (/^gemini-3|^gemini-2/.test(id)) return 1_000_000
+  if (/^gemma-/.test(id)) return 128_000
+  if (/^gpt-5/.test(id)) return 1_000_000
+  if (/^glm-5/.test(id)) return 200_000
+  if (/^glm-4/.test(id)) return 128_000
+  if (/^qwen3/.test(id)) return 256_000
+  if (/^kimi/.test(id)) return 256_000
+  if (/^minimax/.test(id)) return 1_000_000
+  if (/^deepseek/.test(id)) return 1_000_000
+  return 1_000_000
 }
 
 export interface ModelGroup {
@@ -45,6 +66,8 @@ export interface CustomProviderSpec {
   apiKey: string
   /** 逗号分隔的模型 ID 列表。 */
   models: string
+  /** 网关 /models 返回的能力信息,用于保留服务端声明的上下文上限。 */
+  modelDetails?: ModelEntry[]
 }
 
 /** 常见网关预设,供"添加自定义 Provider"向导使用。 */
@@ -126,11 +149,16 @@ export class ModelManager {
     if (models.length === 0) {
       throw new Error('至少填写一个模型 ID(逗号分隔)')
     }
+    const details = new Map((spec.modelDetails ?? []).map((model) => [model.id, model]))
+    const modelProfiles = models.map((model) => {
+      const detail = details.get(model)
+      return { id: model, contextWindow: detail?.contextWindow ?? inferContextWindow(model) }
+    })
     const profile: Record<string, unknown> = {
       displayName: spec.displayName.trim() || id,
       api: spec.api.trim() || 'openai-completions',
       baseURL: spec.baseURL.trim(),
-      models: models.map((model) => ({ id: model })),
+      models: modelProfiles,
     }
     if (apiKeyEnv !== undefined) profile.apiKeyEnv = apiKeyEnv
     await client.rpc('settings.update', { ns: 'llm-pi-ai', patch: { providers: { [id]: profile } } })

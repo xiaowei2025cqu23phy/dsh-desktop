@@ -56,7 +56,10 @@ interface RemoteConfigView {
   enabled: boolean
   port: number
   token: string
+  expiresAt: number | null
   presetWorkspaceRoots: string[]
+  approvedDevices: Array<{ id: string; label: string; address: string; approvedAt: number; lastSeenAt: number }>
+  pendingDevices: Array<{ id: string; label: string; address: string; requestedAt: number; lastSeenAt: number }>
 }
 
 interface QQConfigView {
@@ -199,6 +202,11 @@ interface DesktopApi {
     lanAddresses(): Promise<string[]>
     pairUrl(): Promise<string>
     qrDataUrl(): Promise<string | null>
+    pendingDevices(): Promise<RemoteConfigView['pendingDevices']>
+    approvedDevices(): Promise<RemoteConfigView['approvedDevices']>
+    approveDevice(id: string): Promise<void>
+    rejectDevice(id: string): Promise<void>
+    revokeDevice(id: string): Promise<void>
   }
   dialog: {
     pickDirectories(): Promise<string[]>

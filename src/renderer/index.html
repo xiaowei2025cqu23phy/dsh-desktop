@@ -54,17 +54,17 @@
           </section>
 
           <section class="panel">
-            <h3>🩺 工作区健康</h3>
-            <pre id="health-list" class="help-pre wb-scroll">加载中…</pre>
-            <div class="field-row"><button id="btn-health-refresh" class="btn btn-sm">刷新健康状态</button><button id="btn-health-manage" class="btn btn-sm">🗂️ 管理工作区</button></div>
+            <h3>📥 任务队列</h3>
+            <pre id="queue-list" class="help-pre wb-scroll">加载中…</pre>
+            <div class="field-row"><button id="btn-queue-refresh" class="btn btn-sm">刷新</button></div>
           </section>
         </div>
 
         <div class="wb-grid">
           <section class="panel">
-            <h3>📥 任务队列</h3>
-            <pre id="queue-list" class="help-pre wb-scroll">加载中…</pre>
-            <div class="field-row"><button id="btn-queue-refresh" class="btn btn-sm">刷新</button></div>
+            <h3>🩺 工作区健康</h3>
+            <pre id="health-list" class="help-pre wb-scroll health-summary">加载中…</pre>
+            <div class="field-row"><button id="btn-health-refresh" class="btn btn-sm">刷新健康状态</button><button id="btn-health-manage" class="btn btn-sm">🗂️ 管理工作区</button></div>
           </section>
 
           <section class="panel">
@@ -135,6 +135,12 @@
         <h2>设置</h2>
         <button id="btn-drawer-close" class="btn btn-ghost">✕</button>
       </div>
+      <nav id="drawer-nav" class="drawer-nav" aria-label="设置分组">
+        <button class="drawer-tab active" data-drawer-group="general" type="button">⚙️ 通用</button>
+        <button class="drawer-tab" data-drawer-group="service" type="button">🔌 服务</button>
+        <button class="drawer-tab" data-drawer-group="appearance" type="button">🎨 外观</button>
+        <button class="drawer-tab" data-drawer-group="maintenance" type="button">🛠️ 维护</button>
+      </nav>
 
       <div class="drawer-group">⚙️ 通用设置</div>
       <section class="panel">
@@ -229,18 +235,37 @@
         <h3>远程访问(手机 PWA)</h3>
         <label class="check-row">
           <input id="remote-enabled" type="checkbox" />
-          启用局域网远程访问(手机扫码连接)
+          启用局域网远程访问(仅可信局域网,禁止内网穿透)
         </label>
         <div class="field">
           <label for="remote-port">端口</label>
           <input id="remote-port" type="number" min="1024" max="65535" />
         </div>
+        <p class="security-warning">⚠️ 仅限可信家庭/办公局域网。不要使用 frp、ngrok、Cloudflare Tunnel、端口转发或任何内网穿透暴露到公网。Harness 插件可能拥有主机级执行权限。</p>
         <div class="field">
           <label>访问令牌</label>
           <div class="field-row">
             <input id="remote-token" type="text" readonly />
-            <button id="btn-token-regenerate" class="btn">重新生成</button>
+            <button id="btn-token-regenerate" class="btn">重新生成并断开旧设备</button>
           </div>
+        </div>
+        <div class="field">
+          <label for="remote-expiry">自动关闭</label>
+          <select id="remote-expiry">
+            <option value="0">不自动关闭(仅可信局域网)</option>
+            <option value="30">30 分钟后关闭</option>
+            <option value="120">2 小时后关闭</option>
+            <option value="480">8 小时后关闭</option>
+          </select>
+          <p id="remote-expiry-status" class="hint"></p>
+        </div>
+        <div class="field">
+          <label>待批准设备</label>
+          <pre id="remote-pending-devices" class="help-pre">暂无待批准设备</pre>
+        </div>
+        <div class="field">
+          <label>已批准设备</label>
+          <pre id="remote-approved-devices" class="help-pre">暂无已批准设备</pre>
         </div>
         <div class="field">
           <label>手机扫码连接</label>
