@@ -55,6 +55,11 @@ const api = {
     approveDevice: (id: string) => ipcRenderer.invoke('remote:approveDevice', id),
     rejectDevice: (id: string) => ipcRenderer.invoke('remote:rejectDevice', id),
     revokeDevice: (id: string) => ipcRenderer.invoke('remote:revokeDevice', id),
+    onDevicePending: (callback: (device: { id: string; label: string; address: string }) => void) => {
+      const listener = (_event: unknown, device: { id: string; label: string; address: string }): void => callback(device)
+      ipcRenderer.on('remote:device-pending', listener)
+      return () => { ipcRenderer.removeListener('remote:device-pending', listener) }
+    },
   },
   dialog: {
     pickDirectories: () => ipcRenderer.invoke('dialog:pickDirectories'),

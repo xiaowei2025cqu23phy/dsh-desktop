@@ -207,6 +207,7 @@ interface DesktopApi {
     approveDevice(id: string): Promise<void>
     rejectDevice(id: string): Promise<void>
     revokeDevice(id: string): Promise<void>
+    onDevicePending(callback: (device: { id: string; label: string; address: string }) => void): () => void
   }
   dialog: {
     pickDirectories(): Promise<string[]>
