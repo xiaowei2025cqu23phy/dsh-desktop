@@ -202,6 +202,7 @@ interface DesktopApi {
     lanAddresses(): Promise<string[]>
     pairUrl(): Promise<string>
     qrDataUrl(): Promise<string | null>
+    qrDataUrls(): Promise<Array<{ address: string; url: string; dataUrl: string | null }>>
     pendingDevices(): Promise<RemoteConfigView['pendingDevices']>
     approvedDevices(): Promise<RemoteConfigView['approvedDevices']>
     approveDevice(id: string): Promise<void>

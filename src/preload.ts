@@ -50,6 +50,7 @@ const api = {
     lanAddresses: () => ipcRenderer.invoke('remote:lanAddresses'),
     pairUrl: () => ipcRenderer.invoke('remote:pairUrl'),
     qrDataUrl: () => ipcRenderer.invoke('remote:qrDataUrl'),
+    qrDataUrls: () => ipcRenderer.invoke('remote:qrDataUrls'),
     pendingDevices: () => ipcRenderer.invoke('remote:pendingDevices'),
     approvedDevices: () => ipcRenderer.invoke('remote:approvedDevices'),
     approveDevice: (id: string) => ipcRenderer.invoke('remote:approveDevice', id),

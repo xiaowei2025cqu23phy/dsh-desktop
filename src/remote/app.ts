@@ -1591,7 +1591,13 @@
       state.connected = true
       enterMain(host)
     }).catch(function (err) {
-      $('conn-status').textContent = '连接失败:' + err.message
+      var message = String(err && err.message ? err.message : err)
+      var hint = /等待桌面端批准/.test(message)
+        ? '等待桌面端批准此设备(请在电脑上点击「允许连接」)'
+        : /Failed to fetch|NetworkError|ECONNREFUSED|ERR_CONNECTION/.test(message)
+          ? '无法连接电脑。请确认:手机与电脑在同一 Wi-Fi、电脑远程访问已启用、防火墙放行该端口'
+          : message
+      $('conn-status').textContent = '连接失败:' + hint
       $('conn-status').className = 'conn-status err'
     })
   }
