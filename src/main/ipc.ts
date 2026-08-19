@@ -75,6 +75,7 @@ export function registerIpc(deps: IpcDeps): void {
     ipcMain.handle('remote:lanAddresses', () => gateway.lanAddresses())
     ipcMain.handle('remote:pairUrl', () => gateway.pairUrl())
     ipcMain.handle('remote:qrDataUrl', () => gateway.qrDataUrl())
+    ipcMain.handle('remote:qrDataUrls', () => gateway.qrDataUrls())
   ipcMain.handle('remote:pendingDevices', () => gateway.pendingDevices())
   ipcMain.handle('remote:approvedDevices', () => gateway.approvedDevices())
   ipcMain.handle('remote:approveDevice', (_event, id: string) => gateway.approveDevice(id))

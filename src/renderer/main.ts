@@ -624,8 +624,10 @@ function bindDrawerNavigation(): void {
 }
 
 let pendingDeviceForApproval: { id: string; label: string; address: string } | null = null
+let shownDeviceIds = new Set<string>()
 
 async function showDeviceApproval(device: { id: string; label: string; address: string }): Promise<void> {
+  shownDeviceIds.add(device.id)
   pendingDeviceForApproval = device
   $id('da-info').textContent = `设备:${device.label}\n地址:${device.address}\n\n只有你确认的局域网设备才能远程访问电脑,包括任务、文件与审批操作。`
   $id('device-approve').classList.remove('hidden')
@@ -634,6 +636,18 @@ async function showDeviceApproval(device: { id: string; label: string; address: 
   $id('drawer').classList.remove('hidden')
   applyDrawerGroup('service')
   await renderRemoteDevices()
+}
+
+/** 轮询兜底:即使 IPC 事件丢失,待批准设备也会弹出审批(每 10 秒)。 */
+async function pollPendingDevices(): Promise<void> {
+  try {
+    const pending = await API.remote.pendingDevices()
+    for (const device of pending) {
+      if (!shownDeviceIds.has(device.id)) await showDeviceApproval(device)
+    }
+  } catch {
+    /* 远程访问未启用或 IPC 暂不可用时忽略。 */
+  }
 }
 
 async function openDrawer(): Promise<void> {
@@ -1316,14 +1330,23 @@ async function renderQr(): Promise<void> {
     return
   }
   const pairUrl = await API.remote.pairUrl()
-  const qrDataUrl = await API.remote.qrDataUrl()
-  if (qrDataUrl !== null) {
-    const img = document.createElement('img')
-    img.src = qrDataUrl
-    img.alt = '扫码连接'
-    img.width = 180
-    img.height = 180
-    wrap.appendChild(img)
+  const qrList = await API.remote.qrDataUrls()
+  if (qrList.length > 0) {
+    // 每个局域网地址一个二维码:手机连哪个网络就扫哪个。
+    qrList.forEach((entry) => {
+      const cell = document.createElement('div')
+      cell.className = 'qr-cell'
+      const img = document.createElement('img')
+      img.src = entry.dataUrl ?? ''
+      img.alt = '扫码连接'
+      img.width = 150
+      img.height = 150
+      const label = document.createElement('div')
+      label.className = 'qr-label'
+      label.textContent = entry.address
+      cell.append(img, label)
+      wrap.appendChild(cell)
+    })
     return
   }
   const empty = document.createElement('div')
@@ -1643,7 +1666,10 @@ function bind(): void {
     await renderRemoteDevices()
     S.toast(`已拒绝设备:${device.label}`, 'ok')
   })
-  API.remote.onDevicePending((device) => void showDeviceApproval(device))
+  API.remote.onDevicePending((device) => { shownDeviceIds.add(device.id); void showDeviceApproval(device) })
+  // 每 10 秒轮询待批准设备,保证审批弹窗必然出现(事件推送丢失时的兜底)。
+  window.setInterval(() => void pollPendingDevices(), 10_000)
+  void pollPendingDevices()
   // 弹层背景点击关闭。
   $id('activity-detail').addEventListener('click', (event) => {
     if (event.target === $id('activity-detail')) $id('activity-detail').classList.add('hidden')

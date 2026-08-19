@@ -143,6 +143,31 @@ export class RemoteGateway {
     }
   }
 
+  /** 为每个局域网地址生成配对二维码(手机连哪个网络就扫哪个)。 */
+  async qrDataUrls(): Promise<Array<{ address: string; url: string; dataUrl: string | null }>> {
+    const config = this.getConfig()
+    if (!config.enabled || config.token === '') return []
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const QRCode = require('qrcode') as { toDataURL: (text: string, opts?: object) => Promise<string> }
+      const addresses = this.lanAddresses()
+      const results: Array<{ address: string; url: string; dataUrl: string | null }> = []
+      for (const address of addresses.slice(0, 3)) {
+        const server = `http://${address}:${config.port}`
+        const url = `${server}/#server=${encodeURIComponent(server)}&token=${encodeURIComponent(config.token)}`
+        try {
+          results.push({ address, url, dataUrl: await QRCode.toDataURL(url, { width: 180, margin: 1 }) })
+        } catch {
+          results.push({ address, url, dataUrl: null })
+        }
+      }
+      return results
+    } catch (error) {
+      console.error('[gateway] 二维码生成失败:', error)
+      return []
+    }
+  }
+
   start(): void {
     if (this.server !== null) return
     const config = this.getConfig()
