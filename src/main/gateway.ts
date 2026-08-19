@@ -74,6 +74,8 @@ export class RemoteGateway {
   private expiryTimer: ReturnType<typeof setTimeout> | null = null
   private sseTickets = new Map<string, { deviceId: string; expiresAt: number }>()
   private remoteDir: string
+  /** 新设备请求批准时的回调(桌面端据此拉起审批)。 */
+  onPendingDevice: ((device: { id: string; label: string; address: string }) => void) | null = null
 
   constructor(
     private config: ConfigStore,
@@ -292,6 +294,7 @@ export class RemoteGateway {
       const label = typeof labelHeader === 'string' && labelHeader !== '' ? labelHeader.slice(0, 80) : '未命名设备'
       this.config.update('remote', { pendingDevices: [...config.pendingDevices, { id: deviceId, label, address, requestedAt: Date.now(), lastSeenAt: Date.now() }] })
       this.auditRemote(req, `新设备请求批准:${label}`)
+      this.onPendingDevice?.({ id: deviceId, label, address })
     }
     return 'pending'
   }

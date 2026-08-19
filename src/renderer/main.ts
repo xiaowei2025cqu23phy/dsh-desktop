@@ -623,6 +623,19 @@ function bindDrawerNavigation(): void {
   applyDrawerGroup('general')
 }
 
+let pendingDeviceForApproval: { id: string; label: string; address: string } | null = null
+
+async function showDeviceApproval(device: { id: string; label: string; address: string }): Promise<void> {
+  pendingDeviceForApproval = device
+  $id('da-info').textContent = `设备:${device.label}\n地址:${device.address}\n\n只有你确认的局域网设备才能远程访问电脑,包括任务、文件与审批操作。`
+  $id('device-approve').classList.remove('hidden')
+  // 同时打开设置抽屉并切到服务组,方便查看设备列表。
+  drawerOpen = true
+  $id('drawer').classList.remove('hidden')
+  applyDrawerGroup('service')
+  await renderRemoteDevices()
+}
+
 async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
@@ -1610,13 +1623,38 @@ function bind(): void {
   })
   $id('btn-queue-refresh').addEventListener('click', () => void loadQueue())
   $id('ad-close').addEventListener('click', () => $id('activity-detail').classList.add('hidden'))
+  // 设备审批弹窗。
+  $id('da-close').addEventListener('click', () => $id('device-approve').classList.add('hidden'))
+  $id('da-allow').addEventListener('click', async () => {
+    if (pendingDeviceForApproval === null) return
+    const device = pendingDeviceForApproval
+    pendingDeviceForApproval = null
+    await API.remote.approveDevice(device.id)
+    $id('device-approve').classList.add('hidden')
+    await renderRemoteDevices()
+    S.toast(`已允许设备:${device.label}`, 'ok')
+  })
+  $id('da-reject').addEventListener('click', async () => {
+    if (pendingDeviceForApproval === null) return
+    const device = pendingDeviceForApproval
+    pendingDeviceForApproval = null
+    await API.remote.rejectDevice(device.id)
+    $id('device-approve').classList.add('hidden')
+    await renderRemoteDevices()
+    S.toast(`已拒绝设备:${device.label}`, 'ok')
+  })
+  API.remote.onDevicePending((device) => void showDeviceApproval(device))
   // 弹层背景点击关闭。
   $id('activity-detail').addEventListener('click', (event) => {
     if (event.target === $id('activity-detail')) $id('activity-detail').classList.add('hidden')
   })
+  $id('device-approve').addEventListener('click', (event) => {
+    if (event.target === $id('device-approve')) $id('device-approve').classList.add('hidden')
+  })
   // Esc 关闭抽屉/弹层。
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return
+    if (!$id('device-approve').classList.contains('hidden')) { $id('device-approve').classList.add('hidden'); return }
     if (!$id('activity-detail').classList.contains('hidden')) { $id('activity-detail').classList.add('hidden'); return }
     if (!$id('drawer').classList.contains('hidden')) closeDrawer()
   })

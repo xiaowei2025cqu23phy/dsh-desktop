@@ -1,4 +1,4 @@
-﻿/**
+/**
  * dsh-desktop 入口。
  *
  * 启动参数:
@@ -90,6 +90,14 @@ if (!gotLock) {
       },
     })
     const gateway = new RemoteGateway(config, harness, events, commands)
+    // 新设备请求远程访问:桌面通知 + 通知点击聚焦主窗口并拉起审批。
+    gateway.onPendingDevice = (device) => {
+      notifications.show('approval', '📱 新设备请求远程访问', `${device.label} (${device.address})\n点击查看并批准,或稍后在设置中处理`)
+      const win = BrowserWindow.getAllWindows().find((item) => !item.isDestroyed())
+      if (win !== undefined && !win.isDestroyed()) {
+        win.webContents.send('remote:device-pending', device)
+      }
+    }
     commands.setExportDir(join(app.getPath('userData'), 'exports'))
     qqBot = new QQBotAdapter(config, commands)
     telegramBot = new TelegramBotAdapter(config, commands)
