@@ -1754,8 +1754,9 @@
     var hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''))
     var serverParam = params.get('server') || hashParams.get('server')
     var tokenParam = params.get('token') || hashParams.get('token')
-    if (window.location.hash !== '' && (hashParams.has('token') || hashParams.has('server'))) {
-      history.replaceState(null, '', window.location.pathname + window.location.search)
+    // 读取后立即清除地址栏中的配对参数,避免令牌留在浏览器历史/截图。
+    if ((params.has('server') || params.has('token')) || (hashParams.has('server') || hashParams.has('token'))) {
+      history.replaceState(null, '', window.location.pathname)
     }
     var savedServer = localStorage.getItem('dsh-server')
     var savedToken = localStorage.getItem('dsh-token')
