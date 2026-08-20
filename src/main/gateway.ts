@@ -124,9 +124,10 @@ export class RemoteGateway {
     const addresses = this.lanAddresses()
     const host = addresses[0] ?? '127.0.0.1'
     const config = this.getConfig()
-    // Token 放在 URL fragment:浏览器不会把 fragment 发送给网关,避免进入 HTTP 日志/Referer。
+    // 用查询参数传递:部分扫码应用(如微信)会丢弃 URL fragment,导致参数丢失。
+    // PWA 读取后立即 replaceState 清除地址栏;网关无访问日志,Token 不会落盘。
     const server = `http://${host}:${config.port}`
-    return `${server}/#server=${encodeURIComponent(server)}&token=${encodeURIComponent(config.token)}`
+    return `${server}/?server=${encodeURIComponent(server)}&token=${encodeURIComponent(config.token)}`
   }
 
   /** 二维码 data URL(主进程用 qrcode 生成,渲染进程直接显示)。 */
@@ -154,7 +155,7 @@ export class RemoteGateway {
       const results: Array<{ address: string; url: string; dataUrl: string | null }> = []
       for (const address of addresses.slice(0, 3)) {
         const server = `http://${address}:${config.port}`
-        const url = `${server}/#server=${encodeURIComponent(server)}&token=${encodeURIComponent(config.token)}`
+        const url = `${server}/?server=${encodeURIComponent(server)}&token=${encodeURIComponent(config.token)}`
         try {
           results.push({ address, url, dataUrl: await QRCode.toDataURL(url, { width: 180, margin: 1 }) })
         } catch {
