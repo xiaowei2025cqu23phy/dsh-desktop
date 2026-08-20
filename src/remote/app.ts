@@ -29,7 +29,14 @@
     questionCards: {},    // sessionId -> DOM 元素
     fsPath: '',           // 文件夹浏览当前路径('' = 根列表)
     defaultModel: null,   // { provider, model } 桌面端预设模型(host.describe)
-    deviceId: localStorage.getItem('dsh-device-id') || (function () { var id = crypto.randomUUID(); localStorage.setItem('dsh-device-id', id); return id })(),
+    deviceId: localStorage.getItem('dsh-device-id') || (function () {
+      // crypto.randomUUID 仅在安全上下文(HTTPS/localhost)可用;局域网 HTTP 需降级。
+      var id = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+        ? crypto.randomUUID()
+        : 'dev-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)
+      localStorage.setItem('dsh-device-id', id)
+      return id
+    })(),
     sidebarOpen: false,   // 左侧抽屉开关状态
   }
 
