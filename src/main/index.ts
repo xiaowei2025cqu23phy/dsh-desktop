@@ -24,6 +24,7 @@ import { UpdateChecker } from './updater'
 import { AppTray } from './tray'
 import { registerIpc } from './ipc'
 import { createMainWindow } from './windows'
+import { healProviderSettings, settingsPath } from './settings-heal'
 
 const SCREENSAVER_ARGS = ['/s', '-s', '--screensaver']
 const isScreensaverLaunch = (): boolean =>
@@ -55,6 +56,9 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     const config = new ConfigStore()
+    // 启动即补全模型 provider 缺省配置(只补缺失,不覆盖显式值),避免手动修配置。
+    const heal = healProviderSettings(settingsPath(config.get().harness.dshHome))
+    for (const message of heal.messages) console.log('[settings-heal]', message)
     harness = new HarnessManager(config.get().harness)
     const models = new ModelManager(() => harness.client())
     screensaver = new ScreensaverController(config, harness)

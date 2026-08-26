@@ -7,7 +7,7 @@
  * 可主动推送审批/提问通知;长回复自动分段。命令集见 remote-commands.ts。
  */
 
-import { app } from 'electron'
+import { app, net } from 'electron'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { ConfigStore, QQBotConfig } from './config'
@@ -18,10 +18,12 @@ import type { RemoteCommandProcessor } from './remote-commands'
 /** 单条 QQ 消息长度上限(保守取平台限制以下)。 */
 const MAX_MESSAGE_LENGTH = 1500
 
-/** 主动推送目标(无 msgId)。 */
+/** 推送目标(带 msgId 时 SDK 按「回复该消息」发送)。 */
 interface PushTarget {
   scope: string
   targetId: string
+  /** 源消息 id:流式回复与被动回复需要;主动推送可省略。 */
+  msgId?: string
 }
 
 /** 主动推送窗口:用户交互后 48 小时内可推送。 */
@@ -45,8 +47,8 @@ export class QQBotAdapter {
   private started = false
   /** userId(openid)→ 主动推送目标(登记自最近一次交互)。 */
   private userTargets = new Map<string, { target: PushTarget; ts: number }>()
-  /** 流式对话会话(userId → 状态;QQ 私聊打字机效果)。 */
-  private streamSessions = new Map<string, { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; seq: number; flushing: boolean }>()
+  /** 流式对话会话(userId → 状态;QQ 私聊打字机效果)。closed=true 表示旧回合已收尾,增量需另起会话。 */
+  private streamSessions = new Map<string, { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; msgSeq: number; msgId: string; lastSentText: string; flushing: boolean; closed: boolean }>()
   /** 扫码登录流程状态。 */
   private onboardAbort: AbortController | null = null
   private onboardProgress: OnboardProgress | null = null
@@ -193,13 +195,14 @@ export class QQBotAdapter {
   // ---- 流式对话输出(QQ 私聊打字机) ----
 
   /** 回合文本增量:累积并按节流冲刷到 stream_messages(is_wakeup 主动流式)。 */
-  onChatDelta(channel: string, userId: string, delta: string, target?: { scope: string; targetId: string }): void {
+  onChatDelta(channel: string, userId: string, delta: string, target?: { scope: string; targetId: string; msgId?: string }): void {
     if (channel !== 'qq' || target === undefined || target.scope !== 'c2c') return
     const bot = this.bot
     if (bot === null) return
     let session = this.streamSessions.get(userId)
-    if (session === undefined) {
-      session = { streamMsgId: '', index: 0, buffer: '', timer: null, seq: 1, flushing: false }
+    if (session === undefined || session.closed) {
+      // 旧回合已收尾(正常结束或中断重试):另起一条新流(新 msgSeq)。
+      session = { streamMsgId: '', index: 0, buffer: '', timer: null, msgSeq: nextMsgSeq(), msgId: target.msgId ?? '', lastSentText: '', flushing: false, closed: false }
       this.streamSessions.set(userId, session)
     }
     session.buffer += delta
@@ -215,56 +218,90 @@ export class QQBotAdapter {
   }
 
   /** 回合结束:发送最终内容分片(input_state=10,内容即最终全文)。 */
-  onChatEnd(channel: string, userId: string, target?: { scope: string; targetId: string }): void {
+  onChatEnd(channel: string, userId: string, target?: { scope: string; targetId: string; msgId?: string }): void {
     if (channel !== 'qq' || target === undefined || target.scope !== 'c2c') return
     const bot = this.bot
     if (bot === null) return
     const session = this.streamSessions.get(userId)
     if (session === undefined) return
+    // 立即标记关闭:中断重试场景下新回合的增量会另起新流,不会被拼进本流。
+    session.closed = true
     if (session.timer !== null) {
       clearTimeout(session.timer)
       session.timer = null
     }
     void (async () => {
       await this.flushStream(bot, userId, target, session, true)
-      this.streamSessions.delete(userId)
+      // 只删自己:重试期间可能已创建新会话。
+      if (this.streamSessions.get(userId) === session) this.streamSessions.delete(userId)
     })()
   }
 
+  /**
+   * 冲刷一帧流式内容(官方 /stream_messages 协议)。
+   *
+   * 协议要点(参考 SDK StreamSession 与生产实现):
+   * - msg_seq 整条流固定,index 每次实际请求前递增(网络错误后新请求用连续 index);
+   * - msg_id/event_id 是源用户消息 id,缺失时 QQ 会把每帧当独立消息(旧 bug 的「发两遍」根源);
+   * - 限流(HTTP 429 / QQ err_code 50002)换 index 指数退避重试;
+   * - 失败兜底只补发未显示的后缀,避免整段重复。
+   */
   private async flushStream(
     bot: QQBotLike,
     userId: string,
-    target: { scope: string; targetId: string },
-    session: { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; seq: number; flushing: boolean },
+    target: { scope: string; targetId: string; msgId?: string },
+    session: { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; msgSeq: number; msgId: string; lastSentText: string; flushing: boolean },
     done: boolean,
   ): Promise<void> {
     if (session.flushing) return
     session.flushing = true
     const config = this.getConfig()
     const creds = { appId: config.appId.trim(), clientSecret: config.appSecret.trim() }
-    const body: Record<string, unknown> = {
-      input_mode: 'replace',
-      input_state: done ? 10 : 1,
-      index: session.index,
-      content_type: 'text',
-      content_raw: session.buffer,
-      is_wakeup: true,
-      msg_seq: session.seq++,
-    }
-    if (session.streamMsgId !== '') body.stream_msg_id = session.streamMsgId
-    try {
-      const response = await bot.messageApi.sendC2CStreamMessage(creds, target.targetId, body) as { id?: unknown; stream_msg_id?: unknown }
+    const sendFrame = async (): Promise<unknown> => {
+      const body: Record<string, unknown> = {
+        input_mode: 'replace',
+        input_state: done ? 10 : 1,
+        content_type: 'text',
+        content_raw: session.buffer,
+        event_id: session.msgId,
+        msg_id: session.msgId,
+        msg_seq: session.msgSeq,
+        index: session.index,
+      }
       session.index += 1
+      if (session.streamMsgId !== '') body.stream_msg_id = session.streamMsgId
+      return bot.messageApi.sendC2CStreamMessage(creds, target.targetId, body)
+    }
+    try {
+      let response: unknown
+      let attempt = 0
+      for (;;) {
+        try {
+          response = await sendFrame()
+          break
+        } catch (error) {
+          if (attempt < 3 && isStreamRateLimit(error)) {
+            attempt += 1
+            await sleep(1000 * 2 ** (attempt - 1))
+            continue
+          }
+          throw error
+        }
+      }
+      const resp = response as { id?: unknown; stream_msg_id?: unknown }
       // 服务端返回的流 ID 在响应 body 的 id 字段(参考 SDK StreamSession 实现)。
-      const streamId = typeof response.id === 'string' ? response.id : response.stream_msg_id
+      const streamId = typeof resp.id === 'string' ? resp.id : resp.stream_msg_id
       if (typeof streamId === 'string') session.streamMsgId = streamId
+      session.lastSentText = session.buffer
       if (done) session.buffer = ''
     } catch (error) {
-      console.error('[qq-bot] 流式发送失败(回合结束整段兜底):', error)
-      this.streamSessions.delete(userId)
-      // 仅首片失败才兜底整段(避免已流式显示后又补发全文造成重复)。
-      if (session.buffer !== '' && session.index === 0) {
-        await bot.sendText(target, session.buffer.slice(0, MAX_MESSAGE_LENGTH)).catch(() => {})
+      console.error('[qq-bot] 流式发送失败:', error)
+      // 只删自己:中断重试期间可能已创建新会话。
+      if (this.streamSessions.get(userId) === session) this.streamSessions.delete(userId)
+      // 兜底:只补发尚未显示的后缀(已显示前缀保留在流式消息里),既避免整段重复又防止截断。
+      const tail = session.buffer.slice(session.lastSentText.length)
+      for (let index = 0; index < tail.length; index += MAX_MESSAGE_LENGTH) {
+        await bot.sendText(target, tail.slice(index, index + MAX_MESSAGE_LENGTH)).catch(() => {})
       }
     } finally {
       session.flushing = false
@@ -454,7 +491,8 @@ export class QQBotAdapter {
     }
     if (url === '') return undefined
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(15000) })
+      // 图片在 QQ CDN 上,主进程全局 fetch 不走系统代理会失败,改用 net.fetch。
+      const response = await net.fetch(url, { signal: AbortSignal.timeout(15000) })
       if (!response.ok) return undefined
       const buf = Buffer.from(await response.arrayBuffer())
       if (buf.length > 10 * 1024 * 1024) return undefined
@@ -467,12 +505,14 @@ export class QQBotAdapter {
     }
   }
 
-  /** 从 replyTarget 提取主动推送目标(群=群 id,私聊=用户 openid;去掉 msgId)。 */
-  private pushTargetOf(replyTarget: unknown): { scope: string; targetId: string } | undefined {
+  /** 从 replyTarget 提取主动推送目标(群=群 id,私聊=用户 openid;去掉 msgId 之外的字段)。 */
+  private pushTargetOf(replyTarget: unknown): { scope: string; targetId: string; msgId?: string } | undefined {
     if (replyTarget === null || typeof replyTarget !== 'object') return undefined
-    const target = replyTarget as { scope?: unknown; targetId?: unknown }
+    const target = replyTarget as { scope?: unknown; targetId?: unknown; msgId?: unknown }
     if (typeof target.scope !== 'string' || typeof target.targetId !== 'string') return undefined
-    return { scope: target.scope, targetId: target.targetId }
+    const result: { scope: string; targetId: string; msgId?: string } = { scope: target.scope, targetId: target.targetId }
+    if (typeof target.msgId === 'string' && target.msgId !== '') result.msgId = target.msgId
+    return result
   }
 
   /** 登记主动推送目标(去掉 msgId;群消息按群登记,私聊按 openid 登记)。 */
@@ -546,6 +586,19 @@ function buildApprovalKeyboard(sessionId: string, approvalId: string): unknown {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** 流式会话的消息序列号:一条回复(一次流)内固定,取 0..65535 伪随机即可(与 SDK getNextMsgSeq 同域)。 */
+function nextMsgSeq(): number {
+  return Math.floor(Math.random() * 65536)
+}
+
+/** 是否为 QQ 限流错误(HTTP 429 / err_code 50002):流式帧可换连续 index 后重试。 */
+function isStreamRateLimit(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error)
+  if (msg.includes('rate limit')) return true
+  const code = (error as { code?: unknown }).code ?? (error as { err_code?: unknown }).err_code
+  return code === 429 || code === 50002
 }
 
 /** 提问(单选)内联键盘:每个选项一个按钮,data 供点击回传识别。 */

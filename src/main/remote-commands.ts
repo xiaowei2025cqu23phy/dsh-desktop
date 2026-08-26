@@ -24,6 +24,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
+/** turn/end 失败信息:提取错误消息与 TRANSPORT 中断标记;非失败回合返回 null。 */
+function turnEndFailure(ev: Record<string, unknown>): { message: string; isTransport: boolean; failed: boolean } | null {
+  const data = isRecord(ev.data) ? ev.data : {}
+  const reason = isRecord(data.reason) ? data.reason : {}
+  const detail = reason.error ?? reason.failure
+  const message = typeof detail === 'object' && detail !== null && typeof (detail as { message?: unknown }).message === 'string'
+    ? (detail as { message: string }).message
+    : typeof reason.message === 'string'
+      ? reason.message
+      : ''
+  const failed = reason.kind === 'error'
+  const isTransport = failed && (reason.code === 'TRANSPORT' || (message !== '' && message.includes('finish_reason')))
+  return failed ? { message, isTransport, failed } : null
+}
+
 /** 对话模式上下文。 */
 interface ChatContext {
   sessionId: string
@@ -34,8 +49,8 @@ interface ChatContext {
 interface SessionOwner {
   channel: string
   userId: string
-  /** 主动推送目标(群消息=群,私聊=用户);缺失时按 userId 回退。 */
-  pushTarget?: { scope: string; targetId: string }
+  /** 主动推送目标(群消息=群,私聊=用户;msgId 存在时按「回复该消息」发送);缺失时按 userId 回退。 */
+  pushTarget?: { scope: string; targetId: string; msgId?: string }
   /** 会话类型:task=任务(完成/失败汇报),chat=对话(不推送回合结束汇报)。 */
   kind: 'task' | 'chat'
 }
@@ -71,8 +86,8 @@ export interface AskUserQuestionItem {
 
 /** 流式输出回调(QQ 私聊对话的打字机效果;回合文本增量实时下发)。 */
 export interface ChatStreamSink {
-  onDelta(channel: string, userId: string, delta: string, target?: { scope: string; targetId: string }): void
-  onEnd(channel: string, userId: string, target?: { scope: string; targetId: string }): void
+  onDelta(channel: string, userId: string, delta: string, target?: { scope: string; targetId: string; msgId?: string }): void
+  onEnd(channel: string, userId: string, target?: { scope: string; targetId: string; msgId?: string }): void
 }
 
 /** 主动推送函数(由宿主注入;失败时靠回复附加提示兜底)。 */export type PushFn = (
@@ -89,8 +104,8 @@ export interface ChatStreamSink {
     /** 单选单问题批次:可渲染选项按钮的问题。 */
     question: { id: string; question: string; options: string[] }
   },
-  /** 推送目标(群=群 id;私聊=用户 openid);缺失时通道按 userId 回退。 */
-  target?: { scope: string; targetId: string },
+  /** 推送目标(群=群 id;私聊=用户 openid;msgId 存在时按「回复该消息」发送);缺失时通道按 userId 回退。 */
+  target?: { scope: string; targetId: string; msgId?: string },
 ) => void
 
 export class RemoteCommandProcessor {
@@ -115,6 +130,8 @@ export class RemoteCommandProcessor {
   private sessionModels = new Map<string, { provider: string; model: string }>()
   /** 对话会话等待回复推送:发送消息后注册,回合结束把 agent 回复推给发起者。 */
   private chatReplies = new Map<string, { channel: string; userId: string; pushTarget?: { scope: string; targetId: string }; ts: number }>()
+  /** 对话会话的最近一次提示内容(TRANSPORT 流中断时重放;每会话最多重试一次)。 */
+  private chatPrompts = new Map<string, { parts: Array<{ type: string; text?: string; mediaType?: string; data?: string }>; ts: number }>()
   /** 流式输出通道(QQ 私聊打字机效果);缺失时回合计束后整段推送。 */
   private chatStream: ChatStreamSink | null = null
   /** 非流式通道的回合文本缓冲(整段推送用)。 */
@@ -1560,6 +1577,12 @@ export class RemoteCommandProcessor {
         mode: 'queue',
         content: parts,
       })
+      // 记录提示内容:TRANSPORT 流中断时自动重试(重放)用。
+      this.chatPrompts.set(ctx.sessionId, { parts, ts: Date.now() })
+      if (this.chatPrompts.size > 64) {
+        const oldest = this.chatPrompts.keys().next().value as string | undefined
+        if (oldest !== undefined) this.chatPrompts.delete(oldest)
+      }
       // 注册回复推送:回合结束后把 agent 的回复主动推给发起者(对话体验)。
       // 重启后恢复的对话会话可能没有归属记录,这里补登记。
       if (owner === undefined) {
@@ -1693,21 +1716,17 @@ export class RemoteCommandProcessor {
     }
     if (owner === undefined) return
     if (owner.kind === 'chat') {
-      this.handleChatEvent(sessionId, owner, payload.event)
+      // TRANSPORT 流中断时先自动重试;否则按常规收尾(流式定稿/整段推送)。
+      if (!this.handleChatTransport(sessionId, owner, payload.event)) {
+        this.handleChatEvent(sessionId, owner, payload.event)
+      }
       return
     }
     if (payload.event.type !== 'turn/end') return
-    const data = isRecord(payload.event.data) ? payload.event.data : {}
-    const reason = isRecord(data.reason) ? data.reason : {}
-    const detail = reason.error ?? reason.failure
-    const message = typeof detail === 'object' && detail !== null && typeof (detail as { message?: unknown }).message === 'string'
-      ? (detail as { message: string }).message
-      : typeof reason.message === 'string'
-        ? reason.message
-        : ''
-    const failed = reason.kind === 'error'
+    const failure = turnEndFailure(payload.event)
+    if (failure === null) return
+    const { message, isTransport, failed } = failure
     // TRANSPORT 中断(模型流错误,如中转站读取超时/流式通道不稳):同会话自动重试一次。
-    const isTransport = failed && (reason.code === 'TRANSPORT' || (message !== '' && message.includes('finish_reason')))
     if (isTransport && !this.retriedTransports.has(sessionId)) {
       this.retriedTransports.add(sessionId)
       const description = this.taskDescriptions.get(sessionId)
@@ -1785,6 +1804,41 @@ export class RemoteCommandProcessor {
       }
       this.pushChatReply(sessionId)
     }
+  }
+
+  /** 对话回合的 TRANSPORT 流中断:定稿旧流 → 重放上次提示词(每会话最多一次)。
+   *  返回 true 表示已重试,调用方跳过本次收尾(避免旧流追加/重复推送)。 */
+  private handleChatTransport(sessionId: string, owner: SessionOwner, ev: Record<string, unknown>): boolean {
+    const failure = turnEndFailure(ev)
+    if (failure === null || !failure.isTransport) return false
+    if (this.retriedTransports.has(sessionId)) return false
+    const prompt = this.chatPrompts.get(sessionId)
+    if (prompt === undefined) return false
+    this.retriedTransports.add(sessionId)
+    // 定稿旧流:已显示的部分不再追加,重试产生新流(QQ 侧为新消息)。
+    const pending = this.chatReplies.get(sessionId)
+    if (pending !== undefined && this.chatStream !== null) {
+      this.chatStream.onEnd(owner.channel, pending.userId, owner.pushTarget)
+    }
+    this.chatReplyBuffer.delete(sessionId)
+    this.chatReplies.set(sessionId, {
+      channel: owner.channel,
+      userId: owner.userId,
+      pushTarget: owner.pushTarget,
+      ts: Date.now(),
+    })
+    if (this.push !== null) {
+      this.push(owner.channel, owner.userId, '⚠️ 模型流中断,正在自动重试一次…(仍失败常见于中转站:上游读取超时/流式不稳/风控截断)', undefined, owner.pushTarget)
+    }
+    this.appendAudit({ time: Date.now(), type: 'chat.retry', sessionId, detail: '模型流中断,自动重试一次' })
+    void this.harness.client().rpc('session.prompt', {
+      sessionId,
+      mode: 'queue',
+      content: prompt.parts,
+    }).catch(() => {
+      this.appendAudit({ time: Date.now(), type: 'chat.retry-failed', sessionId, detail: 'TRANSPORT 重试重放失败' })
+    })
+    return true
   }
 
   /** 对话回合结束:推送给发起者(非流式通道);优先用回合缓冲,兜底拉历史。 */

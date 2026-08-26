@@ -101,6 +101,8 @@ export class HarnessManager extends EventEmitter {
   }
 
   private recheckTimer: ReturnType<typeof setTimeout> | null = null
+  /** recheck 里连续看到「dsh 页面但 RPC 未就绪」的次数(上限后按不可达处理)。 */
+  private dshWaitCount = 0
 
   /**
    * 事件流断线时调用:重新探测 harness。外部实例已死时按 autoStart 托管拉起,
@@ -115,7 +117,19 @@ export class HarnessManager extends EventEmitter {
       void (async () => {
         const ok = await this.client().probe(5000)
         if (this.stopRequested) return
-        if (ok) return // 外部实例仍在(短暂断线),mux 会自动重连。
+        if (ok) {
+          this.dshWaitCount = 0
+          return // 外部实例仍在(短暂断线),mux 会自动重连。
+        }
+        // 端口上还有 dsh 页面 = 外部实例正在重启(RPC 未就绪),等它自己恢复,不要抢占端口。
+        const occupied = await this.portProbe()
+        if (this.stopRequested) return
+        if (occupied === 'dsh' && this.dshWaitCount < 10) {
+          this.dshWaitCount += 1
+          void this.recheck()
+          return
+        }
+        this.dshWaitCount = 0
         console.log('[harness] 外部 harness 不可达,尝试托管接管…')
         if (this.config.mode === 'external') {
           this.state = 'error'
@@ -138,45 +152,60 @@ export class HarnessManager extends EventEmitter {
     if (this.restartTimer !== null) { clearTimeout(this.restartTimer); this.restartTimer = null }
   }
 
-  /** 探测已运行实例;无则按 autoStart 决定是否托管启动。 */
+  /**
+   * 探测已运行实例;无则按 autoStart 决定是否托管启动。
+   *
+   * 启动窗口:harness 的 HTTP 服务器先监听、RPC 处理器后注册,期间会
+   * 「页面可访问但 RPC 探测失败」。遇到 dsh 页面时按 2s 间隔重试
+   * (最多 30s),避免一次探测失败就永久报错。
+   */
   private async probeAndAdopt(): Promise<void> {
     if (this.stopRequested || this.state === 'stopped') return
     this.state = 'probing'
     this.emit('status', this.status())
     const client = this.client()
-    const ok = await client.probe()
-    if (this.stopRequested) return
-    if (ok) {
-      this.state = 'external'
-      this.error = null
-      this.emit('status', this.status())
+    for (let attempt = 0; attempt < 15 && !this.stopRequested; attempt++) {
+      const ok = await client.probe()
+      if (this.stopRequested) return
+      if (ok) {
+        this.state = 'external'
+        this.error = null
+        this.emit('status', this.status())
+        return
+      }
+      const occupied = await this.portProbe()
+      if (this.stopRequested) return
+      if (occupied === 'other') {
+        this.state = 'error'
+        this.error = `端口 ${this.config.port} 已被其他程序占用,且不是 dsh 服务。请在设置中更换端口。`
+        this.emit('status', this.status())
+        return
+      }
+      if (occupied === 'dsh') {
+        // RPC 尚未就绪(启动窗口):继续等待。
+        if (attempt >= 14) {
+          this.state = 'error'
+          this.error = `端口 ${this.config.port} 上检测到 dsh 服务,但 RPC 探测失败(30 秒未就绪)。请查看服务日志。`
+          this.emit('status', this.status())
+          return
+        }
+        await sleep(2000)
+        continue
+      }
+      // 端口无服务:按配置托管启动或进入空闲。
+      if (this.config.mode === 'external') {
+        this.state = 'error'
+        this.error = `无法连接到 ${this.baseUrl()},请确认 harness 已启动`
+        this.emit('status', this.status())
+        return
+      }
+      if (this.config.autoStart) {
+        this.spawnManaged()
+      } else {
+        this.state = 'idle'
+        this.emit('status', this.status())
+      }
       return
-    }
-    if (this.config.mode === 'external') {
-      this.state = 'error'
-      this.error = `无法连接到 ${this.baseUrl()},请确认 harness 已启动`
-      this.emit('status', this.status())
-      return
-    }
-    // 端口被占用:看根页面是否带 dsh 标记,区分"其他程序占用"与"dsh 但 RPC 异常"。
-    const occupied = await this.portProbe()
-    if (occupied === 'other') {
-      this.state = 'error'
-      this.error = `端口 ${this.config.port} 已被其他程序占用,且不是 dsh 服务。请在设置中更换端口。`
-      this.emit('status', this.status())
-      return
-    }
-    if (occupied === 'dsh') {
-      this.state = 'error'
-      this.error = `端口 ${this.config.port} 上检测到 dsh 服务,但 RPC 探测失败,请查看服务日志。`
-      this.emit('status', this.status())
-      return
-    }
-    if (this.config.autoStart) {
-      this.spawnManaged()
-    } else {
-      this.state = 'idle'
-      this.emit('status', this.status())
     }
   }
 

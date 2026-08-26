@@ -3,11 +3,12 @@
  * AES-256-GCM 解密得到 AppID/AppSecret。
  *
  * 协议参考 tencent-connect/qqbot-agent-sdk 的 start_onboard(create_bind_task /
- * poll_bind_result),仅用 node:crypto 与 fetch,无额外依赖。
+ * poll_bind_result),仅用 node:crypto 与 Electron net.fetch,无额外依赖。
  */
 
 import { createDecipheriv, randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
+import { net } from 'electron'
 
 /** qrcode 包(CJS,主进程直接 require 生成二维码 dataURL)。 */
 const qrcode = createRequire(__filename)('qrcode') as { toDataURL: (text: string, opts?: unknown) => Promise<string> }
@@ -56,7 +57,9 @@ function decryptSecret(encryptedBase64: string, keyBase64: string): string {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`https://${PORTAL_HOST}${path}`, {
+  // 主进程全局 fetch(undici)不走系统代理,墙内直连 q.qq.com 必失败;
+  // net.fetch 走 Chromium 网络栈,自动跟随系统代理(如 Clash 127.0.0.1:7897)。
+  const response = await net.fetch(`https://${PORTAL_HOST}${path}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -98,49 +101,64 @@ export async function startOnboard(
   onProgress: (progress: OnboardProgress) => void,
   signal: AbortSignal,
 ): Promise<void> {
-  const aesKey = generateBindKey()
-  try {
-    const data = await postJson<BindTaskData>(ONBOARD_CREATE_PATH, { key: aesKey })
-    const taskId = data.task_id
-    if (typeof taskId !== 'string' || taskId === '') throw new Error('创建绑定任务失败:缺少 task_id')
-    const qrUrl = QR_URL_TEMPLATE.replace('{task_id}', encodeURIComponent(taskId))
-    const qrDataUrl = await qrcode.toDataURL(qrUrl, { width: 240, margin: 1 })
-    onQr(qrDataUrl)
+  // 二维码过期后自动重建新任务并刷新二维码,直到完成/取消/网络错误。
+  for (;;) {
+    if (signal.aborted) return
+    const aesKey = generateBindKey()
+    try {
+      const data = await postJson<BindTaskData>(ONBOARD_CREATE_PATH, { key: aesKey })
+      const taskId = data.task_id
+      if (typeof taskId !== 'string' || taskId === '') throw new Error('创建绑定任务失败:缺少 task_id')
+      const qrUrl = QR_URL_TEMPLATE.replace('{task_id}', encodeURIComponent(taskId))
+      const qrDataUrl = await qrcode.toDataURL(qrUrl, { width: 240, margin: 1 })
+      onQr(qrDataUrl)
 
-    const deadline = Date.now() + POLL_TIMEOUT_MS
-    for (;;) {
-      if (signal.aborted) return
-      const poll = await postJson<PollResultData>(ONBOARD_POLL_PATH, { task_id: taskId })
-      if (poll.status === 2) {
-        const appId = typeof poll.bot_appid === 'string' ? poll.bot_appid : ''
-        const appSecret = typeof poll.bot_encrypt_secret === 'string'
-          ? decryptSecret(poll.bot_encrypt_secret, aesKey)
-          : ''
-        onProgress({
-          status: 'completed',
-          qrDataUrl,
-          appId,
-          appSecret,
-          userOpenid: typeof poll.user_openid === 'string' ? poll.user_openid : undefined,
-        })
-        return
+      const deadline = Date.now() + POLL_TIMEOUT_MS
+      let refreshed = false
+      for (;;) {
+        if (signal.aborted) return
+        const poll = await postJson<PollResultData>(ONBOARD_POLL_PATH, { task_id: taskId })
+        if (poll.status === 2) {
+          const appId = typeof poll.bot_appid === 'string' ? poll.bot_appid : ''
+          const appSecret = typeof poll.bot_encrypt_secret === 'string'
+            ? decryptSecret(poll.bot_encrypt_secret, aesKey)
+            : ''
+          onProgress({
+            status: 'completed',
+            qrDataUrl,
+            appId,
+            appSecret,
+            userOpenid: typeof poll.user_openid === 'string' ? poll.user_openid : undefined,
+          })
+          return
+        }
+        if (poll.status === 3) {
+          // 过期:通知 UI 一次,然后自动刷新新二维码。
+          onProgress({ status: 'expired', qrDataUrl, error: '二维码已过期,正在自动刷新…' })
+          refreshed = true
+          break
+        }
+        if (Date.now() > deadline) {
+          onProgress({ status: 'expired', qrDataUrl, error: '扫码超时,已自动刷新' })
+          refreshed = true
+          break
+        }
+        await sleep(POLL_INTERVAL_MS)
       }
-      if (poll.status === 3) {
-        onProgress({ status: 'expired', qrDataUrl })
-        return
-      }
-      if (Date.now() > deadline) {
-        onProgress({ status: 'error', qrDataUrl, error: '扫码超时(5 分钟),请重新生成' })
-        return
-      }
-      await sleep(POLL_INTERVAL_MS)
+      if (refreshed) await sleep(1200) // 刷新间隔,避免刷爆接口
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // 网络类错误(直连被断/代理不通)与业务错误分开提示,方便用户排查。
+      const isNetwork = /fetch|network|ERR_|ECONN|ETIMEDOUT|socket|proxy/i.test(message)
+      onProgress({
+        status: 'error',
+        qrDataUrl: null,
+        error: isNetwork
+          ? `无法连接 q.qq.com(${message})\n请检查:网络能否直连腾讯(校园网/运营商常屏蔽)、代理规则是否把 qq.com 强制直连、或换个网络再试`
+          : message,
+      })
+      return
     }
-  } catch (error) {
-    onProgress({
-      status: 'error',
-      qrDataUrl: null,
-      error: error instanceof Error ? error.message : String(error),
-    })
   }
 }
 

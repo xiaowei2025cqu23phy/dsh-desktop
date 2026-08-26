@@ -54,6 +54,7 @@
   },
   "dependencies": {
     "@tencent-connect/qqbot-nodejs": "^1.0.4",
+    "js-yaml": "^5.4.1",
     "qrcode": "^1.5.4"
   }
 }

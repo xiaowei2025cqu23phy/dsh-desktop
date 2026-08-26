@@ -2,10 +2,11 @@
  * Telegram 机器人通道:通过 Bot API 长轮询接收私聊消息,
  * 转发给统一命令处理器(RemoteCommandProcessor)。
  *
- * 零依赖(仅用全局 fetch);支持主动推送(任务完成通知等,后续可扩展)。
+ * 零依赖(仅用 Electron net.fetch,自动跟随系统代理);支持主动推送(任务完成通知等,后续可扩展)。
  * 配置:enabled、token(BotFather 获取)、allowedUserIds(逗号分隔,空=允许所有)。
  */
 
+import { net } from 'electron'
 import type { ConfigStore } from './config'
 import type { RemoteCommandProcessor } from './remote-commands'
 
@@ -84,10 +85,11 @@ export class TelegramBotAdapter {
       const url = `https://api.telegram.org/bot${config.token.trim()}/sendMessage`
       const body = { chat_id: Number(chatId), text: text.slice(index, index + 1500) }
       try {
-        await fetch(url, {
+        await net.fetch(url, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
+          signal: AbortSignal.timeout(20000),
         })
       } catch (error) {
         console.error('[telegram] 推送失败:', error)
@@ -114,7 +116,7 @@ export class TelegramBotAdapter {
     }
     try {
       const url = `https://api.telegram.org/bot${token}/getUpdates?timeout=25&offset=${this.offset}`
-      const response = await fetch(url)
+      const response = await net.fetch(url, { signal: AbortSignal.timeout(40000) })
       if (!response.ok) {
         const text = await response.text()
         if (/unauthorized|token/i.test(text)) {
