@@ -202,6 +202,10 @@
           <label for="cfg-dshhome">DSH_HOME(留空用默认)</label>
           <input id="cfg-dshhome" type="text" placeholder="默认 $DSH_HOME 或 ~/.dsh" />
         </div>
+        <div class="field">
+          <label for="cfg-cwd">工作目录(agent 默认落点,留空用主目录)</label>
+          <input id="cfg-cwd" type="text" placeholder="默认用户主目录,避免写入应用目录" />
+        </div>
         <div class="field-row">
           <button id="btn-restart" class="btn">重启服务</button>
           <button id="btn-open-settings" class="btn">打开 settings.yaml</button>

@@ -27,6 +27,7 @@ interface HarnessConfigView {
   restartOnCrash: boolean
   stopOnQuit: boolean
   dshHome: string | null
+  cwd: string | null
 }
 
 const GATEWAY_PRESETS: Array<{ label: string; baseURL: string; api: string }> = [
@@ -680,6 +681,7 @@ async function loadHarnessConfig(): Promise<void> {
     input('cfg-port').value = String(config.port)
     input('cfg-command').value = config.command
     input('cfg-dshhome').value = config.dshHome ?? ''
+    input('cfg-cwd').value = config.cwd ?? ''
   } catch (error) {
     S.toast(`读取服务配置失败:${String(error)}`, 'error')
   }
@@ -693,6 +695,7 @@ async function saveHarnessConfig(): Promise<void> {
       port: Math.max(1, Math.min(65535, Number(input('cfg-port').value) || 3080)),
       command: input('cfg-command').value.trim(),
       dshHome: input('cfg-dshhome').value.trim() || null,
+      cwd: input('cfg-cwd').value.trim() || null,
     }
     await API.harness.setConfig(patch)
     S.toast('服务配置已保存', 'ok')

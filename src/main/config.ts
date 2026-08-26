@@ -5,6 +5,7 @@
 
 import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { LocalDb } from './db'
 
@@ -25,6 +26,8 @@ export interface HarnessConfig {
   stopOnQuit: boolean
   /** 可选的 DSH_HOME 环境变量覆盖。 */
   dshHome: string | null
+  /** 托管进程的工作目录(agent 无工作区任务的默认落点);空 = 主目录下的 dsh-workspace。 */
+  cwd: string | null
 }
 
 export interface ScreensaverConfig {
@@ -257,6 +260,8 @@ const DEFAULTS: AppConfig = {
     restartOnCrash: true,
     stopOnQuit: true,
     dshHome: null,
+    // 默认工作目录:独立目录,避免 agent 把产物写进应用安装目录或主目录。
+    cwd: join(homedir(), 'dsh-workspace'),
   },
   screensaver: {
     enabled: false,

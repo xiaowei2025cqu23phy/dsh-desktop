@@ -3,6 +3,8 @@
  */
 
 import { spawn, execFile } from 'node:child_process'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { HarnessClient } from './client'
 import type { HarnessConfig } from './config'
@@ -234,11 +236,15 @@ export class HarnessManager extends EventEmitter {
     const { command, args } = splitCommand(this.config.command.replace('{port}', String(this.config.port)))
     const env: NodeJS.ProcessEnv = { ...process.env }
     if (this.config.dshHome) env.DSH_HOME = this.config.dshHome
+    // 工作目录:配置了用配置值,否则用主目录下的 dsh-workspace —— 避免 agent
+    // 无工作区任务把产物写进应用安装目录(如 dsh-desktop 仓库)。
+    const cwd = this.config.cwd && this.config.cwd.trim() !== '' ? this.config.cwd : join(homedir(), 'dsh-workspace')
     // Windows 上 npx/pnpm/yarn 等是 .cmd/.bat 批处理,直接 spawn 会抛 ENOENT/EINVAL,
     // 导致托管服务永远起不来。Windows 下经 shell(cmd.exe)启动,由 cmd 负责批处理解析。
     const isWindows = process.platform === 'win32'
     const child = spawn(command, args, {
       env,
+      cwd,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: isWindows,
