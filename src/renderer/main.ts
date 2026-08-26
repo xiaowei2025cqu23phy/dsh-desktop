@@ -45,6 +45,7 @@ let lastBaseUrl = ''
   let drawerOpen = false
   let logsTimer: ReturnType<typeof setInterval> | null = null
   let webviewWallpaperKey: string | null = null
+  let webviewFailed = false
 
 function harnessView(): WebviewElement {
   return document.getElementById('harness-view') as unknown as WebviewElement
@@ -143,6 +144,11 @@ async function refreshStatus(): Promise<void> {
   if ((status.state === 'running' || status.state === 'external') && modelSelect.disabled) {
     modelSelect.disabled = false
     void loadModels()
+  }
+  // harness 就绪后,若内嵌页面之前加载失败(启动期连接被拒),自动重载。
+  if ((status.state === 'running' || status.state === 'external') && webviewFailed) {
+    webviewFailed = false
+    view.reload()
   }
   if (status.state === 'error') {
     const text = $id('view-error-text')
@@ -1477,11 +1483,13 @@ async function loadUpdateInfo(): Promise<void> {
 function bind(): void {
   const view = harnessView()
   view.addEventListener('did-fail-load', (event) => {
+    webviewFailed = true
     const details = event as unknown as { errorCode?: number; errorDescription?: string }
     $id('view-error-text').textContent = `加载失败(${String(details.errorCode)}):${details.errorDescription ?? '未知错误'}`
     $id('view-error').classList.remove('hidden')
   })
   view.addEventListener('dom-ready', () => {
+    webviewFailed = false
     $id('view-error').classList.add('hidden')
     void syncWebviewWallpaper()
   })
@@ -1762,17 +1770,23 @@ function bind(): void {
     void API.qq.onboardStatus().then((progress) => {
       if (progress === null) return
       const statusEl = $id('qq-onboard-status')
+      const qrImg = $id('qq-onboard-qr') as HTMLImageElement
       if (progress.status === 'pending') {
-        statusEl.textContent = '请用手机 QQ 扫描二维码,并在手机端确认绑定'
+        // 二维码更新(过期自动刷新):重新赋值图片并提示。
+        if (progress.qrDataUrl !== null && progress.qrDataUrl !== qrImg.src) {
+          qrImg.src = progress.qrDataUrl
+          statusEl.textContent = qrImg.src === '' ? '正在生成二维码…' : '请用手机 QQ 扫描二维码,并在手机端确认绑定'
+        } else if (statusEl.textContent === '') {
+          statusEl.textContent = '请用手机 QQ 扫描二维码,并在手机端确认绑定'
+        }
       } else if (progress.status === 'completed') {
         clearOnboardTimer()
         showOnboard(false)
         statusEl.textContent = `✓ 绑定成功(扫码者 ${progress.userOpenid ?? '?'}),凭据已自动填入并重启机器人`
         void loadQQConfig()
       } else if (progress.status === 'expired') {
-        clearOnboardTimer()
-        showOnboard(false)
-        statusEl.textContent = '二维码已过期,可重新扫码'
+        // 过期:主进程会自动刷新新码,这里提示并继续轮询。
+        statusEl.textContent = progress.error ?? '二维码已过期,正在自动刷新…'
       } else {
         clearOnboardTimer()
         showOnboard(false)
