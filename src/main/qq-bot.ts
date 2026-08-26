@@ -15,8 +15,8 @@ import { ACTION_BUTTON_PREFIX, APPROVE_BUTTON_PREFIX, findEventGroupOpenid, find
 import { startOnboard, type OnboardProgress } from './qq-onboard'
 import type { RemoteCommandProcessor } from './remote-commands'
 
-/** 单条 QQ 消息长度上限(保守取平台限制以下)。 */
-const MAX_MESSAGE_LENGTH = 1500
+/** 单条 QQ 消息长度上限(平台限制约 5000 字符,保守取 3800 减少长回复碎片)。 */
+const MAX_MESSAGE_LENGTH = 3800
 
 /** 推送目标(带 msgId 时 SDK 按「回复该消息」发送)。 */
 interface PushTarget {
@@ -261,7 +261,8 @@ export class QQBotAdapter {
       const body: Record<string, unknown> = {
         input_mode: 'replace',
         input_state: done ? 10 : 1,
-        content_type: 'text',
+        // 官方流式接口只接受 markdown;text 会被拒绝导致每帧都失败重发,是「发多遍」的根源。
+        content_type: 'markdown',
         content_raw: session.buffer,
         event_id: session.msgId,
         msg_id: session.msgId,
