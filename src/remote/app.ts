@@ -54,6 +54,38 @@
       }
       return parts.join('\n')
     },
+    /** 从内容块提取文本与图片(image 附件或内嵌 base64)。 */
+    blocksParts: function (blocks) {
+      var text = ''
+      var images = []
+      if (Array.isArray(blocks)) {
+        for (var i = 0; i < blocks.length; i++) {
+          var b = blocks[i]
+          if (!S.isRecord(b)) continue
+          var innerText = ''
+          if (typeof b.text === 'string') innerText = b.text
+          else if (typeof b.content === 'string') innerText = b.content
+          else if (Array.isArray(b.content)) {
+            var inner = S.blocksParts(b.content)
+            innerText = inner.text
+            for (var k = 0; k < inner.images.length; k++) images.push(inner.images[k])
+          }
+          if (innerText !== '') text += (text === '' ? '' : '\n') + innerText
+          if (b.type === 'image') {
+            if (S.isRecord(b.attachment) && typeof b.attachment.attachmentId === 'string') {
+              images.push({
+                attachmentId: b.attachment.attachmentId,
+                mediaType: typeof b.attachment.mediaType === 'string' ? b.attachment.mediaType : 'image/png',
+                name: typeof b.attachment.name === 'string' ? b.attachment.name : '',
+              })
+            } else if (typeof b.data === 'string' && b.data !== '') {
+              images.push({ dataUrl: b.data.indexOf('data:') === 0 ? b.data : 'data:image/png;base64,' + b.data })
+            }
+          }
+        }
+      }
+      return { text: text, images: images }
+    },
     escapeHtml: function (t) {
       return String(t)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -156,14 +188,54 @@
     hideEmpty(false)
   }
 
-  function appendMessage(kind, text) {
+  /** 把图片(附件 id 或内嵌 dataURL)渲染进消息元素。 */
+  function renderImagesInto(el, images, stream) {
+    for (var i = 0; i < images.length; i++) {
+      (function (img) {
+        var box = document.createElement('div')
+        box.className = 'msg-image'
+        var im = document.createElement('img')
+        im.alt = img.name || '图片'
+        im.loading = 'lazy'
+        im.decoding = 'async'
+        if (img.dataUrl) {
+          im.src = img.dataUrl
+          box.appendChild(im)
+          el.appendChild(box)
+          stream.scrollTop = stream.scrollHeight
+          return
+        }
+        if (!img.attachmentId) return
+        apiRpc('session.attachment', { attachmentId: img.attachmentId }).then(function (res) {
+          if (res && typeof res.data === 'string' && res.data !== '') {
+            im.src = 'data:' + (img.mediaType || 'image/png') + ';base64,' + res.data
+            box.appendChild(im)
+          } else {
+            box.textContent = '图片:' + (img.name || img.attachmentId) + '(空内容)'
+          }
+          el.appendChild(box)
+          stream.scrollTop = stream.scrollHeight
+        }).catch(function () {
+          box.textContent = '图片:' + (img.name || img.attachmentId) + '(加载失败)'
+          el.appendChild(box)
+        })
+      })(images[i])
+    }
+  }
+
+  function appendMessage(kind, text, images) {
     var stream = $('chat-stream')
     hideEmpty(true)
     var el = document.createElement('div')
     el.className = 'msg msg-' + kind
-    el.appendChild(document.createTextNode(text))
+    if (text !== '') el.appendChild(document.createTextNode(text))
     stream.appendChild(el)
-    state.msgLog.push({ kind: kind, text: text })
+    var entry: any = { kind: kind, text: text }
+    if (images && images.length > 0) {
+      entry.images = images
+      renderImagesInto(el, images, stream)
+    }
+    state.msgLog.push(entry)
     stream.scrollTop = stream.scrollHeight
     return el
   }
@@ -207,7 +279,7 @@
   function appendDelta(delta) {
     var last = state.msgLog[state.msgLog.length - 1]
     if (!last || last.kind !== 'assistant') {
-      appendMessage('assistant', '')
+      appendMessage('assistant', '', undefined)
       last = state.msgLog[state.msgLog.length - 1]
     }
     last.text += delta
@@ -223,7 +295,7 @@
   function replaceLastAssistant(full) {
     var last = state.msgLog[state.msgLog.length - 1]
     if (!last || last.kind !== 'assistant') {
-      appendMessage('assistant', full)
+      appendMessage('assistant', full, undefined)
       return
     }
     last.text = full
@@ -244,10 +316,12 @@
       el.className = 'msg msg-tool'
       el.textContent = m.text
       stream.appendChild(el)
+      if (Array.isArray(m.images) && m.images.length > 0) renderImagesInto(el, m.images, stream)
       stream.scrollTop = stream.scrollHeight
       return
     }
-    appendMessage(m.kind === 'user' ? 'user' : 'assistant', m.text)
+    appendMessage(m.kind === 'user' ? 'user' : 'assistant', m.text,
+      Array.isArray(m.images) ? m.images : undefined)
   }
 
   function setChatStatus(text, cls) {
@@ -339,8 +413,8 @@
         persistCache()
         break
       case 'user/message': {
-        var text = S.textFromBlocks(data.content)
-        if (text.trim() !== '') appendMessage('user', text)
+        var parts = S.blocksParts(data.content)
+        if (parts.text.trim() !== '' || parts.images.length > 0) appendMessage('user', parts.text, parts.images)
         persistCache()
         break
       }
@@ -354,8 +428,18 @@
         break
       }
       case 'assistant/message': {
-        var full = S.isRecord(data.message) ? S.textFromBlocks(data.message.content) : ''
-        if (full !== '') replaceLastAssistant(full)
+        var parts = S.blocksParts(S.isRecord(data.message) ? data.message.content : undefined)
+        if (parts.text !== '') replaceLastAssistant(parts.text)
+        if (parts.images.length > 0) {
+          var aes: any = $('chat-stream').querySelectorAll('.msg-assistant')
+          var targetEl = aes.length > 0 ? aes[aes.length - 1] : null
+          if (targetEl) {
+            renderImagesInto(targetEl, parts.images, $('chat-stream'))
+            var lastA = state.msgLog[state.msgLog.length - 1]
+            if (lastA && lastA.kind === 'assistant') lastA.images = (lastA.images || []).concat(parts.images)
+          }
+        }
+        persistCache()
         break
       }
       case 'tool/call': {
@@ -364,6 +448,17 @@
       }
       case 'tool/result': {
         markLastTool(data.error !== undefined)
+        var tp = S.blocksParts(S.isRecord(data.message) ? data.message.content : undefined)
+        if (tp.images.length > 0) {
+          var tools: any = $('chat-stream').querySelectorAll('.msg-tool')
+          var toolEl = tools.length > 0 ? tools[tools.length - 1] : null
+          if (toolEl) {
+            renderImagesInto(toolEl, tp.images, $('chat-stream'))
+            var lastT = state.msgLog[state.msgLog.length - 1]
+            if (lastT && lastT.kind === 'tool') lastT.images = (lastT.images || []).concat(tp.images)
+          }
+        }
+        persistCache()
         break
       }
       case 'session/title': {
@@ -634,7 +729,7 @@
       content: [{ type: 'text', text: text }],
     }).then(function () {
       setChatStatus(mode === 'steer' ? '已插入(打断当前等待)…' : '运行中…', 'running')
-      if (mode === 'steer') appendMessage('user', text)
+      if (mode === 'steer') appendMessage('user', text, undefined)
     }).catch(function (err) {
       S.toast('发送失败:' + err.message, 'error')
       input.value = text
