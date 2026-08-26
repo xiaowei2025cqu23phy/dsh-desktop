@@ -18,6 +18,23 @@ import type { RemoteCommandProcessor } from './remote-commands'
 /** 单条 QQ 消息长度上限(平台限制约 5000 字符,保守取 3800 减少长回复碎片)。 */
 const MAX_MESSAGE_LENGTH = 3800
 
+/** 流式帧节流窗口:replace 模式一帧替换一次内容,至少间隔这么多毫秒,打字机才平滑。 */
+const STREAM_FLUSH_INTERVAL_MS = 400
+
+/** 一次流式会话(一条回复)的状态。 */
+interface StreamSessionState {
+  streamMsgId: string
+  index: number
+  buffer: string
+  timer: ReturnType<typeof setTimeout> | null
+  msgSeq: number
+  msgId: string
+  lastSentText: string
+  lastFlushAt: number
+  flushPromise: Promise<void> | null
+  closed: boolean
+}
+
 /** 推送目标(带 msgId 时 SDK 按「回复该消息」发送)。 */
 interface PushTarget {
   scope: string
@@ -48,7 +65,7 @@ export class QQBotAdapter {
   /** userId(openid)→ 主动推送目标(登记自最近一次交互)。 */
   private userTargets = new Map<string, { target: PushTarget; ts: number }>()
   /** 流式对话会话(userId → 状态;QQ 私聊打字机效果)。closed=true 表示旧回合已收尾,增量需另起会话。 */
-  private streamSessions = new Map<string, { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; msgSeq: number; msgId: string; lastSentText: string; flushing: boolean; closed: boolean }>()
+  private streamSessions = new Map<string, { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; msgSeq: number; msgId: string; lastSentText: string; lastFlushAt: number; flushPromise: Promise<void> | null; closed: boolean }>()
   /** 扫码登录流程状态。 */
   private onboardAbort: AbortController | null = null
   private onboardProgress: OnboardProgress | null = null
@@ -194,7 +211,10 @@ export class QQBotAdapter {
 
   // ---- 流式对话输出(QQ 私聊打字机) ----
 
-  /** 回合文本增量:累积并按节流冲刷到 stream_messages(is_wakeup 主动流式)。 */
+  /**
+   * 回合文本增量:累积缓存,按节流窗口(400ms)冲刷到 stream_messages。
+   * replace 模式一帧替换一次内容,时间节流让打字机效果平滑,不会每增量一帧「几个字一蹦」。
+   */
   onChatDelta(channel: string, userId: string, delta: string, target?: { scope: string; targetId: string; msgId?: string }): void {
     if (channel !== 'qq' || target === undefined || target.scope !== 'c2c') return
     const bot = this.bot
@@ -202,28 +222,44 @@ export class QQBotAdapter {
     let session = this.streamSessions.get(userId)
     if (session === undefined || session.closed) {
       // 旧回合已收尾(正常结束或中断重试):另起一条新流(新 msgSeq)。
-      session = { streamMsgId: '', index: 0, buffer: '', timer: null, msgSeq: nextMsgSeq(), msgId: target.msgId ?? '', lastSentText: '', flushing: false, closed: false }
+      session = { streamMsgId: '', index: 0, buffer: '', timer: null, msgSeq: nextMsgSeq(), msgId: target.msgId ?? '', lastSentText: '', lastFlushAt: 0, flushPromise: null, closed: false }
       this.streamSessions.set(userId, session)
     }
     session.buffer += delta
-    if (session.timer === null && session.buffer.length >= 12 && !session.flushing) {
-      void this.flushStream(bot, userId, target, session, false)
-    } else if (session.timer === null && !session.flushing) {
+    this.scheduleFlush(bot, userId, target, session, false)
+  }
+
+  /** 按节流窗口排期一次冲刷:窗口未到挂定时器,已到立即发。 */
+  private scheduleFlush(
+    bot: QQBotLike,
+    userId: string,
+    target: { scope: string; targetId: string; msgId?: string },
+    session: StreamSessionState,
+    done: boolean,
+  ): void {
+    if (session.closed || session.timer !== null || session.flushPromise !== null) return
+    const elapsed = Date.now() - session.lastFlushAt
+    if (elapsed >= STREAM_FLUSH_INTERVAL_MS) {
+      void this.flushStream(bot, userId, target, session, done)
+    } else {
       const s = session
       s.timer = setTimeout(() => {
         s.timer = null
-        void this.flushStream(bot, userId, target, s, false)
-      }, 350)
+        void this.flushStream(bot, userId, target, s, done)
+      }, STREAM_FLUSH_INTERVAL_MS - elapsed)
     }
   }
 
-  /** 回合结束:发送最终内容分片(input_state=10,内容即最终全文)。 */
+  /**
+   * 回合结束:发送最终内容分片(input_state=10,内容即最终全文)。
+   * 等待在途普通帧完成后再发完成帧(避免 done 帧被跳过导致消息停在「生成中」)。
+   */
   onChatEnd(channel: string, userId: string, target?: { scope: string; targetId: string; msgId?: string }): void {
     if (channel !== 'qq' || target === undefined || target.scope !== 'c2c') return
     const bot = this.bot
     if (bot === null) return
     const session = this.streamSessions.get(userId)
-    if (session === undefined) return
+    if (session === undefined || session.closed) return
     // 立即标记关闭:中断重试场景下新回合的增量会另起新流,不会被拼进本流。
     session.closed = true
     if (session.timer !== null) {
@@ -231,8 +267,10 @@ export class QQBotAdapter {
       session.timer = null
     }
     void (async () => {
+      if (session.flushPromise !== null) await session.flushPromise.catch(() => {})
+      // 失败兜底(流已删)或已被新流替换:不再发完成帧。
+      if (this.streamSessions.get(userId) !== session) return
       await this.flushStream(bot, userId, target, session, true)
-      // 只删自己:重试期间可能已创建新会话。
       if (this.streamSessions.get(userId) === session) this.streamSessions.delete(userId)
     })()
   }
@@ -246,15 +284,34 @@ export class QQBotAdapter {
    * - 限流(HTTP 429 / QQ err_code 50002)换 index 指数退避重试;
    * - 失败兜底只补发未显示的后缀,避免整段重复。
    */
-  private async flushStream(
+  private flushStream(
     bot: QQBotLike,
     userId: string,
     target: { scope: string; targetId: string; msgId?: string },
-    session: { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; msgSeq: number; msgId: string; lastSentText: string; flushing: boolean },
+    session: StreamSessionState,
     done: boolean,
   ): Promise<void> {
-    if (session.flushing) return
-    session.flushing = true
+    // 在途帧未完成时返回其 promise,让完成帧等待。
+    if (session.flushPromise !== null) return session.flushPromise
+    const promise = this.doFlush(bot, userId, target, session, done)
+    session.flushPromise = promise
+    void promise.finally(() => {
+      if (session.flushPromise === promise) session.flushPromise = null
+      // 在途期间积累的增量:补一帧(先清空在途标记再调度,否则节流器会跳过)。
+      if (!done && !session.closed && session.buffer !== '' && session.timer === null && this.streamSessions.has(userId)) {
+        this.scheduleFlush(bot, userId, target, session, false)
+      }
+    })
+    return promise
+  }
+
+  private async doFlush(
+    bot: QQBotLike,
+    userId: string,
+    target: { scope: string; targetId: string; msgId?: string },
+    session: StreamSessionState,
+    done: boolean,
+  ): Promise<void> {
     const config = this.getConfig()
     const creds = { appId: config.appId.trim(), clientSecret: config.appSecret.trim() }
     const sendFrame = async (): Promise<unknown> => {
@@ -294,6 +351,7 @@ export class QQBotAdapter {
       const streamId = typeof resp.id === 'string' ? resp.id : resp.stream_msg_id
       if (typeof streamId === 'string') session.streamMsgId = streamId
       session.lastSentText = session.buffer
+      session.lastFlushAt = Date.now()
       if (done) session.buffer = ''
     } catch (error) {
       console.error('[qq-bot] 流式发送失败:', error)
@@ -303,12 +361,6 @@ export class QQBotAdapter {
       const tail = session.buffer.slice(session.lastSentText.length)
       for (let index = 0; index < tail.length; index += MAX_MESSAGE_LENGTH) {
         await bot.sendText(target, tail.slice(index, index + MAX_MESSAGE_LENGTH)).catch(() => {})
-      }
-    } finally {
-      session.flushing = false
-      // 冲刷期间又有增量:再调度一次(会话仍存在且缓冲足够长时)。
-      if (!done && session.buffer !== '' && session.buffer.length >= 12 && session.timer === null && this.streamSessions.has(userId)) {
-        void this.flushStream(bot, userId, target, session, false)
       }
     }
   }
@@ -589,9 +641,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** 流式会话的消息序列号:一条回复(一次流)内固定,取 0..65535 伪随机即可(与 SDK getNextMsgSeq 同域)。 */
+/** 流式会话的消息序列号:一条回复(一次流)内固定,单调递增避免与既有流碰撞。 */
+let msgSeqCounter = 1
 function nextMsgSeq(): number {
-  return Math.floor(Math.random() * 65536)
+  msgSeqCounter = (msgSeqCounter % 65535) + 1
+  return msgSeqCounter
 }
 
 /** 是否为 QQ 限流错误(HTTP 429 / err_code 50002):流式帧可换连续 index 后重试。 */
