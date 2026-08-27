@@ -268,3 +268,5 @@ QQ 机器人通道的协议细节参考了 [QQ 开放平台 API v2 文档](https
 | 群链接:https://qm.qq.com/q/okezsdj6nu | 赞赏随心,感谢支持 |
 
 群内可直连 [@QQ 机器人](docs/USAGE.md#7-qq-机器人远程控制--qq-bot-remote-control) 试玩远程控制、审批与主动汇报能力。
+
+<!-- probe -->
