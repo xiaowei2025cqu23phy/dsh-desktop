@@ -14,7 +14,7 @@
     connected: false,
     sessionId: null,
     lastSeq: 0,
-    msgLog: [],           // [{ kind: 'user'|'assistant'|'tool'|'system', text }]
+    msgLog: [],           // [{ kind: 'user'|'assistant'|'tool'|'system', text, images? }]
     es: null,
     workspaces: [],       // [{ workspaceId, path, title, sessions: [] }]
     presetRoots: [],      // [{ path, name }] 预设工作区根(可直接作为工作区)
@@ -22,6 +22,7 @@
     currentWsPath: null,
     currentWsRoot: null,  // 当前选中的预设根(作为工作区使用)
     running: false,
+    stickBottom: true,     // 流式输出时吸底;用户上滑查看历史后暂停
     tempCache: localStorage.getItem('dsh-temp-cache') === '1',
     approvals: {},        // sessionId -> [{ rpcId, sessionId, approvalId, toolName, reason }]
     approvalCards: {},    // `${sessionId}:${approvalId}` -> DOM 元素
@@ -42,19 +43,7 @@
 
   var S = {
     isRecord: function (v) { return v !== null && typeof v === 'object' && !Array.isArray(v) },
-    textFromBlocks: function (blocks) {
-      if (!Array.isArray(blocks)) return ''
-      var parts = []
-      for (var i = 0; i < blocks.length; i++) {
-        var b = blocks[i]
-        if (!S.isRecord(b)) continue
-        if (typeof b.text === 'string') parts.push(b.text)
-        else if (typeof b.content === 'string') parts.push(b.content)
-        else if (Array.isArray(b.content)) parts.push(S.textFromBlocks(b.content))
-      }
-      return parts.join('\n')
-    },
-    /** 从内容块提取文本与图片(image 附件或内嵌 base64)。 */
+    /** 从内容块提取文本与图片(排除思维链/推理块,对话里只显示答案)。 */
     blocksParts: function (blocks) {
       var text = ''
       var images = []
@@ -62,6 +51,8 @@
         for (var i = 0; i < blocks.length; i++) {
           var b = blocks[i]
           if (!S.isRecord(b)) continue
+          // 推理/思维链块不显示(不占屏),仅保留文本与图片。
+          if (b.type === 'reasoning' || b.type === 'thinking' || b.type === 'reasoning-text') continue
           var innerText = ''
           if (typeof b.text === 'string') innerText = b.text
           else if (typeof b.content === 'string') innerText = b.content
@@ -202,7 +193,7 @@
           im.src = img.dataUrl
           box.appendChild(im)
           el.appendChild(box)
-          stream.scrollTop = stream.scrollHeight
+          scrollToBottom()
           return
         }
         if (!img.attachmentId) return
@@ -214,13 +205,28 @@
             box.textContent = '图片:' + (img.name || img.attachmentId) + '(空内容)'
           }
           el.appendChild(box)
-          stream.scrollTop = stream.scrollHeight
+          scrollToBottom()
         }).catch(function () {
           box.textContent = '图片:' + (img.name || img.attachmentId) + '(加载失败)'
           el.appendChild(box)
         })
       })(images[i])
     }
+  }
+
+  // ---- 滚动:吸底模式(用户上滑查看历史时不再强制拉回底部) ----
+  function scrollToBottom(): void {
+    if (!state.stickBottom) return
+    var stream = $('chat-stream')
+    stream.scrollTop = stream.scrollHeight
+  }
+
+  /** 用户滚到离底部 80px 内 = 恢复吸底;否则暂停吸底。 */
+  function bindScrollStick(): void {
+    var stream = $('chat-stream')
+    stream.addEventListener('scroll', function () {
+      state.stickBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 80
+    })
   }
 
   function appendMessage(kind, text, images) {
@@ -240,7 +246,7 @@
       renderImagesInto(el, images, stream)
     }
     state.msgLog.push(entry)
-    stream.scrollTop = stream.scrollHeight
+    scrollToBottom()
     return el
   }
 
@@ -249,13 +255,21 @@
     hideEmpty(true)
     var el = document.createElement('div')
     el.className = 'msg msg-tool'
+    // 折叠态:一行标题+参数摘要,点击展开完整参数(不霸屏)。
+    var argBrief = typeof args === 'string' && args.trim() !== '' ? ' ' + String(args).trim().replace(/\s+/g, ' ').slice(0, 70) : ''
     el.innerHTML = '<span class="tool-name">' + S.escapeHtml(name) + '</span>' +
-      '<span class="tool-state">调用中…</span><br><pre style="margin-top:4px;white-space:pre-wrap">' +
-      S.escapeHtml(String(args || '').slice(0, 300)) + '</pre>'
+      '<span class="tool-state">调用中…</span>' +
+      '<span class="tool-arg">' + S.escapeHtml(argBrief) + '</span>' +
+      '<pre class="tool-args" style="display:none">' + S.escapeHtml(String(args || '').slice(0, 4000)) + '</pre>'
     ;(el as any)._stateEl = el.querySelector('.tool-state')
+    ;(el as any)._argsEl = el.querySelector('.tool-args')
+    el.addEventListener('click', function () {
+      var a = (el as any)._argsEl
+      if (a) a.style.display = a.style.display === 'none' ? 'block' : 'none'
+    })
     stream.appendChild(el)
     state.msgLog.push({ kind: 'tool', text: name + ' 调用中' })
-    stream.scrollTop = stream.scrollHeight
+    scrollToBottom()
     return el
   }
 
@@ -292,8 +306,7 @@
       ;(el as any)._textNode.textContent = last.text
       el.classList.add('cursor-blink')
     }
-    var stream = $('chat-stream')
-    stream.scrollTop = stream.scrollHeight
+    scrollToBottom()
   }
 
   function replaceLastAssistant(full) {
@@ -309,6 +322,7 @@
       el.classList.remove('cursor-blink')
     }
     persistCache()
+    scrollToBottom()
   }
 
   function renderCachedMessage(m) {
@@ -321,7 +335,7 @@
       el.textContent = m.text
       stream.appendChild(el)
       if (Array.isArray(m.images) && m.images.length > 0) renderImagesInto(el, m.images, stream)
-      stream.scrollTop = stream.scrollHeight
+      scrollToBottom()
       return
     }
     appendMessage(m.kind === 'user' ? 'user' : 'assistant', m.text,
@@ -366,9 +380,13 @@
     $('conn-dot').className = 'conn-dot ' + (on ? 'on' : 'off')
   }
 
-  // ---- 事件流 ----
+  // ---- 事件流(一次性票:断线必须重新取票,否则审批/提问永远收不到) ----
+  var esDelay = 1000
   function connectEvents() {
-    if (state.es) state.es.close()
+    if (state.es) {
+      try { state.es.close() } catch (e) { /* 忽略 */ }
+      state.es = null
+    }
     fetch(state.server + '/api/events/ticket', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId, 'x-dsh-device-label': navigator.userAgent.slice(0, 60) },
@@ -377,8 +395,14 @@
       if (!data.ok || typeof data.ticket !== 'string') { setConnDot(false); return }
       var es = new EventSource(state.server + '/api/events?ticket=' + encodeURIComponent(data.ticket))
       state.es = es
-      es.onopen = function () { setConnDot(true) }
-      es.onerror = function () { setConnDot(false) }
+      es.onopen = function () { setConnDot(true); esDelay = 1000 }
+      es.onerror = function () {
+        setConnDot(false)
+        try { es.close() } catch (e) { /* 忽略 */ }
+        if (state.es === es) state.es = null
+        setTimeout(connectEvents, esDelay)
+        esDelay = Math.min(esDelay * 2, 15000)
+      }
       es.onmessage = function (event) {
         var frame
         try { frame = JSON.parse(event.data) } catch (e) { return }
@@ -532,7 +556,7 @@
     })
     stream.appendChild(card)
     state.approvalCards[item.sessionId + ':' + item.approvalId] = card
-    stream.scrollTop = stream.scrollHeight
+    scrollToBottom()
   }
 
   function respondApproval(item, outcome, card) {
@@ -604,7 +628,7 @@
     card.querySelector('.btn-submit').addEventListener('click', function () { submitQuestion(pending, card) })
     stream.appendChild(card)
     state.questionCards[pending.sessionId] = card
-    stream.scrollTop = stream.scrollHeight
+    scrollToBottom()
   }
 
   function submitQuestion(pending, card) {
@@ -1730,6 +1754,7 @@
     $('set-harness').textContent = host ? ('v' + (host.version || '?') + ' · ' + (host.cwd || '')) : ''
     showView('main')
     setChatStatus('空闲', '')
+    bindScrollStick()
     connectEvents()
     loadSidebar()
     fillWorkspaceSelect()

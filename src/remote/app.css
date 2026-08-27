@@ -148,6 +148,14 @@ textarea { resize: vertical; }
 .msg-tool .tool-state { margin-left: 6px; font-size: 11px; }
 .msg-tool .tool-state.done { color: var(--ok); }
 .msg-tool .tool-state.fail { color: var(--err); }
+.msg-tool .tool-arg { color: #9aa4b0; font-size: 12px; margin-left: 4px; }
+.msg-tool .tool-args {
+  margin: 6px 0 2px; padding: 8px 10px; font-size: 11px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; color: #c8d0d8;
+  background: rgba(0, 0, 0, 0.25); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px;
+  max-height: 240px; overflow-y: auto;
+}
+.msg-tool { cursor: pointer; }
 .msg-system { align-self: center; color: #e6ecf5; font-size: 12px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); }
 .msg-image { max-width: 100%; margin-top: 8px; font-size: 12px; color: #aeb8c4; }
 .msg-image img {
