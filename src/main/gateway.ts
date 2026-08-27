@@ -277,6 +277,24 @@ export class RemoteGateway {
         })
         return
       }
+      // PWA 客户端诊断上报(历史加载失败等浏览器侧错误,写审计供本地排查)。
+      if (req.method === 'POST' && path === '/api/diag' && this.authorization(url, req) === 'ok') {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(chunk as Buffer)
+          if (Buffer.concat(chunks).byteLength > 64 * 1024) break
+        }
+        let detail = 'pwa diag'
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { error?: unknown; sessionId?: unknown }
+          detail = `pwa ${String(req.socket.remoteAddress ?? '?')}: ${String(body.error ?? '').slice(0, 400)}`
+        } catch {
+          // 非 JSON 上报,保留原始标记。
+        }
+        this.config.appendAudit({ time: Date.now(), type: 'remote.pwa-diag', detail })
+        this.json(res, 200, { ok: true })
+        return
+      }
       this.json(res, 404, { error: 'not found' })
     } catch (error) {
       this.json(res, 500, { error: error instanceof Error ? error.message : String(error) })

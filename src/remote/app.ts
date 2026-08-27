@@ -228,7 +228,11 @@
     hideEmpty(true)
     var el = document.createElement('div')
     el.className = 'msg msg-' + kind
-    if (text !== '') el.appendChild(document.createTextNode(text))
+    // 始终创建文本节点(即使为空):流式增量/收尾通过 _textNode 更新,
+    // 不依赖 lastChild(图片节点会占据它)。
+    var textNode = document.createTextNode(text)
+    el.appendChild(textNode)
+    ;(el as any)._textNode = textNode
     stream.appendChild(el)
     var entry: any = { kind: kind, text: text }
     if (images && images.length > 0) {
@@ -285,7 +289,7 @@
     last.text += delta
     var el = lastAssistantEl()
     if (el) {
-      el.lastChild.textContent = last.text
+      ;(el as any)._textNode.textContent = last.text
       el.classList.add('cursor-blink')
     }
     var stream = $('chat-stream')
@@ -301,7 +305,7 @@
     last.text = full
     var el = lastAssistantEl()
     if (el) {
-      el.lastChild.textContent = full
+      ;(el as any)._textNode.textContent = full
       el.classList.remove('cursor-blink')
     }
     persistCache()
@@ -700,6 +704,14 @@
         // 恢复该会话未决的审批/提问卡片(切回会话时仍可应答)
         renderPendingCards(sessionId)
       }).catch(function (err) {
+        // 诊断上报:把浏览器侧的真实错误送回桌面端审计(本地排查用,不打扰用户)。
+        try {
+          fetch(state.server + '/api/diag', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId },
+            body: JSON.stringify({ error: String((err && err.message) || err), sessionId: sessionId }),
+          }).catch(function () { })
+        } catch (_e) { /* 上报失败忽略 */ }
         if (attempt < 2) {
           setChatStatus('加载中(重试)…', '')
           setTimeout(function () { loadHistory(attempt + 1) }, 2500)
