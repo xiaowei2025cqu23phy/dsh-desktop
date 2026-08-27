@@ -1,60 +1,60 @@
-{
-  "name": "dsh-desktop",
-  "productName": "DeepSeek Harness Desktop",
-  "version": "0.3.0",
-  "description": "DeepSeek Harness 桌面端:内嵌 Web UI、AI 屏保模式(替换系统屏保)、全模型快捷切换。",
-  "main": "dist/main/index.js",
-  "private": true,
-  "scripts": {
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.remote.json && node scripts/build-remote.mjs && node scripts/copy-assets.mjs",
-    "start": "npm run build && electron .",
-    "smoke": "node scripts/smoke.mjs",
-    "pack": "npm run build && electron-builder --win nsis zip",
-    "pack:portable": "npm run build && electron-builder --win portable",
-    "pack:zip": "npm run build && electron-builder --win zip"
-  },
-  "build": {
-    "appId": "ai.deepseek.harness.desktop",
-    "productName": "DeepSeek Harness Desktop",
-    "files": [
-      "dist/main/**",
-      "dist/preload.js",
-      "dist/renderer/**",
-      "dist/remote/**",
-      "assets/**",
-      "package.json"
-    ],
-    "asarUnpack": [
-      "node_modules/@tencent-connect/**",
-      "node_modules/qrcode/**"
-    ],
-    "win": {
-      "target": [
-        "nsis",
-        "zip"
-      ],
-      "icon": "assets/icon.png"
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "DeepSeek Harness Desktop",
-      "artifactName": "DeepSeek-Harness-Desktop-Setup-${version}.exe",
-      "deleteAppDataOnUninstall": false
-    }
-  },
-  "devDependencies": {
-    "electron": "^43.4.0",
-    "electron-builder": "^26.15.3",
-    "esbuild": "^0.28.2",
-    "typescript": "^5.9.3"
-  },
-  "dependencies": {
-    "@tencent-connect/qqbot-nodejs": "^1.0.4",
-    "js-yaml": "^5.4.1",
-    "qrcode": "^1.5.4"
-  }
+﻿{
+    "name":  "dsh-desktop",
+    "productName":  "DeepSeek Harness Desktop",
+    "version":  "0.4.0",
+    "description":  "DeepSeek Harness 桌面端:内嵌 Web UI、AI 屏保模式(替换系统屏保)、全模型快捷切换。",
+    "main":  "dist/main/index.js",
+    "private":  true,
+    "scripts":  {
+                    "build":  "tsc -p tsconfig.json \u0026\u0026 tsc -p tsconfig.renderer.json \u0026\u0026 tsc -p tsconfig.remote.json \u0026\u0026 node scripts/build-remote.mjs \u0026\u0026 node scripts/copy-assets.mjs",
+                    "start":  "npm run build \u0026\u0026 electron .",
+                    "smoke":  "node scripts/smoke.mjs",
+                    "pack":  "npm run build \u0026\u0026 electron-builder --win nsis zip",
+                    "pack:portable":  "npm run build \u0026\u0026 electron-builder --win portable",
+                    "pack:zip":  "npm run build \u0026\u0026 electron-builder --win zip"
+                },
+    "build":  {
+                  "appId":  "ai.deepseek.harness.desktop",
+                  "productName":  "DeepSeek Harness Desktop",
+                  "files":  [
+                                "dist/main/**",
+                                "dist/preload.js",
+                                "dist/renderer/**",
+                                "dist/remote/**",
+                                "assets/**",
+                                "package.json"
+                            ],
+                  "asarUnpack":  [
+                                     "node_modules/@tencent-connect/**",
+                                     "node_modules/qrcode/**"
+                                 ],
+                  "win":  {
+                              "target":  [
+                                             "nsis",
+                                             "zip"
+                                         ],
+                              "icon":  "assets/icon.png"
+                          },
+                  "nsis":  {
+                               "oneClick":  false,
+                               "perMachine":  false,
+                               "allowToChangeInstallationDirectory":  true,
+                               "createDesktopShortcut":  true,
+                               "createStartMenuShortcut":  true,
+                               "shortcutName":  "DeepSeek Harness Desktop",
+                               "artifactName":  "DeepSeek-Harness-Desktop-Setup-${version}.exe",
+                               "deleteAppDataOnUninstall":  false
+                           }
+              },
+    "devDependencies":  {
+                            "electron":  "^43.4.0",
+                            "electron-builder":  "^26.15.3",
+                            "esbuild":  "^0.28.2",
+                            "typescript":  "^5.9.3"
+                        },
+    "dependencies":  {
+                         "@tencent-connect/qqbot-nodejs":  "^1.0.4",
+                         "js-yaml":  "^5.4.1",
+                         "qrcode":  "^1.5.4"
+                     }
 }
