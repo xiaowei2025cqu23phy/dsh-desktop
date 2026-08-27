@@ -403,6 +403,7 @@ export class RemoteGateway {
     for await (const chunk of req) {
       chunks.push(chunk as Buffer)
       if (Buffer.concat(chunks).byteLength > 1024 * 1024) {
+        this.config.appendAudit({ time: Date.now(), type: 'remote.rpc-skip', detail: 'payload too large' })
         this.json(res, 413, { error: 'payload too large' })
         return
       }
@@ -411,14 +412,17 @@ export class RemoteGateway {
     try {
       body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as RpcBody
     } catch {
+      this.config.appendAudit({ time: Date.now(), type: 'remote.rpc-skip', detail: 'invalid json' })
       this.json(res, 400, { error: 'invalid json' })
       return
     }
     if (typeof body.method !== 'string' || body.payload === undefined || body.payload === null) {
+      this.config.appendAudit({ time: Date.now(), type: 'remote.rpc-skip', detail: 'missing method/payload' })
       this.json(res, 400, { error: 'method and payload required' })
       return
     }
     if (!ALLOWED_METHODS.has(body.method)) {
+      this.config.appendAudit({ time: Date.now(), type: 'remote.rpc-skip', detail: `method not allowed: ${body.method}` })
       this.json(res, 403, { error: `method not allowed: ${body.method}` })
       return
     }
@@ -426,6 +430,7 @@ export class RemoteGateway {
     if (body.method === 'session.create') {
       const payload = body.payload as { cwd?: unknown }
       if (typeof payload.cwd === 'string' && payload.cwd.trim() !== '' && !(await this.fsAllowed(payload.cwd))) {
+        this.config.appendAudit({ time: Date.now(), type: 'remote.rpc-skip', detail: 'cwd not allowed' })
         this.json(res, 403, { error: 'cwd not allowed: 仅限工作区或预设根目录' })
         return
       }
@@ -435,6 +440,7 @@ export class RemoteGateway {
       const value = await this.harness.client().rpc(body.method, body.payload, timeoutMs)
       this.json(res, 200, { ok: true, value })
     } catch (error) {
+      this.config.appendAudit({ time: Date.now(), type: 'remote.rpc-fail', detail: `${body.method}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) })
       this.json(res, 200, {
         ok: false,
         error: { code: (error as { code?: string }).code ?? 'internal', message: error instanceof Error ? error.message : String(error) },
