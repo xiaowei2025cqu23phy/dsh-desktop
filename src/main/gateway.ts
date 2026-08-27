@@ -46,6 +46,7 @@ export const REMOTE_DEFAULTS: RemoteConfig = {
 const ALLOWED_METHODS = new Set([
   'session.list',
   'session.history',
+  'session.attachment',
   'session.create',
   'session.prompt',
   'session.cancel',

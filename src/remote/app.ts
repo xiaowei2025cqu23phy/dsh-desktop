@@ -682,25 +682,34 @@
       setChatStatus('已加载(本机缓存)', '')
     }
 
-    apiRpc('session.history', { sessionId: sessionId, maxMessages: 50 }).then(function (data) {
-      state.lastSeq = 0
-      state.msgLog = []
-      $('chat-stream').querySelectorAll('.msg').forEach(function (el) { el.remove() })
-      hideEmpty(false)
-      var events = data.events || []
-      events.forEach(function (entry) {
-        var ev = entry && S.isRecord(entry.event) ? entry.event : entry
-        handleFrame({ method: 'session/event', payload: { sessionId: sessionId, event: ev } })
+    // 历史加载带重试:桌面端服务重启/网关瞬时不可达时自动再试,避免一失败就停留在错误态。
+    var loadHistory = function (attempt: number): void {
+      apiRpc('session.history', { sessionId: sessionId, maxMessages: 50 }).then(function (data) {
+        state.lastSeq = 0
+        state.msgLog = []
+        $('chat-stream').querySelectorAll('.msg').forEach(function (el) { el.remove() })
+        hideEmpty(false)
+        var events = data.events || []
+        events.forEach(function (entry) {
+          var ev = entry && S.isRecord(entry.event) ? entry.event : entry
+          handleFrame({ method: 'session/event', payload: { sessionId: sessionId, event: ev } })
+        })
+        setChatStatus(state.msgLog.length > 0 ? '已加载' : '空会话', '')
+        $('btn-chat-export').classList.remove('hidden')
+        persistCache()
+        // 恢复该会话未决的审批/提问卡片(切回会话时仍可应答)
+        renderPendingCards(sessionId)
+      }).catch(function (err) {
+        if (attempt < 2) {
+          setChatStatus('加载中(重试)…', '')
+          setTimeout(function () { loadHistory(attempt + 1) }, 2500)
+          return
+        }
+        setChatStatus('加载失败:' + err.message, '')
+        S.toast('加载历史失败:' + err.message, 'error')
       })
-      setChatStatus(state.msgLog.length > 0 ? '已加载' : '空会话', '')
-      $('btn-chat-export').classList.remove('hidden')
-      persistCache()
-      // 恢复该会话未决的审批/提问卡片(切回会话时仍可应答)
-      renderPendingCards(sessionId)
-    }).catch(function (err) {
-      setChatStatus('加载失败:' + err.message, '')
-      S.toast('加载历史失败:' + err.message, 'error')
-    })
+    }
+    loadHistory(0)
   }
 
   function newSession() {
