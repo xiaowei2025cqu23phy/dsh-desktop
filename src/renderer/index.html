@@ -25,6 +25,7 @@
         </select>
       </div>
       <div class="topbar-actions">
+        <button id="btn-preview" class="btn" title="查看实验预览实例(独立端口,改动 UI 前先在这里验证)">🧪 预览</button>
         <button id="btn-screensaver" class="btn" title="启动 AI 屏保(全屏显示 agent 实时工作画面)">▶ AI 屏保</button>
         <button id="btn-drawer" class="btn btn-primary">设置</button>
       </div>
@@ -210,6 +211,36 @@
           <button id="btn-restart" class="btn">重启服务</button>
           <button id="btn-open-settings" class="btn">打开 settings.yaml</button>
           <button id="btn-open-webui" class="btn">打开 Web UI</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>🧪 实验预览实例</h3>
+        <div class="field">
+          <label for="pv-enabled"><input id="pv-enabled" type="checkbox" /> 启用(独立端口/独立 DSH_HOME,不动主实例)</label>
+        </div>
+        <div class="field">
+          <label for="pv-port">端口</label>
+          <input id="pv-port" type="number" min="1" max="65535" />
+        </div>
+        <div class="field">
+          <label for="pv-command">启动命令(本地构建或官方包,{port} 为占位)</label>
+          <input id="pv-command" type="text" />
+        </div>
+        <div class="field">
+          <label for="pv-dshhome">DSH_HOME(预览会话目录,建议独立)</label>
+          <input id="pv-dshhome" type="text" placeholder="默认 ~/.dsh-preview" />
+        </div>
+        <div class="field">
+          <label for="pv-cwd">工作目录(预览 agent 产物落点)</label>
+          <input id="pv-cwd" type="text" placeholder="默认 ~/dsh-preview-workspace" />
+        </div>
+        <div class="field-row">
+          <button id="pv-panel-status" class="btn btn-sm" disabled>未启动</button>
+          <button id="pv-start" class="btn btn-sm">启动</button>
+          <button id="pv-stop" class="btn btn-sm">停止</button>
+          <button id="pv-open" class="btn btn-sm">浏览器打开</button>
+          <button id="pv-save" class="btn btn-sm btn-primary">保存</button>
         </div>
       </section>
 

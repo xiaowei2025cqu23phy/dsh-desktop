@@ -273,6 +273,10 @@ select:disabled { opacity: 0.55; }
 .hint { color: var(--text-dim); font-size: 12px; }
 .security-warning { margin: 8px 0 12px; padding: 10px 12px; border: 1px solid rgba(232,179,57,.35); border-radius: 8px; background: rgba(232,179,57,.08); color: var(--warn); font-size: 12px; line-height: 1.6; }
 
+#btn-preview.preview-active { outline: 2px solid var(--accent); }
+#btn-preview.stat-ok { color: var(--ok); }
+#btn-preview.stat-err { color: var(--err); }
+
 .qr-wrap { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; padding: 8px 0; }
 .qr-cell { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .qr-cell img { border-radius: 8px; background: #fff; padding: 6px; }

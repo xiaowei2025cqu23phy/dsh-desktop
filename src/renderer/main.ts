@@ -43,6 +43,9 @@ const STATE_LABEL: Record<string, string> = {
 }
 
 let lastBaseUrl = ''
+/** 当前查看的实例:stable = 主实例(默认),preview = 实验预览实例。 */
+let viewSource: 'stable' | 'preview' = 'stable'
+let previewStatus: HarnessStatus | null = null
   let drawerOpen = false
   let logsTimer: ReturnType<typeof setInterval> | null = null
   let webviewWallpaperKey: string | null = null
@@ -127,8 +130,16 @@ async function refreshStatus(): Promise<void> {
   } catch {
     return
   }
+  // 预览实例状态(顶栏按钮角标 + 设置面板状态)。
+  try {
+    previewStatus = await API.preview.getStatus()
+  } catch {
+    previewStatus = null
+  }
+  refreshPreviewChip()
   // 桌面宠物:连接/运行状态驱动动画节奏。
   petBusy = status.state === 'running' || status.state === 'external'
+  lastStableBaseUrl = status.baseUrl
   // 工作台概览:Harness 状态卡(顶栏已精简)。
   const harnessStat = $id('stat-harness')
   harnessStat.textContent = STATE_LABEL[status.state] ?? status.state
@@ -137,9 +148,13 @@ async function refreshStatus(): Promise<void> {
       : status.state === 'error' ? ' stat-err'
         : status.state === 'idle' || status.state === 'stopped' ? ' stat-dim' : ' stat-warn')
   const view = harnessView()
-  if (status.baseUrl !== lastBaseUrl) {
-    lastBaseUrl = status.baseUrl
-    view.src = status.baseUrl
+  // 查看目标:预览实例就绪时可按顶栏按钮切换。
+  const activeUrl = viewSource === 'preview' && previewStatus !== null && previewStatus.baseUrl !== ''
+    ? previewStatus.baseUrl
+    : status.baseUrl
+  if (activeUrl !== lastBaseUrl) {
+    lastBaseUrl = activeUrl
+    view.src = activeUrl
   }
   const modelSelect = select('model-select')
   if ((status.state === 'running' || status.state === 'external') && modelSelect.disabled) {
@@ -660,7 +675,7 @@ async function pollPendingDevices(): Promise<void> {
 async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
-  await Promise.all([loadHarnessConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(),
+  await Promise.all([loadHarnessConfig(), loadPreviewConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(),
     loadWallpaperPacks(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), loadUsageConfig(), loadNotificationConfig(), refreshWebhookEndpoint(),
     loadUpdateInfo(), refreshLogs()])
   if (logsTimer === null) {
@@ -684,6 +699,81 @@ async function loadHarnessConfig(): Promise<void> {
     input('cfg-cwd').value = config.cwd ?? ''
   } catch (error) {
     S.toast(`读取服务配置失败:${String(error)}`, 'error')
+  }
+}
+
+/** 顶栏预览按钮角标 + 设置面板状态按钮。 */
+function refreshPreviewChip(): void {
+  const btn = $id('btn-preview')
+  const state = previewStatus?.state ?? 'idle'
+  const label = state === 'running' || state === 'external'
+    ? '🧪 预览·运行中'
+    : state === 'error'
+      ? '🧪 预览·错误'
+      : '🧪 预览'
+  btn.textContent = viewSource === 'preview' ? `{ } ${label}` : label
+  btn.classList.toggle('preview-active', viewSource === 'preview')
+  btn.classList.toggle('stat-ok', state === 'running' || state === 'external')
+  btn.classList.toggle('stat-err', state === 'error')
+  const pv = $id('pv-panel-status')
+  if (pv !== null) {
+    pv.textContent = STATE_LABEL[state] ?? state ?? '未启动'
+    ;(pv as HTMLButtonElement).disabled = true
+  }
+}
+
+/** 切换 webview 查看主实例/预览实例。 */
+function togglePreviewView(): void {
+  if (viewSource === 'preview') {
+    viewSource = 'stable'
+    const view = harnessView()
+    if (lastStableBaseUrl !== '') view.src = lastStableBaseUrl
+  } else {
+    if (previewStatus === null || (previewStatus.state !== 'running' && previewStatus.state !== 'external')) {
+      S.toast('预览实例未运行,请在设置 → 实验预览实例里启动', 'error')
+      return
+    }
+    viewSource = 'preview'
+    const view = harnessView()
+    view.src = previewStatus.baseUrl
+  }
+  refreshPreviewChip()
+  S.toast(viewSource === 'preview' ? '已切换到实验预览实例' : '已切回主实例', 'ok')
+}
+
+let lastStableBaseUrl = ''
+
+async function loadPreviewConfig(): Promise<void> {
+  try {
+    const config = await API.preview.getConfig() as {
+      enabled: boolean; url: string; port: number; command: string; dshHome: string | null; cwd: string | null
+    }
+    const enabled = $id('pv-enabled') as HTMLInputElement
+    enabled.checked = config.enabled
+    input('pv-port').value = String(config.port)
+    input('pv-command').value = config.command
+    input('pv-dshhome').value = config.dshHome ?? ''
+    input('pv-cwd').value = config.cwd ?? ''
+  } catch (error) {
+    S.toast(`读取预览配置失败:${String(error)}`, 'error')
+  }
+}
+
+async function savePreviewConfig(): Promise<void> {
+  try {
+    const enabled = $id('pv-enabled') as HTMLInputElement
+    const patch = {
+      enabled: enabled.checked,
+      port: Math.max(1, Math.min(65535, Number(input('pv-port').value) || 3081)),
+      command: input('pv-command').value.trim(),
+      dshHome: input('pv-dshhome').value.trim() || null,
+      cwd: input('pv-cwd').value.trim() || null,
+    }
+    await API.preview.setConfig(patch)
+    S.toast('预览配置已保存', 'ok')
+    void refreshStatus()
+  } catch (error) {
+    S.toast(`保存失败:${String(error)}`, 'error')
   }
 }
 
@@ -1509,6 +1599,29 @@ function bind(): void {
   $id('btn-drawer').addEventListener('click', () => void openDrawer())
   $id('btn-drawer-close').addEventListener('click', closeDrawer)
   bindDrawerNavigation()
+  $id('btn-preview').addEventListener('click', () => togglePreviewView())
+  $id('pv-start').addEventListener('click', async () => {
+    try {
+      await API.preview.start()
+      S.toast('预览实例启动请求已发出', 'ok')
+      await savePreviewConfig()
+      void refreshStatus()
+    } catch (error) {
+      S.toast(`启动失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+    }
+  })
+  $id('pv-stop').addEventListener('click', async () => {
+    try {
+      await API.preview.stop()
+      if (viewSource === 'preview') togglePreviewView()
+      S.toast('预览实例已停止', 'ok')
+      void refreshStatus()
+    } catch (error) {
+      S.toast(`停止失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+    }
+  })
+  $id('pv-open').addEventListener('click', () => { void API.preview.openWebUi() })
+  $id('pv-save').addEventListener('click', () => void savePreviewConfig())
   $id('nav-workbench').addEventListener('click', () => switchView('workbench'))
   $id('nav-workspaces').addEventListener('click', () => switchView('workspaces'))
   $id('nav-session').addEventListener('click', () => switchView('session'))

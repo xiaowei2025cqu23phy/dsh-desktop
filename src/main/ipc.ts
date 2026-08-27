@@ -6,7 +6,8 @@ import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
 import { extname } from 'node:path'
 import type { AppearanceManager } from './appearance'
-import type { ConfigStore } from './config'
+import type { ConfigStore, PreviewConfig } from './config'
+import { previewHarnessConfig } from './config'
 import type { RemoteGateway } from './gateway'
 import type { HarnessManager } from './harness'
 import type { ModelManager } from './models'
@@ -19,6 +20,7 @@ import type { UpdateChecker } from './updater'
 export interface IpcDeps {
   config: ConfigStore
   harness: HarnessManager
+  preview?: HarnessManager
   models: ModelManager
   screensaver: ScreensaverController
   appearance: AppearanceManager
@@ -44,6 +46,27 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('harness:getLogs', () => deps.harness.logs.slice(-200))
   ipcMain.handle('harness:openWebUi', () => {
     void shell.openExternal(deps.harness.baseUrl())
+  })
+
+  // ---- 预览实例(实验版 harness,独立端口) ----
+  ipcMain.handle('preview:getStatus', () => deps.preview?.status() ?? null)
+  ipcMain.handle('preview:getConfig', () => deps.config.get().preview)
+  ipcMain.handle('preview:setConfig', (_event, patch: object) => {
+    const next = deps.config.update('preview', patch) as PreviewConfig
+    const manager = deps.preview
+    if (manager === undefined) return null
+    manager.updateConfig(previewHarnessConfig(next))
+    if (next.enabled) void manager.start()
+    else void manager.stop()
+    return manager.status()
+  })
+  ipcMain.handle('preview:start', () => { void deps.preview?.start() })
+  ipcMain.handle('preview:stop', () => deps.preview?.stop())
+  ipcMain.handle('preview:restart', () => deps.preview?.restart())
+  ipcMain.handle('preview:getLogs', () => deps.preview?.logs.slice(-200) ?? [])
+  ipcMain.handle('preview:openWebUi', () => {
+    const manager = deps.preview
+    if (manager !== undefined) void shell.openExternal(manager.baseUrl())
   })
 
   // ---- models ----

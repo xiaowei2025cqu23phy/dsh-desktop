@@ -15,6 +15,16 @@ const api = {
     getLogs: () => ipcRenderer.invoke('harness:getLogs'),
     openWebUi: () => ipcRenderer.invoke('harness:openWebUi'),
   },
+  preview: {
+    getStatus: () => ipcRenderer.invoke('preview:getStatus'),
+    getConfig: () => ipcRenderer.invoke('preview:getConfig'),
+    setConfig: (patch: object) => ipcRenderer.invoke('preview:setConfig', patch),
+    start: () => ipcRenderer.invoke('preview:start'),
+    stop: () => ipcRenderer.invoke('preview:stop'),
+    restart: () => ipcRenderer.invoke('preview:restart'),
+    getLogs: () => ipcRenderer.invoke('preview:getLogs'),
+    openWebUi: () => ipcRenderer.invoke('preview:openWebUi'),
+  },
   models: {
     list: () => ipcRenderer.invoke('models:list'),
     setDefault: (provider: string, model: string) => ipcRenderer.invoke('models:setDefault', provider, model),

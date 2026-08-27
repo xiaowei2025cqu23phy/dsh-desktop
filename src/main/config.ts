@@ -30,6 +30,39 @@ export interface HarnessConfig {
   cwd: string | null
 }
 
+/** 预览实例(实验版 harness):与主实例并存,独立端口/DSH_HOME,webview 可切换查看。 */
+export interface PreviewConfig {
+  /** 启用预览实例(启动时自动拉起)。 */
+  enabled: boolean
+  /** 外部地址(external/auto 模式下探测用)。 */
+  url: string
+  /** 预览实例端口。 */
+  port: number
+  /** 启动命令模板({port} 占位);默认与主实例相同,改成本地构建路径即预览实验版。 */
+  command: string
+  /** 独立 DSH_HOME(建议与主实例分开,会话互不污染)。 */
+  dshHome: string | null
+  /** 预览实例工作目录(agent 产物落点)。 */
+  cwd: string | null
+  restartOnCrash: boolean
+  stopOnQuit: boolean
+}
+
+/** 从预览配置派生 HarnessManager 需要的配置。 */
+export function previewHarnessConfig(p: PreviewConfig): HarnessConfig {
+  return {
+    mode: 'auto',
+    url: p.url,
+    port: p.port,
+    command: p.command,
+    autoStart: p.enabled,
+    restartOnCrash: p.restartOnCrash,
+    stopOnQuit: p.stopOnQuit,
+    dshHome: p.dshHome,
+    cwd: p.cwd,
+  }
+}
+
 export interface ScreensaverConfig {
   /** 空闲检测开启。 */
   enabled: boolean
@@ -206,6 +239,7 @@ export interface TaskQueueEntry {
 
 export interface AppConfig {
   harness: HarnessConfig
+  preview: PreviewConfig
   screensaver: ScreensaverConfig
   appearance: AppearanceConfig
   remote: RemoteConfig
@@ -262,6 +296,16 @@ const DEFAULTS: AppConfig = {
     dshHome: null,
     // 默认工作目录:独立目录,避免 agent 把产物写进应用安装目录或主目录。
     cwd: join(homedir(), 'dsh-workspace'),
+  },
+  preview: {
+    enabled: false,
+    url: 'http://127.0.0.1:3081',
+    port: 3081,
+    command: 'npx --yes @deepseek-ai/dsh web --port {port}',
+    dshHome: join(homedir(), '.dsh-preview'),
+    cwd: join(homedir(), 'dsh-preview-workspace'),
+    restartOnCrash: true,
+    stopOnQuit: true,
   },
   screensaver: {
     enabled: false,

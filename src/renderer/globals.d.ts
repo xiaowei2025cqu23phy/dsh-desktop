@@ -173,6 +173,16 @@ interface DesktopApi {
     getLogs(): Promise<string[]>
     openWebUi(): Promise<void>
   }
+  preview: {
+    getStatus(): Promise<HarnessStatus | null>
+    getConfig(): Promise<unknown>
+    setConfig(patch: object): Promise<HarnessStatus | null>
+    start(): Promise<void>
+    stop(): Promise<void>
+    restart(): Promise<void>
+    getLogs(): Promise<string[]>
+    openWebUi(): Promise<void>
+  }
   models: {
     list(): Promise<ModelsListResult>
     setDefault(provider: string, model: string): Promise<void>

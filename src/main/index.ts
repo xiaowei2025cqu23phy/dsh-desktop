@@ -25,6 +25,7 @@ import { AppTray } from './tray'
 import { registerIpc } from './ipc'
 import { createMainWindow } from './windows'
 import { healProviderSettings, settingsPath } from './settings-heal'
+import { previewHarnessConfig } from './config'
 
 const SCREENSAVER_ARGS = ['/s', '-s', '--screensaver']
 const isScreensaverLaunch = (): boolean =>
@@ -39,6 +40,7 @@ if (!gotLock) {
   let tray: AppTray | null = null
   let screensaver: ScreensaverController
   let harness: HarnessManager
+  let previewHarness: HarnessManager
   let quitting = false
   app.on('second-instance', (_event, argv) => {
     console.log('[main] second-instance argv:', JSON.stringify(argv))
@@ -60,6 +62,9 @@ if (!gotLock) {
     const heal = healProviderSettings(settingsPath(config.get().harness.dshHome))
     for (const message of heal.messages) console.log('[settings-heal]', message)
     harness = new HarnessManager(config.get().harness)
+    // 预览实例(实验版 harness):独立端口/DSH_HOME,改动 UI 或引擎时先预览再切主实例。
+    previewHarness = new HarnessManager(previewHarnessConfig(config.get().preview))
+    if (config.get().preview.enabled) void previewHarness.start()
     const models = new ModelManager(() => harness.client())
     screensaver = new ScreensaverController(config, harness)
     const appearance = new AppearanceManager(config)
@@ -106,7 +111,7 @@ if (!gotLock) {
     qqBot = new QQBotAdapter(config, commands)
     telegramBot = new TelegramBotAdapter(config, commands)
     const updater = new UpdateChecker()
-    registerIpc({ config, harness, models, screensaver, appearance, gateway, qqBot, telegramBot, updater, commands,
+    registerIpc({ config, harness, preview: previewHarness, models, screensaver, appearance, gateway, qqBot, telegramBot, updater, commands,
       diagnostics: () => collectDiagnostics({ config, harness, gateway, qqBot, telegramBot }) })
 
     if (isScreensaverLaunch()) {
@@ -155,6 +160,7 @@ if (!gotLock) {
       quit: () => {
         quitting = true
         harness.stop()
+        previewHarness.stop()
         app.quit()
       },
     })
@@ -189,6 +195,7 @@ if (!gotLock) {
       quitting = true
       void (async () => {
         if (config.get().harness.stopOnQuit) await harness.stop()
+        if (config.get().preview.stopOnQuit) await previewHarness.stop()
         screensaver.dispose()
         tray?.dispose()
         events.dispose()
