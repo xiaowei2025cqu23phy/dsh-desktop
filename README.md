@@ -230,7 +230,7 @@ scripts/           冒烟与端到端测试脚本
 
 - 一元调用:`POST /api/<method>`,body 为 `{type:'client-request', rpcId, method, payload}`,响应 `{type:'server-response', rpcId, result}`;回环地址免令牌。
 - 事件流:`GET /api/events.mux`(SSE),推送 `session/event` 等帧,屏保页面据此实时渲染。
-- 关键方法:`session.list/create/prompt/cancel/selectModel`、`host.describe`、`llm.providers/models/discoverModels`、`settings.update/mutate`、`credentials.set`。
+- 关键方法:`session.list/create/prompt/cancel/selectModel`、`host.describe`、`host.listEntries/readTextFile`(文件浏览器)、`llm.providers/models/discoverModels`、`settings.update/mutate`、`credentials.set`。
 
 协议细节随 harness 演进可能变化;桌面端使用的方法均来自当前 `0.1.0-rc.x` 的 `packages/host/apiproxy`。
 
@@ -265,6 +265,5 @@ QQ 机器人通道的协议细节参考了 [QQ 开放平台 API v2 文档](https
 | 内测交流群(QQ) | 微信赞赏 |
 |---|---|
 | ![QQ 群](assets/support/qq-group.jpg) | ![微信赞赏码](assets/support/wechat-reward.png) |
-| 群链接:https://qm.qq.com/q/okezsdj6nu | 赞赏随心,感谢支持 |
 
 群内可直连 [@QQ 机器人](docs/USAGE.md#7-qq-机器人远程控制--qq-bot-remote-control) 试玩远程控制、审批与主动汇报能力。

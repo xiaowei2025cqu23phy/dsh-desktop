@@ -60,6 +60,8 @@ const ALLOWED_METHODS = new Set([
   'llm.models',
   'llm.providers',
   'host.describe',
+  'host.listEntries',
+  'host.readTextFile',
 ])
 
 /** 容易超时的操作放宽超时。 */

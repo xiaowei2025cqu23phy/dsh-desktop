@@ -164,7 +164,7 @@ The desktop app implements deepseek-harness's HTTP RPC protocol (`dsh-host-apipr
 
 - Unary calls: `POST /api/<method>` with `{type:'client-request', rpcId, method, payload}`; responses are `{type:'server-response', rpcId, result}`; loopback needs no token.
 - Event stream: `GET /api/events.mux` (SSE on newer versions, WebSocket fallback on older ones); `session/event` frames drive the screensaver and remote clients.
-- Key methods: `session.list/create/prompt/cancel/selectModel`, `host.describe`, `llm.providers/models/discoverModels`, `settings.update/mutate`, `credentials.set`.
+- Key methods: `session.list/create/prompt/cancel/selectModel`, `host.describe`, `host.listEntries/readTextFile` (file explorer), `llm.providers/models/discoverModels`, `settings.update/mutate`, `credentials.set`.
 
 Protocol details may evolve with the harness; the methods used come from the current `0.1.0-rc.x` `packages/host/apiproxy`.
 
@@ -205,7 +205,6 @@ Found it useful? Join the beta group for feedback and feature requests, or buy t
 | Beta group (QQ) | WeChat reward |
 |---|---|
 | ![QQ group](assets/support/qq-group.jpg) | ![WeChat reward](assets/support/wechat-reward.png) |
-| https://qm.qq.com/q/okezsdj6nu | Any amount appreciated |
 
 Inside the group you can try the [QQ bot](docs/USAGE.md) directly — remote control, approvals and proactive reports.
 
