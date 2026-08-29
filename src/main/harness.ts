@@ -3,6 +3,7 @@
  */
 
 import { spawn, execFile } from 'node:child_process'
+import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
@@ -239,6 +240,9 @@ export class HarnessManager extends EventEmitter {
     // 工作目录:配置了用配置值,否则用主目录下的 dsh-workspace —— 避免 agent
     // 无工作区任务把产物写进应用安装目录(如 dsh-desktop 仓库)。
     const cwd = this.config.cwd && this.config.cwd.trim() !== '' ? this.config.cwd : join(homedir(), 'dsh-workspace')
+    // 目录缺失会让 spawn 立刻 ENOENT(Node 不会替我们补建);先补建,
+    // 否则预览/主实例一旦被清过用户目录就永远启动失败。
+    if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true })
     // Windows 上 npx/pnpm/yarn 等是 .cmd/.bat 批处理,直接 spawn 会抛 ENOENT/EINVAL,
     // 导致托管服务永远起不来。Windows 下经 shell(cmd.exe)启动,由 cmd 负责批处理解析。
     const isWindows = process.platform === 'win32'
@@ -257,6 +261,15 @@ export class HarnessManager extends EventEmitter {
     child.stderr?.on('data', (chunk: Buffer) => this.pushLog(chunk.toString(), true))
     child.on('error', (error) => {
       this.pushLog(`进程错误:${error.message}`, true)
+      // spawn 失败(不存在、无权限等)不会触发 exit;立刻转为错误并上报,
+      // 而不是让 waitReady 空转 90 秒后才报「未就绪」。
+      if (!this.stopRequested && this.child === child) {
+        this.child = null
+        this.managedPid = null
+        this.state = 'error'
+        this.error = `托管进程启动失败:${error.message}`
+        this.emit('status', this.status())
+      }
     })
     child.on('exit', (code, signal) => {
       this.log(`托管进程退出(code=${String(code)}, signal=${String(signal)})`)
