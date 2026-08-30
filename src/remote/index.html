@@ -73,6 +73,20 @@
       <div class="sidebar-actions">
         <button id="btn-new-session" class="btn btn-primary btn-block">＋ 新对话</button>
         <button id="btn-new-workspace" class="btn btn-block">＋ 新建工作区</button>
+        <div class="session-options">
+          <label>新会话权限
+            <select id="session-permission">
+              <option value="workspace-write" selected>工作区可写</option>
+              <option value="danger-full-access">完全访问</option>
+            </select>
+          </label>
+          <label>消息模式
+            <select id="session-send-mode">
+              <option value="queue" selected>排队</option>
+              <option value="steer">插入当前等待</option>
+            </select>
+          </label>
+        </div>
       </div>
       <div id="workspace-list" class="ws-list"><p class="empty">加载中…</p></div>
       <nav class="sidebar-foot">
@@ -143,7 +157,7 @@
         <h2 id="fsp-title">文件</h2>
         <button id="btn-fsp-close" class="btn btn-ghost">✕</button>
       </header>
-      <pre id="fsp-content" class="fsp-content"></pre>
+      <div id="fsp-content" class="fsp-content"></div>
     </div>
 
     <!-- 切换会话模型弹层 -->

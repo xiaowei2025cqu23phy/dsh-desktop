@@ -29,6 +29,8 @@
     questions: {},        // sessionId -> { rpcId, sessionId, questions }
     questionCards: {},    // sessionId -> DOM 元素
     fsPath: '',           // 文件夹浏览当前路径('' = 根列表)
+    fsParent: '',          // 当前允许范围内的父目录('' = 返回根列表)
+    fsPreviewText: '',     // 当前文件预览已加载的原文
     defaultModel: null,   // { provider, model } 桌面端预设模型(host.describe)
     deviceId: localStorage.getItem('dsh-device-id') || (function () {
       // crypto.randomUUID 仅在安全上下文(HTTPS/localhost)可用;局域网 HTTP 需降级。
@@ -382,7 +384,24 @@
 
   // ---- 事件流(一次性票:断线必须重新取票,否则审批/提问永远收不到) ----
   var esDelay = 1000
+  var reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  var eventsGeneration = 0
+  var eventsWasDisconnected = false
+  function scheduleEventsReconnect(generation) {
+    if (generation !== eventsGeneration || reconnectTimer !== null) return
+    setConnDot(false)
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null
+      connectEvents()
+    }, esDelay)
+    esDelay = Math.min(esDelay * 2, 15000)
+  }
   function connectEvents() {
+    var generation = ++eventsGeneration
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
     if (state.es) {
       try { state.es.close() } catch (e) { /* 忽略 */ }
       state.es = null
@@ -392,23 +411,44 @@
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId, 'x-dsh-device-label': navigator.userAgent.slice(0, 60) },
       body: '{}',
     }).then(function (res) { return res.json() }).then(function (data) {
-      if (!data.ok || typeof data.ticket !== 'string') { setConnDot(false); return }
+      if (generation !== eventsGeneration) return
+      if (!data.ok || typeof data.ticket !== 'string') {
+        scheduleEventsReconnect(generation)
+        return
+      }
       var es = new EventSource(state.server + '/api/events?ticket=' + encodeURIComponent(data.ticket))
       state.es = es
-      es.onopen = function () { setConnDot(true); esDelay = 1000 }
+      es.onopen = function () {
+        if (generation !== eventsGeneration) return
+        setConnDot(true)
+        esDelay = 1000
+        if (eventsWasDisconnected && state.sessionId !== null) {
+          // SSE has no replay cursor; reload the current session after a
+          // successful reconnect so events missed during the outage are not
+          // silently omitted from the phone transcript.
+          openSession(state.sessionId, state.currentWsPath)
+        }
+        eventsWasDisconnected = false
+      }
       es.onerror = function () {
-        setConnDot(false)
+        if (generation !== eventsGeneration) return
+        eventsWasDisconnected = true
         try { es.close() } catch (e) { /* 忽略 */ }
         if (state.es === es) state.es = null
-        setTimeout(connectEvents, esDelay)
-        esDelay = Math.min(esDelay * 2, 15000)
+        scheduleEventsReconnect(generation)
       }
       es.onmessage = function (event) {
+        if (generation !== eventsGeneration) return
         var frame
         try { frame = JSON.parse(event.data) } catch (e) { return }
         handleFrame(frame)
       }
-    }).catch(function () { setConnDot(false) })
+    }).catch(function () {
+      if (generation === eventsGeneration) {
+        eventsWasDisconnected = true
+        scheduleEventsReconnect(generation)
+      }
+    })
   }
 
   function handleFrame(frame) {
@@ -752,9 +792,14 @@
     var payload: Record<string, unknown> = {}
     if (state.currentWsId) payload.workspaceId = state.currentWsId
     else if (state.currentWsRoot) payload.cwd = state.currentWsRoot
+    var permission = $('session-permission') ? $('session-permission').value : ''
     apiRpc('session.create', payload).then(function (created) {
-      openSession(created.sessionId, state.currentWsPath)
-      loadSidebar()
+      var sessionId = created.sessionId
+      var permissionTask = permission === '' ? Promise.resolve() : executeCommand(sessionId, '/permission ' + permission)
+      return permissionTask.then(function () {
+        openSession(sessionId, state.currentWsPath)
+        loadSidebar()
+      })
     }).catch(function (err) {
       S.toast('新建会话失败:' + err.message, 'error')
     })
@@ -763,6 +808,7 @@
   function sendMessage(mode) {
     var input = $('chat-input')
     var text = input.value.trim()
+    mode = mode || selectedSendMode()
     if (text === '' || state.sessionId === null) {
       if (state.sessionId === null) S.toast('请先新建或选择一个会话', 'error')
       return
@@ -801,6 +847,37 @@
       if (state.workspaces[i].path === path) return state.workspaces[i].workspaceId
     }
     return null
+  }
+
+  /** Make a clicked workspace the explicit target of the next new session. */
+  function selectWorkspaceTarget(ws) {
+    if (!ws || typeof ws.path !== 'string') return
+    state.currentWsPath = ws.path
+    state.currentWsId = typeof ws.workspaceId === 'string' ? ws.workspaceId : null
+    state.currentWsRoot = state.currentWsId ? null : ws.path
+  }
+
+  /** Return the selected mode for the next ordinary composer submission. */
+  function selectedSendMode() {
+    var select = $('session-send-mode')
+    return select && select.value === 'steer' ? 'steer' : 'queue'
+  }
+
+  /** Execute a slash command through the ordinary session prompt path. */
+  function executeCommand(sessionId, line) {
+    return apiRpc('session.prompt', {
+      sessionId: sessionId,
+      mode: 'queue',
+      content: [{ type: 'text', text: line }],
+    })
+  }
+
+  /** Set a preset root as the explicit cwd target for the next new session. */
+  function selectPresetRootTarget(root) {
+    if (!root || typeof root.path !== 'string') return
+    state.currentWsPath = root.path
+    state.currentWsId = null
+    state.currentWsRoot = root.path
   }
 
   function loadSidebar() {
@@ -980,6 +1057,7 @@
     body.appendChild(newBtn)
 
     head.addEventListener('click', function () {
+      selectPresetRootTarget(root)
       var open = head.classList.toggle('open')
       body.classList.toggle('open', open)
     })
@@ -1042,6 +1120,7 @@
     }
 
     head.addEventListener('click', function () {
+      selectWorkspaceTarget(ws)
       var open = head.classList.toggle('open')
       body.classList.toggle('open', open)
     })
@@ -1132,12 +1211,13 @@
   function useWorkspacePath(path, name) {
     var statusEl = $('newws-status')
     statusEl.textContent = '正在注册「' + name + '」…'
-    apiRpc('workspace.create', { path: path }).then(function () {
+    apiRpc('workspace.create', { path: path }).then(function (created) {
+      selectWorkspaceTarget({ workspaceId: created.workspaceId, path: path })
       S.toast('工作区已就绪:' + name, 'ok')
       statusEl.textContent = ''
       closeSheet($('view-newws'))
       loadSidebar()
-      fillWorkspaceSelect()
+      fillWorkspaceSelect(created.workspaceId)
     }).catch(function (err) {
       statusEl.textContent = '注册失败:' + err.message
     })
@@ -1157,13 +1237,14 @@
     }
     var statusEl = $('newws-status')
     statusEl.textContent = '正在创建「' + name + '」…'
-    apiAction('workspace.createNew', { root: root, name: name }).then(function () {
+    apiAction('workspace.createNew', { root: root, name: name }).then(function (created) {
+      selectWorkspaceTarget({ workspaceId: created.workspaceId, path: created.path || root + '/' + name })
       S.toast('工作区已创建:' + name, 'ok')
       statusEl.textContent = ''
       $('newws-name').value = ''
       closeSheet($('view-newws'))
       loadSidebar()
-      fillWorkspaceSelect()
+      fillWorkspaceSelect(created.workspaceId)
     }).catch(function (err) {
       statusEl.textContent = '创建失败:' + err.message
     })
@@ -1429,6 +1510,7 @@
   function openFsBrowser(path, pickMode) {
     fsPickMode = pickMode || null
     state.fsPath = path || ''
+    state.fsParent = ''
     openSheet($('view-fs'))
     loadFsList()
   }
@@ -1443,6 +1525,8 @@
     host.innerHTML = '<p class="empty">加载中…</p>'
     renderFsCrumb()
     apiAction('fs.list', { path: state.fsPath }).then(function (data) {
+      state.fsParent = typeof data.parent === 'string' ? data.parent : ''
+      renderFsCrumb()
       if (Array.isArray(data.roots)) renderFsRoots(data.roots)
       else renderFsEntries(data)
     }).catch(function (err) {
@@ -1456,9 +1540,17 @@
     var root = document.createElement('button')
     root.className = 'crumb-btn'
     root.textContent = '根'
-    root.addEventListener('click', function () { state.fsPath = ''; loadFsList() })
+    root.addEventListener('click', function () { state.fsPath = ''; state.fsParent = ''; loadFsList() })
     crumb.appendChild(root)
     if (state.fsPath === '') return
+    if (state.fsParent !== '') {
+      var back = document.createElement('button')
+      back.className = 'crumb-btn'
+      back.textContent = '↑ 上一级'
+      back.title = '返回上一级目录'
+      back.addEventListener('click', function () { state.fsPath = state.fsParent; loadFsList() })
+      crumb.appendChild(back)
+    }
     var parts = state.fsPath.split(/[\\/]/).filter(function (p) { return p !== '' })
     var acc = ''
     parts.forEach(function (part, i) {
@@ -1476,10 +1568,11 @@
         return
       }
       acc = acc === '' ? part : acc + '\\' + part
+      var crumbPath = acc
       var btn = document.createElement('button')
       btn.className = 'crumb-btn'
       btn.textContent = part
-      btn.addEventListener('click', function () { state.fsPath = acc; loadFsList() })
+      btn.addEventListener('click', function () { state.fsPath = crumbPath; loadFsList() })
       crumb.appendChild(btn)
     })
   }
@@ -1566,9 +1659,62 @@
 
   function openFsPreview(path, name) {
     $('fsp-title').textContent = name
-    $('fsp-content').textContent = '加载中…'
+    var content = $('fsp-content')
+    content.innerHTML = ''
     openSheet($('view-fspreview'))
+    var lower = String(name).toLowerCase()
+    var media: string | null = null
+    if (['.mp4', '.webm', '.mov', '.m4v'].some(function (ext) { return lower.endsWith(ext) })) media = 'video'
+    else if (['.mp3', '.wav', '.ogg', '.m4a'].some(function (ext) { return lower.endsWith(ext) })) media = 'audio'
+    else if (lower.endsWith('.pdf')) media = 'pdf'
+    else if (['.png', '.jpg', '.jpeg', '.gif', '.webp'].some(function (ext) { return lower.endsWith(ext) })) media = 'image'
+    if (media !== null) {
+      var source = state.server + '/api/fs/stream?path=' + encodeURIComponent(path)
+        + '&token=' + encodeURIComponent(state.token) + '&device=' + encodeURIComponent(state.deviceId)
+      if (media === 'pdf') {
+        var frame = document.createElement('iframe')
+        frame.className = 'fsp-frame'
+        frame.title = name
+        frame.src = source
+        content.appendChild(frame)
+      } else if (media === 'video') {
+        var video = document.createElement('video')
+        video.className = 'fsp-media'
+        video.controls = true
+        video.playsInline = true
+        video.src = source
+        content.appendChild(video)
+      } else if (media === 'audio') {
+        var audio = document.createElement('audio')
+        audio.className = 'fsp-audio'
+        audio.controls = true
+        audio.src = source
+        content.appendChild(audio)
+      } else {
+        var image = document.createElement('img')
+        image.className = 'fsp-media'
+        image.alt = name
+        image.src = source
+        content.appendChild(image)
+      }
+      return
+    }
+    content.textContent = '加载中…'
     loadFsPreviewChunk(path, 0)
+  }
+
+  function renderMarkdownPreview(text) {
+    var escaped = S.escapeHtml(text)
+    return escaped
+      .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+      .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+      .replace(/^# (.+)$/gm, '<h2>$1</h2>')
+      .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+      .replace(/```([\\s\\S]*?)```/g, '<pre class="md-code">$1</pre>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/(?:\r?\n){2,}/g, '<br /><br />')
+      .replace(/\r?\n/g, '<br />')
   }
 
   function loadFsPreviewChunk(path, offset) {
@@ -1583,8 +1729,18 @@
         pre.appendChild(img)
         return
       }
-      if (offset === 0) pre.textContent = data.text || '(空文件)'
-      else pre.textContent += data.text
+      var isMarkdown = /\.(md|markdown|mdown|mkdn)$/i.test(path)
+      if (offset === 0) {
+        if (isMarkdown) {
+          pre.innerHTML = renderMarkdownPreview(data.text || '') || '(空文件)'
+          pre.classList.add('rich-preview')
+        } else {
+          pre.textContent = data.text || '(空文件)'
+          pre.classList.remove('rich-preview')
+        }
+      } else if (isMarkdown) {
+        pre.innerHTML += renderMarkdownPreview(data.text || '')
+      } else pre.textContent += data.text
       if (data.truncated) {
         var more = document.createElement('button')
         more.className = 'btn btn-sm'
@@ -1770,8 +1926,15 @@
   }
 
   function disconnect() {
+    eventsGeneration++
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
     if (state.es) state.es.close()
     state.es = null
+    eventsWasDisconnected = false
+    esDelay = 1000
     state.connected = false
     state.sessionId = null
     closeSidebar()
@@ -1937,8 +2100,19 @@
     $('btn-newws-create').addEventListener('click', createNewWorkspace)
 
     // 聊天
-    $('btn-chat-send').addEventListener('click', function () { sendMessage('queue') })
+    $('btn-chat-send').addEventListener('click', function () { sendMessage(selectedSendMode()) })
     $('btn-chat-steer').addEventListener('click', function () { sendMessage('steer') })
+    $('session-send-mode').addEventListener('change', function () {
+      var select = $('session-send-mode')
+      var steer = select.value === 'steer'
+      $('btn-chat-send').textContent = steer ? '插入发送' : '发送'
+    })
+    $('session-permission').addEventListener('change', function () {
+      var select = $('session-permission')
+      if (select.value !== 'danger-full-access') return
+      if (window.confirm('完全访问会允许新会话读写工作区并跳过审批确认,确定启用吗？')) return
+      select.value = 'workspace-write'
+    })
     $('btn-chat-export').addEventListener('click', exportSession)
     $('chat-input').addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) {

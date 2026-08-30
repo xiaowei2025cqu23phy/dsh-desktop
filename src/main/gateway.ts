@@ -13,8 +13,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
-import { readFileSync, existsSync, mkdirSync, readdirSync, statSync, accessSync, constants, statfsSync } from 'node:fs'
-import { extname, join, resolve, sep, basename } from 'node:path'
+import { createReadStream, readFileSync, existsSync, mkdirSync, readdirSync, statSync, accessSync, constants, statfsSync } from 'node:fs'
+import { dirname, extname, join, resolve, sep, basename } from 'node:path'
 import { app, nativeImage } from 'electron'
 import type { ConfigStore } from './config'
 import type { EventHub } from './event-hub'
@@ -256,6 +256,10 @@ export class RemoteGateway {
       if (req.method === 'POST' && path === '/api/respond') {
         // 审批/提问应答:转发到 harness 的 /api/respond(带 token 认证)。
         await this.handleRespond(url, req, res)
+        return
+      }
+      if (req.method === 'GET' && path === '/api/fs/stream') {
+        await this.serveFsStream(url, req, res)
         return
       }
       if (req.method === 'GET' && path === '/api/tasks') {
@@ -895,7 +899,15 @@ export class RemoteGateway {
         }
       }
       list.sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1))
-      this.json(res, 200, { ok: true, path, entries: list.slice(0, 200), truncated: list.length > 200 })
+      const parent = dirname(path)
+      const parentAllowed = parent !== path && (await this.fsAllowed(parent))
+      this.json(res, 200, {
+        ok: true,
+        path,
+        parent: parentAllowed ? parent : '',
+        entries: list.slice(0, 200),
+        truncated: list.length > 200,
+      })
     } catch (error) {
       this.json(res, 500, { error: error instanceof Error ? error.message : String(error) })
     }
@@ -949,6 +961,83 @@ export class RemoteGateway {
     } catch (error) {
       this.json(res, 500, { error: error instanceof Error ? error.message : String(error) })
     }
+  }
+
+  /** Stream a whitelisted file with byte ranges for browser-native media/PDF viewers. */
+  private async serveFsStream(url: URL, req: IncomingMessage, res: ServerResponse, body?: { path?: unknown }): Promise<void> {
+    if (!this.authorized(url, req)) {
+      this.json(res, 401, { error: 'unauthorized' })
+      return
+    }
+    const raw = typeof body?.path === 'string' ? body.path : url.searchParams.get('path')
+    const path = typeof raw === 'string' ? raw.trim() : ''
+    if (!(await this.fsAllowed(path))) {
+      this.json(res, 403, { error: 'path not allowed' })
+      return
+    }
+    let size: number
+    try {
+      const info = statSync(path)
+      if (!info.isFile()) {
+        this.json(res, 400, { error: 'not a file' })
+        return
+      }
+      size = info.size
+    } catch {
+      this.json(res, 404, { error: 'file not found' })
+      return
+    }
+    const mimeByExt: Record<string, string> = {
+      '.pdf': 'application/pdf',
+      '.mp4': 'video/mp4',
+      '.webm': 'video/webm',
+      '.mov': 'video/quicktime',
+      '.m4v': 'video/x-m4v',
+      '.mp3': 'audio/mpeg',
+      '.wav': 'audio/wav',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+    }
+    const contentType = mimeByExt[extname(path).toLowerCase()] ?? 'application/octet-stream'
+    const range = req.headers.range
+    let start = 0
+    let end = Math.max(0, size - 1)
+    if (range !== undefined) {
+      const match = /^bytes=(\\d*)-(\\d*)$/.exec(range)
+      if (match === null || size === 0) {
+        res.writeHead(416, { 'content-range': `bytes */${size}` })
+        res.end()
+        return
+      }
+      if (match[1] !== '') start = Number(match[1])
+      if (match[2] !== '') end = Number(match[2])
+      else end = Math.min(size - 1, start + 1024 * 1024 - 1)
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size) {
+        res.writeHead(416, { 'content-range': `bytes */${size}` })
+        res.end()
+        return
+      }
+      end = Math.min(end, size - 1)
+    }
+    const length = size === 0 ? 0 : end - start + 1
+    res.writeHead(range === undefined ? 200 : 206, {
+      'content-type': contentType,
+      'content-length': length,
+      'accept-ranges': 'bytes',
+      ...(range === undefined ? {} : { 'content-range': `bytes ${start}-${end}/${size}` }),
+      'cache-control': 'no-store',
+    })
+    if (size === 0) {
+      res.end()
+      return
+    }
+    createReadStream(path, { start, end }).on('error', () => {
+      if (!res.headersSent) res.writeHead(500)
+      res.destroy()
+    }).pipe(res)
   }
 
   /** 把目录添加为预设工作区根(仅限可浏览目录;去重)。 */
