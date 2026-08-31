@@ -795,14 +795,81 @@
     var permission = $('session-permission') ? $('session-permission').value : ''
     apiRpc('session.create', payload).then(function (created) {
       var sessionId = created.sessionId
-      var permissionTask = permission === '' ? Promise.resolve() : executeCommand(sessionId, '/permission ' + permission)
-      return permissionTask.then(function () {
-        openSession(sessionId, state.currentWsPath)
-        loadSidebar()
+      openSession(sessionId, state.currentWsPath)
+      loadSidebar()
+      if (permission === '') return
+      // 权限预设是可用性增强:命令失败(旧版 harness 无 /permission)时
+      // 会话仍已打开,只提示未生效,绝不让「建了会话却用不了」。
+      executeCommand(sessionId, '/permission ' + permission).catch(function (err) {
+        S.toast('权限未生效:' + err.message, 'error')
       })
     }).catch(function (err) {
       S.toast('新建会话失败:' + err.message, 'error')
     })
+  }
+
+  /** 新对话工作区选择:先选工作区/预设根,再创建对话(与 harness Web 一致)。 */
+  function openNewsessSheet() {
+    openSheet($('view-newsess'))
+    var select = $('newsess-workspace') as HTMLSelectElement
+    var status = $('newsess-status')
+    status.textContent = '加载工作区…'
+    select.innerHTML = ''
+    Promise.all([
+      apiRpc('workspace.list', {}).catch(function () { return { items: [] } }),
+      apiAction('fs.list', { path: '' }).then(function (d) { return d.roots || [] }).catch(function () { return [] }),
+    ]).then(function (results) {
+      var workspaces = results[0].items || []
+      var roots = results[1].filter(function (r) { return r.isPreset })
+      var opt0 = document.createElement('option')
+      opt0.value = ''
+      opt0.textContent = '(默认目录)'
+      select.appendChild(opt0)
+      workspaces.forEach(function (ws) {
+        var o = document.createElement('option')
+        o.value = 'ws:' + ws.workspaceId
+        o.setAttribute('data-path', ws.path)
+        o.textContent = '📂 ' + (ws.title || ws.path)
+        select.appendChild(o)
+      })
+      roots.forEach(function (root) {
+        var o = document.createElement('option')
+        o.value = 'root:' + root.path
+        o.textContent = '📁 预设根:' + (root.name || root.path)
+        select.appendChild(o)
+      })
+      var selected = ''
+      if (state.currentWsId) selected = 'ws:' + state.currentWsId
+      else if (state.currentWsRoot) selected = 'root:' + state.currentWsRoot
+      if (selected !== '') select.value = selected
+      status.textContent = (workspaces.length === 0 && roots.length === 0)
+        ? '还没有工作区,先点下方「新建工作区」'
+        : ''
+    }).catch(function (err) {
+      status.textContent = '加载失败:' + err.message
+    })
+  }
+
+  /** 从新对话工作区选择结果创建会话。 */
+  function createFromNewsess() {
+    var select = $('newsess-workspace') as HTMLSelectElement
+    var option = select.options[select.selectedIndex] as HTMLOptionElement | null
+    var value = option ? option.value : ''
+    state.currentWsId = null
+    state.currentWsRoot = null
+    state.currentWsPath = null
+    if (value.indexOf('ws:') === 0) {
+      var wsId = value.slice(3)
+      state.currentWsId = wsId
+      var path = option ? option.getAttribute('data-path') || '' : ''
+      if (path !== '') state.currentWsPath = path
+    } else if (value.indexOf('root:') === 0) {
+      var rootPath = value.slice(5)
+      state.currentWsRoot = rootPath
+      state.currentWsPath = rootPath
+    }
+    closeSheet($('view-newsess'))
+    newSession()
   }
 
   function sendMessage(mode) {
@@ -847,6 +914,15 @@
       if (state.workspaces[i].path === path) return state.workspaces[i].workspaceId
     }
     return null
+  }
+
+  /** Normalize a path for grouping: strip trailing separators and, on
+   *  Windows, fold the case (a session cwd and a workspace path can differ
+   *  in case or trailing slash yet be the same directory). */
+  function groupKey(path) {
+    if (!path) return ''
+    var p = String(path).replace(/[\\/]+$/, '')
+    return /^[A-Za-z]:/.test(p) ? p.toLowerCase() : p
   }
 
   /** Make a clicked workspace the explicit target of the next new session. */
@@ -908,17 +984,28 @@
       var byPath = {}
       workspaces.forEach(function (ws) {
         ws.sessions = []
-        byPath[ws.path] = ws
+        byPath[groupKey(ws.path)] = ws
       })
       presetRoots.forEach(function (root) { root.sessions = [] })
       var rootByPath = {}
-      presetRoots.forEach(function (root) { rootByPath[root.path] = root })
+      presetRoots.forEach(function (root) { rootByPath[groupKey(root.path)] = root })
       var unmatched = []
       rest.forEach(function (s) {
-        var ws = byPath[s.cwd]
-        if (ws) ws.sessions.push(s)
-        else if (rootByPath[s.cwd]) rootByPath[s.cwd].sessions.push(s)
-        else unmatched.push(s)
+        var key = groupKey(s.cwd)
+        if (key !== '') {
+          // A session created in a preset root's descendant, or a cwd with a
+          // differing case/trailing slash, still belongs to the matching
+          // workspace; only true non-project sessions fall to "recent".
+          var ws = byPath[key]
+          if (ws) { ws.sessions.push(s); return }
+          var root = rootByPath[key]
+          if (root) { root.sessions.push(s); return }
+          var inside = workspaces.find(function (w) { return key.indexOf(groupKey(w.path) + '\\') === 0 || key.indexOf(groupKey(w.path) + '/') === 0 })
+          if (inside !== undefined) { inside.sessions.push(s); return }
+          var insideRoot = presetRoots.find(function (r) { return key.indexOf(groupKey(r.path) + '\\') === 0 || key.indexOf(groupKey(r.path) + '/') === 0 })
+          if (insideRoot !== undefined) { insideRoot.sessions.push(s); return }
+        }
+        unmatched.push(s)
       })
       state.workspaces = workspaces
       state.currentWsId = findWorkspaceId(state.currentWsPath) || state.currentWsId
@@ -1218,6 +1305,8 @@
       closeSheet($('view-newws'))
       loadSidebar()
       fillWorkspaceSelect(created.workspaceId)
+      // 与 harness Web 一致:建好工作区后直接进入「新对话」选择。
+      openNewsessSheet()
     }).catch(function (err) {
       statusEl.textContent = '注册失败:' + err.message
     })
@@ -1245,6 +1334,8 @@
       closeSheet($('view-newws'))
       loadSidebar()
       fillWorkspaceSelect(created.workspaceId)
+      // 与 harness Web 一致:建好工作区后直接进入「新对话」选择。
+      openNewsessSheet()
     }).catch(function (err) {
       statusEl.textContent = '创建失败:' + err.message
     })
@@ -1397,6 +1488,30 @@
   function closeSheet(el) { el.classList.add('hidden') }
 
   // ---- 手机壁纸选择 ----
+  /** Upload a wallpaper image chosen from the phone's own gallery. */
+  function uploadPhoneWallpaper() {
+    var input = $('wallpaper-upload-input') as HTMLInputElement
+    if (input === null || input.files === null || input.files.length === 0) return
+    var file = input.files[0]
+    var reader = new FileReader()
+    reader.onload = function () {
+      var dataUrl = typeof reader.result === 'string' ? reader.result : ''
+      if (dataUrl === '') { S.toast('读取图片失败', 'error'); return }
+      if (file.size > 12 * 1024 * 1024) { S.toast('图片过大(限 12MB)', 'error'); return }
+      S.toast('上传壁纸中…', '')
+      apiAction('appearance.uploadPhoneWallpaper', { data: dataUrl }).then(function () {
+        S.toast('壁纸已设为手机背景', 'ok')
+        loadWallpapers()
+        applyWallpaper(state.server)
+      }).catch(function (err) {
+        S.toast('上传失败:' + err.message, 'error')
+      })
+    }
+    reader.onerror = function () { S.toast('读取图片失败', 'error') }
+    reader.readAsDataURL(file)
+    input.value = ''
+  }
+
   function loadWallpapers() {
     var host = $('set-wallpapers')
     fetch(state.server + '/api/wallpapers?token=' + encodeURIComponent(state.token), {
@@ -2086,12 +2201,20 @@
 
     // 侧边栏
     $('btn-menu').addEventListener('click', openSidebar)
-    $('btn-empty-new').addEventListener('click', newSession)
-    $('btn-new-session').addEventListener('click', newSession)
+    $('btn-empty-new').addEventListener('click', openNewsessSheet)
+    $('btn-new-session').addEventListener('click', openNewsessSheet)
     $('btn-sidebar-close').addEventListener('click', closeSidebar)
     $('sidebar-backdrop').addEventListener('click', closeSidebar)
     $('btn-new-workspace').addEventListener('click', function () {
       closeSidebar()
+      openNewWsSheet()
+    })
+
+    // 新对话弹层(工作区优先,与 harness Web 一致)
+    $('btn-newsess-close').addEventListener('click', function () { closeSheet($('view-newsess')) })
+    $('btn-newsess-create').addEventListener('click', createFromNewsess)
+    $('btn-newsess-newws').addEventListener('click', function () {
+      closeSheet($('view-newsess'))
       openNewWsSheet()
     })
 
@@ -2113,6 +2236,7 @@
       if (window.confirm('完全访问会允许新会话读写工作区并跳过审批确认,确定启用吗？')) return
       select.value = 'workspace-write'
     })
+    $('btn-wallpaper-upload').addEventListener('click', uploadPhoneWallpaper)
     $('btn-chat-export').addEventListener('click', exportSession)
     $('chat-input').addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) {

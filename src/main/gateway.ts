@@ -13,7 +13,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
-import { createReadStream, readFileSync, existsSync, mkdirSync, readdirSync, statSync, accessSync, constants, statfsSync } from 'node:fs'
+import { createReadStream, readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, statSync, accessSync, constants, statfsSync } from 'node:fs'
 import { dirname, extname, join, resolve, sep, basename } from 'node:path'
 import { app, nativeImage } from 'electron'
 import type { ConfigStore } from './config'
@@ -619,6 +619,10 @@ export class RemoteGateway {
       this.json(res, 200, { ok: true })
       return
     }
+    if (body.action === 'appearance.uploadPhoneWallpaper') {
+      await this.uploadPhoneWallpaper(res, body as { data?: unknown })
+      return
+    }
     if (body.action === 'appearance.clearPhoneWallpaper') {
       this.config.update('appearance', { phone: { path: null, position: { x: 0.5, y: 0.5 } } })
       this.json(res, 200, { ok: true })
@@ -1182,6 +1186,57 @@ export class RemoteGateway {
       }
     }
     return entries
+  }
+
+  /**
+   * Upload a phone wallpaper picked from the device's own photo library.
+   * The body carries a base64 data URL; size and image magic are validated,
+   * the decoded bytes are saved under the userData wallpapers folder as a
+   * `phone-<ts>.<ext>` file, and it becomes the active phone wallpaper.
+   */
+  private async uploadPhoneWallpaper(res: ServerResponse, body: { data?: unknown }): Promise<void> {
+    if (typeof body.data !== 'string' || body.data === '') {
+      this.json(res, 400, { error: 'data URL required' })
+      return
+    }
+    const match = /^data:(image\/(?:png|jpeg|webp|gif|bmp));base64,([A-Za-z0-9+/=]+)$/.exec(body.data)
+    if (match === null) {
+      this.json(res, 400, { error: 'unsupported image format (png/jpeg/webp/gif/bmp)' })
+      return
+    }
+    const ext: Record<string, string> = {
+      'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp',
+      'image/gif': 'gif', 'image/bmp': 'bmp',
+    }
+    let bytes: Buffer
+    try {
+      bytes = Buffer.from(match[2]!, 'base64')
+    } catch {
+      this.json(res, 400, { error: 'invalid base64 payload' })
+      return
+    }
+    if (bytes.length === 0 || bytes.length > 12 * 1024 * 1024) {
+      this.json(res, 400, { error: 'image size must be between 1 byte and 12 MB' })
+      return
+    }
+    // Magic-byte guard so a non-image payload cannot be persisted as wallpaper.
+    const sig = bytes.subarray(0, 8)
+    const isPng = sig[0] === 0x89 && sig[1] === 0x50 && sig[2] === 0x4e && sig[3] === 0x47
+    const isJpeg = sig[0] === 0xff && sig[1] === 0xd8 && sig[2] === 0xff
+    const isGif = sig[0] === 0x47 && sig[1] === 0x49 && sig[2] === 0x46 && sig[3] === 0x38
+    const isWebp = sig[0] === 0x52 && sig[1] === 0x49 && sig[2] === 0x46 && sig[3] === 0x46
+    const isBmp = sig[0] === 0x42 && sig[1] === 0x4d
+    if (!isPng && !isJpeg && !isGif && !isWebp && !isBmp) {
+      this.json(res, 400, { error: 'payload is not a recognized image' })
+      return
+    }
+    const userRoot = join(app.getPath('userData'), 'wallpapers')
+    mkdirSync(userRoot, { recursive: true })
+    const file = join(userRoot, `phone-${Date.now()}.${ext[match[1]!] ?? 'png'}`)
+    writeFileSync(file, bytes)
+    this.config.update('appearance', { phone: { path: file, position: { x: 0.5, y: 0.5 } } })
+    this.config.appendAudit({ time: Date.now(), type: 'remote.wallpaper-upload', detail: '手机端上传了自定义壁纸' })
+    this.json(res, 200, { ok: true, path: file })
   }
 
   /** 手机 PWA 背景壁纸:与桌面端主窗口壁纸保持一致。 */

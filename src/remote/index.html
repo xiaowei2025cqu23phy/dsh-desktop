@@ -116,6 +116,23 @@
       </div>
     </div>
 
+    <!-- 新对话:先选工作区(与 harness Web 一致的工作区优先流程) -->
+    <div id="view-newsess" class="sheet hidden">
+      <header class="sheet-head">
+        <h2>新对话</h2>
+        <button id="btn-newsess-close" class="btn btn-ghost">✕</button>
+      </header>
+      <div class="task-form">
+        <p class="conn-status" id="newsess-status"></p>
+        <div class="field">
+          <label>工作区(项目目录)</label>
+          <select id="newsess-workspace"></select>
+        </div>
+        <button id="btn-newsess-create" class="btn btn-primary btn-block">在此新建对话</button>
+        <button id="btn-newsess-newws" class="btn btn-block">＋ 先新建工作区</button>
+      </div>
+    </div>
+
     <!-- 任务弹层 -->
     <div id="view-task" class="sheet hidden">
       <header class="sheet-head">
@@ -236,6 +253,10 @@
         <div class="field">
           <label>手机壁纸(点击切换)</label>
           <div id="set-wallpapers" class="wallpaper-grid"><p class="empty">加载中…</p></div>
+          <div class="field-row">
+            <input id="wallpaper-upload-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" />
+            <button id="btn-wallpaper-upload" class="btn">📷 相册图片设为壁纸</button>
+          </div>
         </div>
         <div class="field">
           <label>预设工作区根目录(手机端仅可在这些目录下新建文件夹工作区)</label>
