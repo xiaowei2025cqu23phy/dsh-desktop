@@ -78,12 +78,23 @@ On first launch it probes `http://127.0.0.1:3080`: an existing harness is adopte
 
 ## Phone Remote Control (PWA)
 
-Enable it in **Settings → Remote Access**. The desktop app starts a LAN gateway (default port 3082, Bearer token auth):
+Enable it in **Settings → Remote Access**. The desktop starts a LAN gateway (default port 3082, configurable, Bearer token auth):
 
-1. Connect the phone to the same Wi-Fi and scan the **QR code** in the settings panel (or open `http://<PC-IP>:3082` in a browser).
-2. The PWA fills in the address and token automatically; add it to the home screen to use it like an app.
+1. Connect the phone to the same Wi-Fi and scan the **QR code** in the settings panel (or open `http://<PC-IP>:3082`).
+2. The PWA fills in the address & token automatically; add it to the home screen to use it like an app.
 
-Phone features: session list / history / real-time streaming chat / stop tasks; one-click task runner (description + workspace + model); workspace list & creation; **folder browsing** (📂 on each workspace, tap a file to preview text ≤64KB); **phone-side settings** — manage preset workspace roots (view / remove / browse-to-add), phone wallpaper, scheduled tasks, restart Harness. Security: Bearer token + RPC allowlist + file-browse allowlist (workspaces/preset roots only, 403 otherwise), LAN only.
+> Security: remote access auto-disables 2 hours after enabling (expiry policy adjustable in settings); LAN only — never expose it via tunneling/port-forwarding.
+
+Phone features:
+- **Workspace-first new conversations** (same flow as harness Web): pick or create a workspace first, then start a conversation; new sessions land in the chosen workspace group (preset roots work as workspaces too)
+- **Sessions**: list / history / live streaming / stop; send modes: queue, or steer (interrupt & insert)
+- **Permission presets** per new session: workspace-write or danger-full-access (harness `/permission`; needs a recent harness)
+- **Tasks**: description + workspace + model, run & watch live
+- **Workspaces**: list / create / folder browsing; **file preview**: text/Markdown/images/video (mp4/webm)/audio/PDF — when the browser blocks inline PDF, use open-in-new-tab / download
+- **Wallpaper**: built-in packs, or **upload a picture from the phone gallery** as wallpaper
+- **Settings**: preset workspace roots (view/remove/browse-to-add), scheduled tasks, restart Harness
+- **Auto-reconnect**: exponential backoff after network drops; returns to the same conversation
+- **Security**: Bearer token + RPC allowlist + file-browse allowlist (workspaces/preset roots only, 403 otherwise), LAN only
 
 ## QQ Bot Remote Control (optional)
 
