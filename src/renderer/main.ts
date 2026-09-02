@@ -743,6 +743,38 @@ function togglePreviewView(): void {
 
 let lastStableBaseUrl = ''
 
+const OFFICIAL_HARNESS_CMD = 'npx --yes @deepseek-ai/dsh web --port {port}'
+
+/** 命令模板选择:官方最新 / 官方指定版本 / 本机仓库,选中即填入命令框;手动输入时回到「自定义」。 */
+function initCommandTemplate(selectId: string, inputId: string): void {
+  const templateSelect = $id(selectId) as HTMLSelectElement
+  const commandInput = input(inputId)
+  templateSelect.addEventListener('change', () => {
+    const value = templateSelect.value
+    if (value === '') return
+    if (value === 'official') {
+      commandInput.value = OFFICIAL_HARNESS_CMD
+    } else if (value === 'official-version') {
+      const version = window.prompt('官方版本号(如 0.1.1-rc.2,必须已在 npm 发布):', '0.1.1-rc.2')
+      if (version === null) { templateSelect.value = ''; return }
+      const trimmed = version.trim()
+      if (trimmed === '') { templateSelect.value = ''; return }
+      commandInput.value = `npx --yes @deepseek-ai/dsh@${trimmed} web --port {port}`
+    } else if (value === 'local') {
+      void API.dialog.pickFile().then((file) => {
+        if (file === null) { templateSelect.value = ''; return }
+        commandInput.value = `"${file}" web --port {port}`
+        // 与手动修改命令一样触发保存。
+        commandInput.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+      return
+    }
+    // 与手动修改命令一样触发保存。
+    commandInput.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  commandInput.addEventListener('input', () => { if (templateSelect.value !== '') templateSelect.value = '' })
+}
+
 async function loadPreviewConfig(): Promise<void> {
   try {
     const config = await API.preview.getConfig() as {
@@ -2034,6 +2066,10 @@ function bind(): void {
   for (const id of ['cfg-url', 'cfg-port', 'cfg-command', 'cfg-dshhome']) {
     input(id).addEventListener('change', () => void saveHarnessConfig())
   }
+
+  // 命令模板:官方最新 / 官方指定版本 / 本机仓库,填入命令框。
+  initCommandTemplate('cfg-command-preset', 'cfg-command')
+  initCommandTemplate('pv-command-preset', 'pv-command')
 
   // Provider 向导
   const presetSelect = select('gw-preset')

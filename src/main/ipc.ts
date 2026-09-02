@@ -117,6 +117,23 @@ export function registerIpc(deps: IpcDeps): void {
         : await dialog.showOpenDialog(win, options)
       return result.canceled ? [] : result.filePaths
     })
+    // 挑选单个可执行文件(如本地 harness 的 run-local.cmd / 启动脚本)。
+    ipcMain.handle('dialog:pickFile', async (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const options: Electron.OpenDialogOptions = {
+        title: '选择 harness 启动脚本(.cmd / .bat / .js / .mjs)',
+        buttonLabel: '选择',
+        properties: ['openFile'],
+        filters: [
+          { name: '启动脚本', extensions: ['cmd', 'bat', 'js', 'mjs', 'cjs', 'exe'] },
+          { name: '全部文件', extensions: ['*'] },
+        ],
+      }
+      const result = win === null
+        ? await dialog.showOpenDialog(options)
+        : await dialog.showOpenDialog(win, options)
+      return result.canceled ? null : (result.filePaths[0] ?? null)
+    })
   }
 
   // ---- QQ 机器人 ----

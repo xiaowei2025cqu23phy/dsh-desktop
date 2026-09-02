@@ -74,6 +74,7 @@ const api = {
   },
   dialog: {
     pickDirectories: () => ipcRenderer.invoke('dialog:pickDirectories'),
+    pickFile: () => ipcRenderer.invoke('dialog:pickFile'),
   },
   qq: {
     getConfig: () => ipcRenderer.invoke('qq:getConfig'),

@@ -1787,35 +1787,63 @@
       var source = state.server + '/api/fs/stream?path=' + encodeURIComponent(path)
         + '&token=' + encodeURIComponent(state.token) + '&device=' + encodeURIComponent(state.deviceId)
       if (media === 'pdf') {
-        var frame = document.createElement('iframe')
-        frame.className = 'fsp-frame'
-        frame.title = name
-        frame.src = source
-        content.appendChild(frame)
+        // 手机浏览器通常禁用在 iframe 里嵌 PDF;提供"新窗口打开 + 下载"。
+        var pdfHint = document.createElement('p')
+        pdfHint.className = 'empty'
+        pdfHint.textContent = '浏览器不支持内嵌 PDF,请用下方按钮打开或下载'
+        content.appendChild(pdfHint)
+        content.appendChild(previewActionRow(source, name, true))
       } else if (media === 'video') {
         var video = document.createElement('video')
         video.className = 'fsp-media'
         video.controls = true
         video.playsInline = true
+        video.preload = 'metadata'
         video.src = source
         content.appendChild(video)
+        content.appendChild(previewActionRow(source, name, false))
       } else if (media === 'audio') {
         var audio = document.createElement('audio')
         audio.className = 'fsp-audio'
         audio.controls = true
+        audio.preload = 'metadata'
         audio.src = source
         content.appendChild(audio)
+        content.appendChild(previewActionRow(source, name, false))
       } else {
         var image = document.createElement('img')
         image.className = 'fsp-media'
         image.alt = name
         image.src = source
         content.appendChild(image)
+        content.appendChild(previewActionRow(source, name, false))
       }
       return
     }
     content.textContent = '加载中…'
     loadFsPreviewChunk(path, 0)
+  }
+
+  /** 预览底部操作行:新窗口打开(可选)+ 下载。 */
+  function previewActionRow(source, name, withOpen) {
+    var row = document.createElement('div')
+    row.className = 'fsp-actions'
+    if (withOpen) {
+      var open = document.createElement('a')
+      open.className = 'btn'
+      open.href = source
+      open.target = '_blank'
+      open.rel = 'noopener'
+      open.textContent = '↗ 在新窗口打开'
+      row.appendChild(open)
+    }
+    var dl = document.createElement('a')
+    dl.className = 'btn'
+    dl.href = source
+    dl.download = name
+    dl.textContent = '⬇ 下载'
+    row.appendChild(dl)
+    return row
   }
 
   function renderMarkdownPreview(text) {

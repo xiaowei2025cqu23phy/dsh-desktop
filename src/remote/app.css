@@ -366,6 +366,8 @@ textarea { resize: vertical; }
 .fsp-frame { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
 .fsp-media { display: block; max-width: 100%; max-height: 100%; margin: auto; object-fit: contain; }
 .fsp-audio { width: 100%; margin: auto; }
+.fsp-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
+.fsp-actions .btn { text-decoration: none; display: inline-block; text-align: center; }
 
 /* ---- 切换会话模型 ---- */
 .model-group {

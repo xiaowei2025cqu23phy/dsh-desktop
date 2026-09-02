@@ -222,6 +222,7 @@ interface DesktopApi {
   }
   dialog: {
     pickDirectories(): Promise<string[]>
+    pickFile(): Promise<string | null>
   }
   qq: {
     getConfig(): Promise<QQConfigView>

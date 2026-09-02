@@ -1010,7 +1010,7 @@ export class RemoteGateway {
     let start = 0
     let end = Math.max(0, size - 1)
     if (range !== undefined) {
-      const match = /^bytes=(\\d*)-(\\d*)$/.exec(range)
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range)
       if (match === null || size === 0) {
         res.writeHead(416, { 'content-range': `bytes */${size}` })
         res.end()

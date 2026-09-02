@@ -196,7 +196,13 @@
           <input id="cfg-port" type="number" min="1" max="65535" />
         </div>
         <div class="field">
-          <label for="cfg-command">启动命令({port} 为端口占位)</label>
+          <label for="cfg-command-preset">命令模板(选择后自动填入下方)</label>
+          <select id="cfg-command-preset">
+            <option value="">自定义</option>
+            <option value="official">官方最新版(npx 自动下载)</option>
+            <option value="official-version">官方指定版本…</option>
+            <option value="local">本机仓库(选 run-local.cmd)…</option>
+          </select>
           <input id="cfg-command" type="text" />
         </div>
         <div class="field">
@@ -224,7 +230,13 @@
           <input id="pv-port" type="number" min="1" max="65535" />
         </div>
         <div class="field">
-          <label for="pv-command">启动命令(本地构建或官方包,{port} 为占位)</label>
+          <label for="pv-command-preset">命令模板(选择后自动填入下方)</label>
+          <select id="pv-command-preset">
+            <option value="">自定义</option>
+            <option value="official">官方最新版(npx 自动下载)</option>
+            <option value="official-version">官方指定版本…</option>
+            <option value="local">本机仓库(选 run-local.cmd)…</option>
+          </select>
           <input id="pv-command" type="text" />
         </div>
         <div class="field">
