@@ -384,12 +384,20 @@
 
   // ---- 事件流(一次性票:断线必须重新取票,否则审批/提问永远收不到) ----
   var esDelay = 1000
+  var esAttempts = 0
   var reconnectTimer: ReturnType<typeof setTimeout> | null = null
   var eventsGeneration = 0
   var eventsWasDisconnected = false
   function scheduleEventsReconnect(generation) {
     if (generation !== eventsGeneration || reconnectTimer !== null) return
     setConnDot(false)
+    esAttempts += 1
+    if (esAttempts === 2) {
+      // 远程访问启用 2 小时后会自动关闭,这是"连不上"最常见的原因;
+      // 静默重试会让用户以为网络坏了,给一次明确提示。
+      setChatStatus('连接中断,自动重连中…若长时间未恢复,请在电脑端「设置 → 远程访问」重新启用', 'err')
+      S.toast('连接中断:若长时间未恢复,请在电脑端重新启用远程访问(启用 2 小时后会自动关闭)', 'error')
+    }
     reconnectTimer = setTimeout(function () {
       reconnectTimer = null
       connectEvents()
@@ -422,6 +430,7 @@
         if (generation !== eventsGeneration) return
         setConnDot(true)
         esDelay = 1000
+        esAttempts = 0
         if (eventsWasDisconnected && state.sessionId !== null) {
           // SSE has no replay cursor; reload the current session after a
           // successful reconnect so events missed during the outage are not
