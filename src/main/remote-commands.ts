@@ -13,8 +13,9 @@
 import type { HarnessManager } from './harness'
 import type { ServerRequest } from './client'
 import type { ConfigStore } from './config'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { resolve, sep } from 'node:path'
+import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join, resolve, sep } from 'node:path'
 import { parseCommand, parseTaskOptions, type QQCommand } from './qq-commands'
 
 /** 单条回复长度上限(超长由通道分段)。 */
@@ -216,6 +217,8 @@ export class RemoteCommandProcessor {
   private liveViews = new Map<string, LiveView>()
   /** 无工作区任务的"默认任务会话"(按 channel:userId 复用;「任务 新:」另起)。 */
   private defaultTaskSessions = new Map<string, string>()
+  /** 机器人对话工作区目录(纯对话/群聊会话的落点,让对话在侧边栏可见)。 */
+  private robotChatDir: string | null = null
   /** 已提示过安全提醒的群(进程内去重)。 */
   private groupNoticed = new Set<string>()
 
@@ -223,6 +226,27 @@ export class RemoteCommandProcessor {
   private contextKey(channel: string, userId: string, pushTarget?: { scope: string; targetId: string }): string {
     if (pushTarget !== undefined && pushTarget.scope === 'group') return `${channel}:g:${pushTarget.targetId}`
     return `${channel}:${userId}`
+  }
+
+  /** 机器人对话目录:机器人对话(纯对话/群聊)统一落在一个可见工作区,
+   *  手机/QQ/桌面侧边栏都能直接看到;懒注册一次并缓存。 */
+  private async ensureRobotChatDir(
+    client: { rpc: <T>(method: string, payload: unknown, timeoutMs?: number) => Promise<T> },
+  ): Promise<string | null> {
+    if (this.robotChatDir !== null) return this.robotChatDir
+    const dir = join(homedir(), 'dsh-workspace', '机器人对话')
+    try {
+      const ws = await client.rpc<{ items: Array<{ path?: string }> }>('workspace.list', {}, 15000)
+      const exists = (ws.items ?? []).some((w) => (w.path ?? '').replace(/\\/g, '/').toLowerCase() === dir.replace(/\\/g, '/').toLowerCase())
+      if (!exists) {
+        mkdirSync(dir, { recursive: true })
+        try {
+          await client.rpc('workspace.create', { path: dir }, 20000)
+        } catch { /* 注册失败也不影响会话创建 */ }
+      }
+    } catch { /* 查询失败:仍返回目录,会话 cwd 落在该处(未注册则归入"最近") */ }
+    this.robotChatDir = dir
+    return dir
   }
 
   /** 消息进入机器人对话前校验:活动会话若已被归档,自动另开新对话并持久化。
@@ -1984,6 +2008,11 @@ export class RemoteCommandProcessor {
       const payload: Record<string, unknown> = {}
       if (workspaceId !== null) payload.workspaceId = workspaceId
       else if (cwd !== null) payload.cwd = cwd
+      else if (target === '') {
+        // 纯对话(机器人对话)统一落在"机器人对话"工作区,侧边栏/列表直接可见。
+        const dir = await this.ensureRobotChatDir(client)
+        if (dir !== null) payload.cwd = dir
+      }
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
       // 工作区 = 助手模式;纯对话 = 朋友模式。
       const kind = target === '' ? 'chat' : 'task'
