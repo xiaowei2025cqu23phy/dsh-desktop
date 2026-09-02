@@ -27,6 +27,7 @@ export type QQCommand =
   | { kind: 'export'; sessionId: string }
   | { kind: 'usage' }
   | { kind: 'character'; text: string }
+  | { kind: 'broadcast'; sessionId: string; on: boolean }
   | { kind: 'unknown'; text: string }
 
 /** 定时任务的调度表达(解析结果)。 */
@@ -84,6 +85,13 @@ export function parseCommand(content: string): QQCommand {
   }
   if (parts[0] === '重试' || parts[0] === 'retry') {
     return { kind: 'retry', taskId: parts[1] ?? '' }
+  }
+  // 现场播报开关:播报 [会话id] / 静音 [会话id]
+  if (parts[0] === '播报' || parts[0] === '开启播报' || parts[0] === '现场' || parts[0] === 'broadcast') {
+    return { kind: 'broadcast', sessionId: parts[1] ?? '', on: true }
+  }
+  if (parts[0] === '静音' || parts[0] === '关闭播报' || parts[0] === 'mute') {
+    return { kind: 'broadcast', sessionId: parts[1] ?? '', on: false }
   }
   if (parts[0] === '停止' || parts[0] === 'cancel') {
     return { kind: 'cancel', sessionId: parts[1] ?? '' }

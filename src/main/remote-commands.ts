@@ -20,6 +20,15 @@ import { parseCommand, parseTaskOptions, type QQCommand } from './qq-commands'
 /** 单条回复长度上限(超长由通道分段)。 */
 export const MAX_REPLY_LENGTH = 1500
 
+/** 现场播报间隔:摘要式节奏,避开 QQ 主动消息频控与刷屏。 */
+const LIVE_VIEW_INTERVAL_MS = 25_000
+
+function fmtDuration(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / 1000))
+  const minutes = Math.floor(seconds / 60)
+  return minutes === 0 ? `${seconds} 秒` : `${minutes} 分 ${seconds % 60} 秒`
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -53,6 +62,22 @@ interface SessionOwner {
   pushTarget?: { scope: string; targetId: string; msgId?: string }
   /** 会话类型:task=任务(完成/失败汇报),chat=对话(不推送回合结束汇报)。 */
   kind: 'task' | 'chat'
+}
+
+/** 任务会话「现场播报」:摘要式定时推送 agent 的最新文本与工具动作(QQ 无法真流式)。 */
+interface LiveView {
+  /** 最近一次工具动作(名称 + 参数摘要)。 */
+  tool: string
+  /** 最近一条完整的助手文本(assistant/message 定稿)。 */
+  text: string
+  /** 当前回合未定稿的增量文本(chunk 累积)。 */
+  chunkBuf: string
+  /** 自上次播报后有新内容(有内容变化才推送,避免刷屏)。 */
+  changed: boolean
+  /** 用户开关:发「静音」关闭,「播报」开启。 */
+  broadcast: boolean
+  startedAt: number
+  timer: ReturnType<typeof setInterval> | null
 }
 
 /** 待审批项。 */
@@ -136,6 +161,8 @@ export class RemoteCommandProcessor {
   private chatStream: ChatStreamSink | null = null
   /** 非流式通道的回合文本缓冲(整段推送用)。 */
   private chatReplyBuffer = new Map<string, string>()
+  /** 任务会话的现场播报状态(QQ/Telegram 可见 agent 过程)。 */
+  private liveViews = new Map<string, LiveView>()
 
   /** 注入流式输出实现(仅支持主动流式的通道,如 QQ 私聊)。 */
   setChatStream(sink: ChatStreamSink): void {
@@ -325,6 +352,7 @@ export class RemoteCommandProcessor {
           const key = `${next.channel}:${next.userId}`
           this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget: next.pushTarget ?? undefined, kind: 'task' })
           this.taskDescriptions.set(created.sessionId, next.description)
+          if (next.pushTarget !== null && next.pushTarget !== undefined) this.startLiveView(created.sessionId, next.pushTarget.scope !== 'group')
           this.recordTask({ description: next.description, sessionId: created.sessionId, workspace: next.workspace, status: 'running' })
           target.upsertTaskQueueEntry({ ...next, sessionId: created.sessionId, status: 'running', attempts: 1, updatedAt: Date.now() })
           await client.rpc('session.prompt', {
@@ -599,8 +627,11 @@ export class RemoteCommandProcessor {
       '审批/提问推送也带按钮:✅ 允许 / ❌ 拒绝 / 选项按钮,点一下即应答',
       '',
       '📌 会话管理',
-      '进展 <会话id> — 任务实时进展',
+      '进展 <会话id> — 任务实时进展(含最近工具动作与输出)',
       '  例:进展 session-xxxxxxxx',
+      '播报 / 静音 — 现场播报开关(任务运行时每 25 秒推送 agent 进展)',
+      '  例:静音',
+      '  例:播报 session-xxxxxxxx',
       '停止 <会话id> — 停止任务',
       '  例:停止 session-xxxxxxxx',
       '打开 <会话id> — 查看会话内容',
@@ -676,6 +707,10 @@ export class RemoteCommandProcessor {
         return this.cmdOpen(command.sessionId)
       case 'progress':
         return this.cmdProgress(command.sessionId)
+      case 'broadcast': {
+        const owner = this.ownerFromKey(key)
+        return this.cmdBroadcast(owner.channel, owner.userId, command.sessionId, command.on)
+      }
       case 'run':
         return this.cmdRun(key, command.description, pushTarget)
       case 'retry':
@@ -1341,6 +1376,122 @@ export class RemoteCommandProcessor {
     }
   }
 
+  // ---- 现场播报(任务过程可见性) ----
+
+  /** 任务会话启动时开启现场播报(仅支持主动推送的通道会话;群聊默认静音防刷屏)。 */
+  private startLiveView(sessionId: string, enabledByDefault: boolean): void {
+    if (this.liveViews.has(sessionId)) return
+    const live: LiveView = { tool: '', text: '', chunkBuf: '', changed: false, broadcast: enabledByDefault, startedAt: Date.now(), timer: null }
+    this.liveViews.set(sessionId, live)
+    live.timer = setInterval(() => this.tickLiveView(sessionId), LIVE_VIEW_INTERVAL_MS)
+  }
+
+  /** 回合结束(含失败/TRANSPORT 重试)时停止播报;后续新回合懒重建。 */
+  private stopLiveView(sessionId: string): void {
+    const live = this.liveViews.get(sessionId)
+    if (live === undefined) return
+    if (live.timer !== null) clearInterval(live.timer)
+    this.liveViews.delete(sessionId)
+  }
+
+  /** 播报 tick:有新内容且未静音时推一条合并摘要;无人认领/超长运行自动收摊。 */
+  private tickLiveView(sessionId: string): void {
+    const live = this.liveViews.get(sessionId)
+    if (live === undefined) return
+    if (Date.now() - live.startedAt > 45 * 60 * 1000) {
+      this.stopLiveView(sessionId)
+      return
+    }
+    if (!live.changed || !live.broadcast || this.push === null) return
+    const owner = this.sessionOwners.get(sessionId)
+    if (owner === undefined || owner.pushTarget === undefined) {
+      this.stopLiveView(sessionId)
+      return
+    }
+    const lines = [`📡 现场播报 · 已运行 ${fmtDuration(Date.now() - live.startedAt)}`]
+    if (live.tool !== '') lines.push(`🔧 ${live.tool}`)
+    // 整段定稿优先;仅 chunk 流(无 assistant/message)时用增量缓冲尾部兜底。
+    const showText = live.text !== '' ? live.text : live.chunkBuf.slice(-400).replace(/\s+/g, ' ').trim()
+    if (showText !== '') lines.push(`💬 ${showText}`)
+    this.push(owner.channel, owner.userId, lines.join('\n'), undefined, owner.pushTarget)
+    live.changed = false
+  }
+
+  /** 任务会话事件 → 播报素材:工具动作、助手文本(chunk 累积 + 整段定稿);turn/end 停止。 */
+  private accumulateLive(sessionId: string, owner: SessionOwner, ev: Record<string, unknown>): void {
+    if (ev.type === 'turn/end') {
+      this.stopLiveView(sessionId)
+      return
+    }
+    let live = this.liveViews.get(sessionId)
+    if (live === undefined) {
+      // 新回合懒重建(TRANSPORT 重试 / 排队任务重跑 / 助手模式工作回合)。
+      if (this.push === null) return
+      const defaultOn = owner.pushTarget === undefined || owner.pushTarget.scope !== 'group'
+      live = { tool: '', text: '', chunkBuf: '', changed: false, broadcast: defaultOn, startedAt: Date.now(), timer: null }
+      this.liveViews.set(sessionId, live)
+    }
+    if (live.timer === null) {
+      live.timer = setInterval(() => this.tickLiveView(sessionId), LIVE_VIEW_INTERVAL_MS)
+    }
+    const data = isRecord(ev.data) ? ev.data : {}
+    if (ev.type === 'tool/call') {
+      const name = typeof data.name === 'string' && data.name !== '' ? data.name : '工具'
+      const args = typeof data.arguments === 'string' ? data.arguments : ''
+      const brief = args.replace(/\s+/g, ' ').trim().slice(0, 60)
+      live.tool = brief === '' ? name : `${name} ${brief}`
+      live.changed = true
+      return
+    }
+    if (ev.type === 'tool/result') {
+      if (data.error !== undefined && live.tool !== '' && !live.tool.startsWith('❌')) {
+        live.tool = `❌ ${live.tool} → 失败`
+        live.changed = true
+      }
+      return
+    }
+    if (ev.type === 'assistant/chunk') {
+      const chunk = isRecord(data.chunk) ? data.chunk : null
+      if (chunk !== null && chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text !== '') {
+        live.chunkBuf += chunk.text
+        if (live.chunkBuf.length > 2000) live.chunkBuf = live.chunkBuf.slice(-2000)
+        live.changed = true
+      }
+      return
+    }
+    if (ev.type === 'assistant/message') {
+      const message = isRecord(data.message) ? data.message : {}
+      const parts = Array.isArray(message.content) ? message.content : []
+      const text = parts.map((b) => isRecord(b) && typeof b.text === 'string' ? b.text : '').join('')
+      live.chunkBuf = ''
+      if (text.trim() !== '') {
+        live.text = text.replace(/\s+/g, ' ').trim().slice(0, 500)
+        live.changed = true
+      }
+    }
+  }
+
+  /** 播报开关:播报 [会话id] / 静音 [会话id](作用于该用户运行中的任务会话)。 */
+  private cmdBroadcast(channel: string, userId: string, sessionId: string, on: boolean): string {
+    let count = 0
+    for (const [sid, live] of this.liveViews) {
+      if (sessionId !== '' && sid !== sessionId) continue
+      const owner = this.sessionOwners.get(sid)
+      if (owner === undefined || owner.channel !== channel || owner.userId !== userId) continue
+      live.broadcast = on
+      if (on) live.changed = true
+      count += 1
+    }
+    if (count === 0) {
+      return on
+        ? '没有正在运行的任务可开启播报(任务启动后自动开启,发「静音」可随时关闭)'
+        : '当前没有正在运行的任务,无需静音'
+    }
+    return on
+      ? `🔊 已开启现场播报(${count} 个运行中的会话,每 25 秒合并推送最新进展)`
+      : `🔇 已静音(${count} 个运行中的会话),本次任务结束后恢复默认`
+  }
+
   /** 任务进展:会话状态 + 工具调用统计 + 最近输出摘要。 */
   private async cmdProgress(sessionId: string): Promise<string> {
     if (!/^session-/.test(sessionId)) return '请提供完整的会话 id(以 session- 开头)'
@@ -1366,12 +1517,18 @@ export class RemoteCommandProcessor {
         : '(暂无输出)'
       const status = meta?.running ? '▶ 运行中' : '⏸ 空闲/已结束'
       const title = meta?.title ?? '(无标题)'
+      // 现场播报的内存素材比历史拉取更新(含正在执行中的工具/未定稿文本)。
+      const live = this.liveViews.get(sessionId)
+      const liveText = live !== undefined && live.text !== '' ? live.text : ''
+      const liveTool = live !== undefined && live.tool !== '' ? live.tool : ''
       const lines = [
         `会话 ${sessionId.slice(0, 20)}…`,
         `${status} | ${title.slice(0, 30)}`,
         `最近 6 条消息内:工具调用 ${toolCalls} 次${toolFails > 0 ? `,失败 ${toolFails} 次` : ''}`,
-        `最新输出: ${lastText}`,
-      ]
+        ...(liveTool !== '' ? [`最近工具:${liveTool.slice(0, 120)}`] : []),
+        `最新输出: ${liveText !== '' ? liveText.slice(0, 300) : lastText}`,
+        live !== undefined ? `播报:${live.broadcast ? '开(发「静音」关闭)' : '关(发「播报」开启)'}` : '',
+      ].filter((line) => line !== '')
       return lines.join('\n')
     } catch (error) {
       return `查询失败:${error instanceof Error ? error.message : String(error)}`
@@ -1440,6 +1597,12 @@ export class RemoteCommandProcessor {
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
       this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
       this.taskDescriptions.set(created.sessionId, taskText)
+      const broadcastNote = pushTarget === undefined
+        ? ''
+        : pushTarget.scope === 'group'
+          ? '\n💬 群聊默认静音防刷屏,发「播报」可开启现场进展'
+          : '\n🔊 现场播报已开启(每 25 秒推送进展,发「静音」关闭)'
+      if (pushTarget !== undefined) this.startLiveView(created.sessionId, pushTarget.scope !== 'group')
       this.recordTask({ description: taskText, sessionId: created.sessionId, workspace: cwd ?? workspaceId, status: 'running' })
       this.enqueueTaskRun(taskText, created.sessionId, cwd ?? workspaceId)
       await client.rpc('session.prompt', {
@@ -1447,7 +1610,7 @@ export class RemoteCommandProcessor {
         mode: 'queue',
         content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(cwd, taskText)) }],
       })
-      return `任务已启动 ✓\n会话: ${created.sessionId}\n描述: ${taskText.slice(0, 80)}\n发送「进展 ${created.sessionId}」查看进展`
+      return `任务已启动 ✓\n会话: ${created.sessionId}\n描述: ${taskText.slice(0, 80)}${broadcastNote}\n发送「进展 ${created.sessionId}」查看详情`
     } catch (error) {
       return `启动失败:${error instanceof Error ? error.message : String(error)}`
     }
@@ -1722,6 +1885,8 @@ export class RemoteCommandProcessor {
       }
       return
     }
+    // 任务现场播报素材:工具动作 + 助手文本(chunk/整段);回合结束自动停止。
+    if (owner.pushTarget !== undefined) this.accumulateLive(sessionId, owner, payload.event)
     if (payload.event.type !== 'turn/end') return
     const failure = turnEndFailure(payload.event)
     if (failure === null) return
