@@ -1,7 +1,7 @@
 {
     "name":  "dsh-desktop",
     "productName":  "DeepSeek Harness Desktop",
-    "version":  "0.5.0",
+    "version":  "0.6.0",
     "description":  "DeepSeek Harness 桌面端:内嵌 Web UI、AI 屏保模式(替换系统屏保)、全模型快捷切换。",
     "main":  "dist/main/index.js",
     "private":  true,

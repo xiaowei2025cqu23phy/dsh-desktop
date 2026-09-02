@@ -35,7 +35,7 @@ Uninstalling keeps user config and wallpapers (does not delete `%APPDATA%`); for
 > Requirements: Windows x64, Node.js 18+ (only needed when the desktop app manages/hosts the harness).
 > Tip: Run `npx @deepseek-ai/dsh web` and configure a model API key first for the best experience.
 
-> 📖 Step-by-step installation, configuration, phone and QQ-bot usage: [Hands-on Guide (bilingual)](docs/USAGE.md). Hook up DingTalk / Feishu / Home Assistant / iOS Shortcuts and more: [Integration Guide](docs/INTEGRATIONS.md).
+> 📖 Step-by-step installation, configuration, phone and QQ-bot usage: [Hands-on Guide (bilingual)](docs/USAGE.md). Hook up DingTalk / Feishu / Home Assistant / iOS Shortcuts and more: [Integration Guide](docs/INTEGRATIONS.md). 🤖 Full QQ-bot guide (deploy/permissions/commands/FAQ): [QQ-BOT.md](docs/QQ-BOT.md). 📱 Phone PWA features: [PWA.md](docs/PWA.md).
 
 ## Features
 
@@ -45,6 +45,7 @@ Uninstalling keeps user config and wallpapers (does not delete `%APPDATA%`); for
 - **AI Screensaver (system screensaver replacement)**: after N idle minutes, a fullscreen view shows the agent working live (reasoning, text stream, tool calls); click, key, wheel, or touch exits instantly. Built-in **task timeout guard** prevents runaway CPU loops; can be registered as the Windows system screensaver — idle time becomes productive time.
 - **Phone remote control (PWA)**: scan the QR code to connect over LAN — send tasks, watch live streaming progress, stop tasks; **one-tap approval/question cards** — no more waiting forever when the agent asks for permission.
 - **QQ / Telegram bot channels**: run tasks from group chat or DM; **proactive push** enabled (QQ 48h interaction window) — task done, failed, or needs approval, the bot comes to you; QQ approvals carry inline **Allow/Deny buttons**; **scan-to-login** grabs bot credentials automatically.
+- **QQ bot experience (0.6.0)**: workspace-less tasks merge into one per-user default task session (no more session spam); pick a workspace with `任务 @workspace` or send tasks while inside a workspace chat; `进展` shows the phase (thinking/tool/output/done + product hint); tasks are silent by default, `播报` opts into 25s live digests; robot chats (DM & groups) live in a visible "机器人对话" workspace; **group chat is chat-only, commands are ignored** (plus a safety reminder) so strangers cannot drive your PC; full command set & deployment/permission guide: [QQ-BOT.md](docs/QQ-BOT.md).
 - **Default chat mode**: with one toggle, plain messages enter pure chat directly (no workspace bound) — no command prefix needed.
 - **Model selection**: quick default-model switching (DeepSeek official, OpenAI, Anthropic, 37+ catalog providers), plus custom OpenAI-compatible gateways (corporate gateways, Ollama local, etc.); API keys are written securely via `credentials.set`.
 - **Harness hosting**: auto-detects a running `dsh web`, spawns one if missing (default `npx @deepseek-ai/dsh web`), restarts on crash, and takes over automatically when an external instance disappears.
