@@ -1018,6 +1018,10 @@
       // 机器人通道的固定对话会话(QQ/Telegram 聊天)→ 置顶分组,手机直接看到。
       var botChatIds = new Set(info.chatSessionIds || [])
       var botChats = sessions.filter(function (s) { return botChatIds.has(s.sessionId) })
+      // 未命名的机器人对话给出可读的占位名(否则满屏"新会话"分不清)。
+      botChats.forEach(function (s) {
+        if (!s.title) s.title = '机器人对话'
+      })
       var rest = sessions.filter(function (s) { return !botChatIds.has(s.sessionId) })
       var byPath = {}
       workspaces.forEach(function (ws) {

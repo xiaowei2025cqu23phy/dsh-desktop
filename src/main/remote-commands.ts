@@ -231,10 +231,26 @@ export class RemoteCommandProcessor {
   }
 
   constructor(private harness: HarnessManager, private config?: ConfigStore) {
-    // 恢复持久化的对话会话(重启后继续同一对话)。
+    // 恢复持久化的"默认对话/群聊"会话(重启后继续同一对话)。
+    // 只认纯对话(旧版本曾把工作区会话写进 chatSessions,混入后会被误置顶为机器人对话)。
     if (config !== undefined) {
-      for (const [key, entry] of Object.entries(config.get().chatSessions ?? {})) {
+      const stored = config.get().chatSessions ?? {}
+      let changed = false
+      for (const [key, entry] of Object.entries(stored)) {
+        if (typeof entry?.label !== 'string' || !entry.label.startsWith('(纯对话')) {
+          if (!changed) changed = true
+          continue
+        }
         this.chatContexts.set(key, { sessionId: entry.sessionId, label: entry.label, workspace: null })
+      }
+      if (changed) {
+        const clean: Record<string, { sessionId: string; label: string }> = {}
+        for (const [key, entry] of Object.entries(stored)) {
+          if (typeof entry?.label === 'string' && entry.label.startsWith('(纯对话')) {
+            clean[key] = { sessionId: entry.sessionId, label: entry.label }
+          }
+        }
+        config.update('chatSessions', clean)
       }
     }
   }
