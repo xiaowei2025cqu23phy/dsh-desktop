@@ -18,8 +18,11 @@ import type { RemoteCommandProcessor } from './remote-commands'
 /** 单条 QQ 消息长度上限(平台限制约 5000 字符,保守取 3800 减少长回复碎片)。 */
 const MAX_MESSAGE_LENGTH = 3800
 
-/** 流式帧节流窗口:replace 模式一帧替换一次内容,至少间隔这么多毫秒,打字机才平滑。 */
-const STREAM_FLUSH_INTERVAL_MS = 400
+/** 流式帧节流窗口:replace 模式每帧重发全文,间隔太短会让长回复的网络/平台压力翻倍;600ms 兼顾平滑与开销。 */
+const STREAM_FLUSH_INTERVAL_MS = 600
+
+/** 单条流式消息体上限:超过即收尾本条,余文以新消息续发(防止长回复每帧携带超大正文拖慢对话)。 */
+const STREAM_BODY_LIMIT = 3800
 
 /** 一次流式会话(一条回复)的状态。 */
 interface StreamSessionState {
@@ -64,6 +67,8 @@ export class QQBotAdapter {
   private started = false
   /** userId(openid)→ 主动推送目标(登记自最近一次交互)。 */
   private userTargets = new Map<string, { target: PushTarget; ts: number }>()
+  /** 群 openid → 该群最近一条用户消息的 msg_id(群 bot 只能"回复式"发消息)。 */
+  private groupLatestMsg = new Map<string, string>()
   /** 流式对话会话(userId → 状态;QQ 私聊打字机效果)。closed=true 表示旧回合已收尾,增量需另起会话。 */
   private streamSessions = new Map<string, { streamMsgId: string; index: number; buffer: string; timer: ReturnType<typeof setTimeout> | null; msgSeq: number; msgId: string; lastSentText: string; lastFlushAt: number; flushPromise: Promise<void> | null; closed: boolean }>()
   /** 扫码登录流程状态。 */
@@ -238,6 +243,14 @@ export class QQBotAdapter {
     done: boolean,
   ): void {
     if (session.closed || session.timer !== null || session.flushPromise !== null) return
+    // 正文超长:立即收尾本条(整段发出),后续增量另起新流续写——避免每帧重传超大 replace 正文。
+    if (!done && session.buffer.length >= STREAM_BODY_LIMIT) {
+      session.closed = true
+      void this.flushStream(bot, userId, target, session, true).finally(() => {
+        if (this.streamSessions.get(userId) === session) this.streamSessions.delete(userId)
+      })
+      return
+    }
     const elapsed = Date.now() - session.lastFlushAt
     if (elapsed >= STREAM_FLUSH_INTERVAL_MS) {
       void this.flushStream(bot, userId, target, session, done)
@@ -402,6 +415,44 @@ export class QQBotAdapter {
     await this.pushText(bot, entry.target, text, meta)
   }
 
+  /** 分段发送(群走回复式 sendGroup;私聊直发)。 */
+  private async pushSegment(bot: QQBotLike, target: PushTarget, text: string): Promise<void> {
+    if (target.scope === 'group') {
+      await this.sendGroup(bot, target.targetId, text)
+    } else {
+      await bot.sendText(target, text)
+    }
+  }
+
+  /** 键盘消息(审批/提问按钮;群也走回复式)。 */
+  private async pushKeyboard(bot: QQBotLike, target: PushTarget, keyboard: unknown): Promise<void> {
+    if (target.scope === 'group') {
+      await this.sendGroup(bot, target.targetId, '⚡ 请选择', keyboard)
+    } else {
+      await bot.sendMarkdown(target, '⚡ 请选择', { keyboard })
+    }
+  }
+
+  /** 推送正文 + 可选键盘(审批/提问)。 */
+  private async pushBody(
+    bot: QQBotLike,
+    target: PushTarget,
+    text: string,
+    meta?: { kind: 'approval'; sessionId: string; approvalId: string } | { kind: 'question'; sessionId: string; question: { id: string; question: string; options: string[] } },
+  ): Promise<void> {
+    if (meta !== undefined && meta.kind === 'approval') {
+      await this.pushSegment(bot, target, text.slice(0, MAX_MESSAGE_LENGTH))
+      await this.pushKeyboard(bot, target, buildApprovalKeyboard(meta.sessionId, meta.approvalId))
+    } else if (meta !== undefined && meta.kind === 'question') {
+      await this.pushSegment(bot, target, text.slice(0, MAX_MESSAGE_LENGTH))
+      await this.pushKeyboard(bot, target, buildQuestionKeyboard(meta.sessionId, meta.question))
+    } else {
+      for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
+        await this.pushSegment(bot, target, text.slice(index, index + MAX_MESSAGE_LENGTH))
+      }
+    }
+  }
+
   /** 尝试推送;成功返回 true,失败(权限/超窗/网络)返回 false。 */
   private async tryPush(
     bot: QQBotLike,
@@ -410,19 +461,7 @@ export class QQBotAdapter {
     meta?: { kind: 'approval'; sessionId: string; approvalId: string } | { kind: 'question'; sessionId: string; question: { id: string; question: string; options: string[] } },
   ): Promise<boolean> {
     try {
-      if (meta !== undefined && meta.kind === 'approval') {
-        // QQ markdown 消息需平台模板,未配置时内容不渲染(仅按钮显示)。
-        // 因此拆两条:纯文本内容(可读)+ markdown 键盘消息(按钮)。
-        await bot.sendText(target, text.slice(0, MAX_MESSAGE_LENGTH))
-        await bot.sendMarkdown(target, '⚡ 请选择', { keyboard: buildApprovalKeyboard(meta.sessionId, meta.approvalId) })
-      } else if (meta !== undefined && meta.kind === 'question') {
-        await bot.sendText(target, text.slice(0, MAX_MESSAGE_LENGTH))
-        await bot.sendMarkdown(target, '⚡ 请选择', { keyboard: buildQuestionKeyboard(meta.sessionId, meta.question) })
-      } else {
-        for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
-          await bot.sendText(target, text.slice(index, index + MAX_MESSAGE_LENGTH))
-        }
-      }
+      await this.pushBody(bot, target, text, meta)
       return true
     } catch (error) {
       console.error('[qq-bot] 主动推送失败(尝试回退):', error)
@@ -437,17 +476,7 @@ export class QQBotAdapter {
     meta?: { kind: 'approval'; sessionId: string; approvalId: string } | { kind: 'question'; sessionId: string; question: { id: string; question: string; options: string[] } },
   ): Promise<void> {
     try {
-      if (meta !== undefined && meta.kind === 'approval') {
-        await bot.sendText(target, text.slice(0, MAX_MESSAGE_LENGTH))
-        await bot.sendMarkdown(target, '⚡ 请选择', { keyboard: buildApprovalKeyboard(meta.sessionId, meta.approvalId) })
-      } else if (meta !== undefined && meta.kind === 'question') {
-        await bot.sendText(target, text.slice(0, MAX_MESSAGE_LENGTH))
-        await bot.sendMarkdown(target, '⚡ 请选择', { keyboard: buildQuestionKeyboard(meta.sessionId, meta.question) })
-      } else {
-        for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
-          await bot.sendText(target, text.slice(index, index + MAX_MESSAGE_LENGTH))
-        }
-      }
+      await this.pushBody(bot, target, text, meta)
     } catch (error) {
       console.error('[qq-bot] 主动推送失败(靠下次回复提醒兜底):', error)
     }
@@ -467,13 +496,18 @@ export class QQBotAdapter {
       await bot.acknowledgeInteraction(interactionId, 1, {}).catch(() => {})
       return
     }
-    // 按钮点击者身份:优先取事件里的 user openid;缺失时退回首个私聊登记。
-    let userId = findEventUserId(raw.data)
+    // 按钮点击者身份:QQ INTERACTION_CREATE 的 user_openid/group_openid 在事件顶层
+    // (部分 SDK 形态放 data 内,双路径兼容);缺失时退回该用户的私聊登记。
+    const rawRecord = raw as Record<string, unknown>
+    const topUserOpenid = typeof rawRecord.user_openid === 'string' ? rawRecord.user_openid : ''
+    const topGroupOpenid = typeof rawRecord.group_openid === 'string' ? rawRecord.group_openid : ''
+    let userId = topUserOpenid !== '' ? topUserOpenid : findEventUserId(raw.data)
     if (userId === '') {
       for (const [k, v] of this.userTargets) {
         if (v.target.scope === 'c2c') { userId = k; break }
       }
     }
+    console.log(`[qq-bot] interaction identity: topUser=${topUserOpenid} topGroup=${topGroupOpenid} userTargets=${this.userTargets.size}`)
     let result: string
     if (approval !== null) {
       result = await this.processor.respondApproval('qq', userId, approval.sessionId, approval.approvalId, approval.decision)
@@ -483,19 +517,19 @@ export class QQBotAdapter {
       result = await this.processor.handleButtonAction('qq', userId, action!.sessionId, action!.action)
     }
     await bot.acknowledgeInteraction(interactionId, 0, {}).catch(() => {})
-    // 应答结果回发:群按钮点击回发群里,私聊点击回发私聊;都定位不到时用登记回退。
-    const groupOpenid = findEventGroupOpenid(raw.data)
+    // 应答结果回发:群按钮点击回发群里(回复式,带最新群消息 id),私聊点击回发私聊。
+    const groupOpenid = topGroupOpenid !== '' ? topGroupOpenid : findEventGroupOpenid(raw.data)
     if (groupOpenid !== '') {
-      await bot.sendText({ scope: 'group', targetId: groupOpenid }, result).catch(() => {})
+      await this.sendGroup(bot, groupOpenid, result).catch((e) => console.error('[qq-bot] group 回发失败:', e))
       return
     }
     if (userId !== '') {
-      await bot.sendText({ scope: 'c2c', targetId: userId }, result).catch(() => {})
+      await bot.sendText({ scope: 'c2c', targetId: userId }, result).catch((e) => console.error('[qq-bot] c2c 回发失败:', e))
       return
     }
     const entry = this.userTargets.get(userId)
     if (entry !== undefined) {
-      await bot.sendText(entry.target, result).catch(() => {})
+      await bot.sendText(entry.target, result).catch((e) => console.error('[qq-bot] 登记目标回发失败:', e))
     }
   }
 
@@ -507,6 +541,17 @@ export class QQBotAdapter {
     const userId = this.senderId(record)
     this.registerPushTarget(userId, record.replyTarget)
     const pushTarget = this.pushTargetOf(record.replyTarget)
+    // 记录该群最近一条用户消息的 msg_id:群 bot 只能「回复式」发消息,回复永远用最新的。
+    if (pushTarget !== undefined && pushTarget.scope === 'group') {
+      const target = record.replyTarget as { msgId?: unknown } | null
+      if (target !== null && typeof target === 'object' && typeof target.msgId === 'string' && target.msgId !== '') {
+        this.groupLatestMsg.set(pushTarget.targetId, target.msgId)
+        if (this.groupLatestMsg.size > 64) {
+          const oldest = this.groupLatestMsg.keys().next().value as string | undefined
+          if (oldest !== undefined) this.groupLatestMsg.delete(oldest)
+        }
+      }
+    }
     // 图片消息(QQ C2C 图片 content 为 JSON {type:'image', data:url};也兼容 attachments)。
     const image = await this.extractImage(record)
     if (content === '' && image === undefined) return
@@ -517,7 +562,11 @@ export class QQBotAdapter {
     if (sessionMatch !== null) {
       const target = pushTarget ?? this.userTargets.get(userId)?.target
       if (target !== undefined) {
-        await bot.sendMarkdown(target, '⚡ 任务已启动,选择操作', { keyboard: buildActionKeyboard(sessionMatch[1]) }).catch(() => {})
+        if (target.scope === 'group') {
+          await this.sendGroup(bot, target.targetId, '⚡ 任务已启动,选择操作', buildActionKeyboard(sessionMatch[1])).catch(() => {})
+        } else {
+          await bot.sendMarkdown(target, '⚡ 任务已启动,选择操作', { keyboard: buildActionKeyboard(sessionMatch[1]) }).catch(() => {})
+        }
       }
     }
   }
@@ -558,14 +607,35 @@ export class QQBotAdapter {
     }
   }
 
-  /** 从 replyTarget 提取主动推送目标(群=群 id,私聊=用户 openid;去掉 msgId 之外的字段)。 */
+  /** 从 replyTarget 提取主动推送目标(群=群 id,私聊=用户 openid)。
+   *  群消息不带 msg_id:群 bot 多数没有「群内主动发言」权限,只能回复用户消息;
+   *  发送时统一补「该群最近一条用户消息」的 msg_id(见 sendGroup),永不过期。 */
   private pushTargetOf(replyTarget: unknown): { scope: string; targetId: string; msgId?: string } | undefined {
     if (replyTarget === null || typeof replyTarget !== 'object') return undefined
     const target = replyTarget as { scope?: unknown; targetId?: unknown; msgId?: unknown }
     if (typeof target.scope !== 'string' || typeof target.targetId !== 'string') return undefined
     const result: { scope: string; targetId: string; msgId?: string } = { scope: target.scope, targetId: target.targetId }
-    if (typeof target.msgId === 'string' && target.msgId !== '') result.msgId = target.msgId
+    if (target.scope !== 'group' && typeof target.msgId === 'string' && target.msgId !== '') result.msgId = target.msgId
     return result
+  }
+
+  /** 群消息发送:优先「回复最近一条用户消息」(msg_id 最新,永不过期);无记录时直发兜底。 */
+  private async sendGroup(bot: QQBotLike, groupId: string, text: string, keyboard?: unknown): Promise<void> {
+    const latest = this.groupLatestMsg.get(groupId)
+    const targets: Array<{ scope: string; targetId: string; msgId?: string }> = latest !== undefined
+      ? [{ scope: 'group', targetId: groupId, msgId: latest }]
+      : [{ scope: 'group', targetId: groupId }]
+    let lastError: unknown = new Error('no group target')
+    for (const target of targets) {
+      try {
+        if (keyboard !== undefined) await bot.sendMarkdown(target, text, { keyboard })
+        else await bot.sendText(target, text)
+        return
+      } catch (error) {
+        lastError = error
+      }
+    }
+    throw lastError
   }
 
   /** 登记主动推送目标(去掉 msgId;群消息按群登记,私聊按 openid 登记)。 */
@@ -584,17 +654,20 @@ export class QQBotAdapter {
     }
   }
 
-  /** 从消息对象提取发送者标识(私聊取 openid;缺失时退回 replyTarget)。 */
+  /** 从消息对象提取发送者标识:私聊=裸 openid,群=author 成员 id(缺失时按 g:群id 共享);两者与按钮事件隔离。 */
   private senderId(record: { author?: unknown; replyTarget?: unknown }): string {
     const author = record.author
     if (author !== null && typeof author === 'object') {
       const id = (author as { id?: unknown }).id
-      if (typeof id === 'string') return id
+      if (typeof id === 'string' && id !== '') return id
     }
     const target = record.replyTarget
     if (target !== null && typeof target === 'object') {
-      const id = (target as { id?: unknown }).id
-      if (typeof id === 'string') return `t:${id}`
+      const t = target as { scope?: unknown; targetId?: unknown }
+      if (typeof t.scope === 'string' && typeof t.targetId === 'string' && t.targetId !== '') {
+        // 群消息没有成员 author 时,整个群共用一个对话身份(命令在群里已禁用,不影响安全)。
+        return t.scope === 'group' ? `g:${t.targetId}` : t.targetId
+      }
     }
     return 'anonymous'
   }
@@ -605,9 +678,18 @@ export class QQBotAdapter {
     text: string,
   ): Promise<void> {
     if (target === undefined || text === '') return
+    // 群消息回复:一律走 sendGroup(回复最近一条用户消息,msg_id 永不过期);
+    // 私聊用 SDK 的 replyTarget(带本条消息 msg_id,回复式)。
+    const t = target as { scope?: unknown; targetId?: unknown } | null
+    const isGroup = t !== null && typeof t === 'object' && t.scope === 'group' && typeof t.targetId === 'string'
     // 长文本分段发送。
     for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
-      await bot.sendText(target, text.slice(index, index + MAX_MESSAGE_LENGTH))
+      const segment = text.slice(index, index + MAX_MESSAGE_LENGTH)
+      if (isGroup) {
+        await this.sendGroup(bot as QQBotLike, (t as { targetId: string }).targetId, segment)
+      } else {
+        await bot.sendText(target, segment)
+      }
     }
   }
 }

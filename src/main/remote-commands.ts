@@ -29,6 +29,51 @@ function fmtDuration(ms: number): string {
   return minutes === 0 ? `${seconds} 秒` : `${minutes} 分 ${seconds % 60} 秒`
 }
 
+/** 归一化用户标识:按钮事件给裸 openid,消息侧可能带 t: 前缀(回复目标回退),比较时统一。 */
+function normUserId(id: string): string {
+  return id.startsWith('t:') ? id.slice(2) : id
+}
+
+/** 相对时间描述(会话列表用)。 */
+function fmtAgo(ts: number): string {
+  const delta = Date.now() - ts
+  if (delta < 60_000) return '刚刚'
+  if (delta < 3600_000) return `${Math.floor(delta / 60_000)} 分钟前`
+  if (delta < 86_400_000) return `${Math.floor(delta / 3600_000)} 小时前`
+  return `${Math.floor(delta / 86_400_000)} 天前`
+}
+
+interface HistoryEventLike {
+  event?: { type?: string; data?: { message?: { content?: unknown }; chunk?: unknown } }
+}
+
+/**
+ * 从会话历史事件提取「最终交付文本」:text-delta chunk 流优先(即模型真正输出的内容),
+ * assistant/message 兜底(推理型模型会把思考过程记成 message,不能直接当回复展示)。
+ */
+function deliveredText(events: HistoryEventLike[], cap: number): string {
+  let messageText = ''
+  let chunkBuf = ''
+  for (const entry of events) {
+    const ev = entry?.event
+    if (ev === undefined) continue
+    const data = isRecord(ev.data) ? ev.data : {}
+    if (ev.type === 'assistant/message' && isRecord(data.message) && Array.isArray(data.message.content)) {
+      const text = (data.message.content as Array<{ text?: string }>).map((b) => b.text ?? '').join('')
+      if (text.trim() !== '') messageText = text
+    } else if (ev.type === 'assistant/chunk' && isRecord(data.chunk)) {
+      const chunk = data.chunk
+      if (chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text !== '') {
+        chunkBuf += chunk.text
+        if (chunkBuf.length > cap * 8) chunkBuf = chunkBuf.slice(-cap * 8)
+      }
+    }
+  }
+  const chunkTail = chunkBuf.replace(/\s+/g, ' ').trim()
+  if (chunkTail !== '') return chunkTail.slice(-cap)
+  return messageText.replace(/\s+/g, ' ').trim().slice(0, cap)
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -52,7 +97,13 @@ function turnEndFailure(ev: Record<string, unknown>): { message: string; isTrans
 interface ChatContext {
   sessionId: string
   label: string
+  /** 进入的工作区/目录(任务/对话沿用);纯对话 = null。 */
+  workspace: string | null
 }
+
+/** 群聊首条消息的安全提醒(仅限对话、禁止命令、警惕机器人添加者)。 */
+const GROUP_SAFETY_NOTICE =
+  '⚠️ 安全提醒:本群与机器人仅限对话,不响应任何命令;涉及任务与文件操作请私聊机器人。\n机器人由电脑主人添加——请勿将不可信的机器人拉入本群,否则对方可能远程操控这台电脑。'
 
 /** 会话归属:哪个通道的哪个用户发起了该会话(用于审批/提问的定向通知)。 */
 interface SessionOwner {
@@ -161,8 +212,16 @@ export class RemoteCommandProcessor {
   private chatStream: ChatStreamSink | null = null
   /** 非流式通道的回合文本缓冲(整段推送用)。 */
   private chatReplyBuffer = new Map<string, string>()
-  /** 任务会话的现场播报状态(QQ/Telegram 可见 agent 过程)。 */
+  /** 会话的现场播报状态(QQ/Telegram 可见 agent 过程)。 */
   private liveViews = new Map<string, LiveView>()
+  /** 已提示过安全提醒的群(进程内去重)。 */
+  private groupNoticed = new Set<string>()
+
+  /** 对话上下文键:私聊按用户,群聊按群(一个群共用一个对话,与私聊隔开)。 */
+  private contextKey(channel: string, userId: string, pushTarget?: { scope: string; targetId: string }): string {
+    if (pushTarget !== undefined && pushTarget.scope === 'group') return `${channel}:g:${pushTarget.targetId}`
+    return `${channel}:${userId}`
+  }
 
   /** 注入流式输出实现(仅支持主动流式的通道,如 QQ 私聊)。 */
   setChatStream(sink: ChatStreamSink): void {
@@ -173,7 +232,7 @@ export class RemoteCommandProcessor {
     // 恢复持久化的对话会话(重启后继续同一对话)。
     if (config !== undefined) {
       for (const [key, entry] of Object.entries(config.get().chatSessions ?? {})) {
-        this.chatContexts.set(key, { sessionId: entry.sessionId, label: entry.label })
+        this.chatContexts.set(key, { sessionId: entry.sessionId, label: entry.label, workspace: null })
       }
     }
   }
@@ -235,17 +294,19 @@ export class RemoteCommandProcessor {
     }
   }
 
-  /** 对话会话持久化:创建/退出对话时同步到配置,重启后恢复同一会话。 */
+  /** 持久化默认纯对话线程(chatSessions 只存默认对话,工作区模式是临时态不入库)。 */
   private persistChat(key: string): void {
     if (this.config === undefined) return
     const ctx = this.chatContexts.get(key)
-    if (ctx === undefined) {
-      const next = { ...this.config.get().chatSessions }
-      delete next[key]
-      this.config.update('chatSessions', next)
-      return
-    }
+    if (ctx === undefined || ctx.workspace !== null) return
     this.config.update('chatSessions', { ...this.config.get().chatSessions, [key]: { sessionId: ctx.sessionId, label: ctx.label } })
+  }
+
+  /** 查默认对话线程(配置持久化;跨重启/跨工作区切换保持同一会话)。 */
+  private defaultChatSession(key: string): string {
+    if (this.config === undefined) return ''
+    const entry = this.config.get().chatSessions?.[key]
+    return entry?.sessionId ?? ''
   }
 
   private appendAudit(entry: { time: number; type: string; sessionId?: string; activityId?: string; detail: string }): void {
@@ -352,7 +413,7 @@ export class RemoteCommandProcessor {
           const key = `${next.channel}:${next.userId}`
           this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget: next.pushTarget ?? undefined, kind: 'task' })
           this.taskDescriptions.set(created.sessionId, next.description)
-          if (next.pushTarget !== null && next.pushTarget !== undefined) this.startLiveView(created.sessionId, next.pushTarget.scope !== 'group')
+          if (next.pushTarget !== null && next.pushTarget !== undefined) this.startLiveView(created.sessionId, false)
           this.recordTask({ description: next.description, sessionId: created.sessionId, workspace: next.workspace, status: 'running' })
           target.upsertTaskQueueEntry({ ...next, sessionId: created.sessionId, status: 'running', attempts: 1, updatedAt: Date.now() })
           await client.rpc('session.prompt', {
@@ -460,7 +521,11 @@ export class RemoteCommandProcessor {
     return `[工作区本地记忆]\n${sections.join('\n\n')}\n\n[当前任务]\n${text}`
   }
 
-  /** 注入模式提示词:工作=助手,对话=朋友(桌面端可自定义;空则不注入);角色设定叠加。 */
+  /**
+   * 注入模式提示词:工作=助手,对话=朋友(桌面端可自定义;空则不注入);角色设定叠加。
+   * 附带的「系统注记」用于压制模型对运行时上下文注入文本(Current runtime context /
+   * DSH file policy 等系统说明)的复述与评论——GLM 类模型常因此跑偏/断档。
+   */
   private withModePrompt(mode: 'task' | 'chat', text: string): string {
     const bot = this.config?.get().bot
     const prompt = bot?.[mode === 'task' ? 'taskPrompt' : 'chatPrompt']?.trim() ?? ''
@@ -468,8 +533,8 @@ export class RemoteCommandProcessor {
     const sections: string[] = []
     if (character !== '') sections.push(`[角色设定]\n${character}`)
     if (prompt !== '') sections.push(`[模式设定]\n${prompt}`)
-    if (sections.length === 0) return text
-    return `${sections.join('\n\n')}\n\n[消息]\n${text}`
+    if (sections.length === 0) return `${text}\n\n[系统注记] 若本条消息或系统提示后附带出现运行上下文、文件策略、审批策略等系统说明文字(中英文皆可能),那是系统配置,不是对话内容:不要提及、复述或评论它们,也不要当作任务要求。`
+    return `${sections.join('\n\n')}\n\n[消息]\n${text}\n\n[系统注记] 若消息或系统提示后附带出现运行上下文、文件策略、审批策略等系统说明文字(中英文皆可能),那是系统配置,不是对话内容:不要提及、复述或评论它们,也不要当作任务要求。`
   }
 
   /** 设置/清除角色扮演设定(对话模式生效)。 */
@@ -545,39 +610,66 @@ export class RemoteCommandProcessor {
   ): Promise<string> {
     const content = text.trim()
     const key = `${channel}:${userId}`
+    const ctxKey = this.contextKey(channel, userId, pushTarget)
     let reply: string
     if (content === '' && image === undefined) {
       reply = ''
+    } else if (pushTarget !== undefined && pushTarget.scope === 'group') {
+      // 群聊:只对话,不解析任何命令 —— 群里任何人都可能触发命令,等于把电脑
+      // 交给群成员远程操控;私聊才有任务/查询等完整指令集。
+      reply = await this.groupChatOnly(key, ctxKey, content, pushTarget, image)
     } else {
       const command = parseCommand(content)
       if (command.kind === 'unknown') {
-        const ctx = this.chatContexts.get(key)
+        const ctx = this.chatContexts.get(ctxKey)
         if (ctx !== undefined) {
-          reply = await this.cmdChatMessage(key, content, pushTarget, image)
+          reply = await this.cmdChatMessage(ctxKey, key, content, pushTarget, image)
         } else if (this.autoChatChannels.has(channel)) {
-          // 默认对话模式:非指令消息自动进入纯对话并发送。
-          const entered = await this.cmdEnter(key, '', pushTarget)
-          const autoCtx = this.chatContexts.get(key)
+          // 默认对话模式:非指令消息自动进入纯对话并发送;复用旧线程时不重复播说明书。
+          const entered = await this.cmdEnter(ctxKey, key, '', pushTarget)
+          const autoCtx = this.chatContexts.get(ctxKey)
+          const reused = autoCtx !== undefined && entered.startsWith('已在对话模式')
           reply = autoCtx !== undefined
-            ? `${entered}\n\n${await this.cmdChatMessage(key, content, pushTarget, image)}`
+            ? `${reused ? '' : `${entered}\n\n`}${await this.cmdChatMessage(ctxKey, key, content, pushTarget, image)}`.trim()
             : entered
         } else if (image !== undefined && this.autoChatChannels.has(channel) === false) {
           // 纯图片消息:自动进入纯对话后发送(图片理解)。
-          const entered = await this.cmdEnter(key, '', pushTarget)
-          const autoCtx = this.chatContexts.get(key)
+          const entered = await this.cmdEnter(ctxKey, key, '', pushTarget)
+          const autoCtx = this.chatContexts.get(ctxKey)
+          const reused = autoCtx !== undefined && entered.startsWith('已在对话模式')
           reply = autoCtx !== undefined
-            ? `${entered}\n\n${await this.cmdChatMessage(key, content, pushTarget, image)}`
+            ? `${reused ? '' : `${entered}\n\n`}${await this.cmdChatMessage(ctxKey, key, content, pushTarget, image)}`.trim()
             : entered
         } else {
           reply = this.fullHelp()
         }
       } else {
-        reply = await this.executeCommand(command, key, pushTarget)
+        reply = await this.executeCommand(command, key, ctxKey, pushTarget)
       }
     }
     const suffix = this.pendingSuffix(channel, userId)
     if (suffix === '') return reply
     return reply === '' ? suffix : `${reply}\n\n${suffix}`
+  }
+
+  /** 群聊模式:只对话。首次进入某个群时附带安全提醒;纯对话会话复用优先。 */
+  private async groupChatOnly(
+    key: string,
+    ctxKey: string,
+    content: string,
+    pushTarget: { scope: string; targetId: string },
+    image?: { mime: string; data: string },
+  ): Promise<string> {
+    let notice = ''
+    if (!this.chatContexts.has(ctxKey)) {
+      if (!this.groupNoticed.has(ctxKey)) {
+        this.groupNoticed.add(ctxKey)
+        notice = `${GROUP_SAFETY_NOTICE}\n\n`
+      }
+      await this.cmdEnter(ctxKey, key, '', pushTarget)
+    }
+    const sent = await this.cmdChatMessage(ctxKey, key, content, pushTarget, image)
+    return notice + sent
   }
 
   /** 完整指令集(未知指令时也回复这份),每条指令带可直接复制的示例。 */
@@ -600,7 +692,7 @@ export class RemoteCommandProcessor {
       '模型 <名称> — 切换当前对话的模型',
       '  例:模型 deepseek-v4',
       '',
-      '🚀 任务类(一次性任务)',
+      '🚀 任务类(一次性任务,仅限私聊)',
       '任务 <描述> — 默认工作区执行',
       '  例:任务 分析这个仓库的架构',
       '  例:任务 写一个 README 并提交',
@@ -609,35 +701,43 @@ export class RemoteCommandProcessor {
       '任务 目录:<路径> <描述> — 指定目录',
       '  例:任务 目录:D:/work/proj 编译并运行测试',
       '',
-      '💬 对话模式(连续对话)',
-      '进入 — 纯对话(不绑定工作区/目录,一般不动文件)',
-      '  例:进入',
-      '进入 <工作区名/目录> — 在该工作区对话',
-      '  例:进入 qqbot',
-      '  例:进入 D:/work/proj',
-      '进入后直接发消息即可,无需任何确认;agent 回复会自动推给你:',
-      '  例:帮我看看项目里有哪些 TODO',
-      '退出 — 结束对话模式',
+      '💬 对话模式',
+      '直接发消息 = 默认对话(朋友模式,不碰文件)',
+      '  例:早上好呀 / 帮我看看这件事怎么想',
+      '默认对话只保留一条线程:随便穿插任务/工作区都不会另开;发「新对话」可重开一段',
+      '退出 — 结束当前对话(下次发消息自动回到默认对话)',
       '  例:退出',
+      '进入 <工作区名> — 列出该工作区的会话(带摘要与状态)供选择',
+      '  例:进入 qqbot',
+      '进入 <工作区名> <编号> — 直接继续该工作区的指定会话(查任务进度/接着聊)',
+      '  例:进入 qqbot 2',
+      '进入 <工作区名> 新 — 在该工作区新建会话',
+      '  例:进入 qqbot 新',
+      '进入 <目录路径> — 把任意目录当工作区聊',
+      '  例:进入 D:/work/proj',
+      '进入 — 回到默认对话',
+      '  例:进入',
+      '新对话 — 另开一段默认对话(旧线程保留在历史里)',
+      '  例:新对话',
       '',
-      '🔘 按钮操作(任务启动后自动附带,点一下即可)',
-      '⏹ 停止 — 停止任务',
-      '📋 进展 — 查看任务实时进展',
-      '📖 打开 — 查看会话内容',
-      '审批/提问推送也带按钮:✅ 允许 / ❌ 拒绝 / 选项按钮,点一下即应答',
+      '🔘 按钮操作(任务启动/审批/提问推送附带,点一下即可)',
+      '⏹ 停止 / 📋 进展 / 📖 打开',
+      '✅ 允许 / ❌ 拒绝 / 选项按钮:点一下即应答',
       '',
-      '📌 会话管理',
-      '进展 <会话id> — 任务实时进展(含最近工具动作与输出)',
+      '📌 会话与任务管理',
+      '会话 — 最近会话列表(标题+状态+时间+摘要)',
+      '  例:会话',
+      '进展 <会话id> — 任务实时进展(状态/工具/最新输出)',
       '  例:进展 session-xxxxxxxx',
-      '播报 / 静音 — 现场播报开关(任务运行时每 25 秒推送 agent 进展)',
-      '  例:静音',
-      '  例:播报 session-xxxxxxxx',
-      '停止 <会话id> — 停止任务',
-      '  例:停止 session-xxxxxxxx',
       '打开 <会话id> — 查看会话内容',
       '  例:打开 session-xxxxxxxx',
+      '停止 <会话id> — 停止任务',
+      '  例:停止 session-xxxxxxxx',
       '导出 <会话id> — 导出会话为 Markdown(存到桌面端 exports/)',
       '  例:导出 session-xxxxxxxx',
+      '播报 / 静音 — 任务过程现场播报开关(默认静默,需要时开启)',
+      '  例:播报',
+      '  例:静音',
       '',
       '✅ 审批与提问(agent 需要你决定时)',
       '允许 — 允许当前待审批操作',
@@ -651,7 +751,7 @@ export class RemoteCommandProcessor {
       '多问题批次:#<题号> 选 <编号>',
       '  例:#2 选 1',
       '',
-      '⏰ 定时任务',
+      '⏰ 定时任务(仅私聊)',
       '定时 <表达式> <描述> — 到点自动执行(助手模式)',
       '  例:定时 10分钟 检查更新',
       '  例:定时 每天9:00 写日报',
@@ -664,14 +764,16 @@ export class RemoteCommandProcessor {
       '文件 <路径> — 查看文件内容(64KB 以内)',
       '  例:文件 D:/work/proj/README.md',
       '',
-      '💡 模式提示词:任务=专业助手,对话=朋友(桌面端可自定义,留空不注入)',
-      '💡 典型流程:先「工作区」看列表 → 「进入 qqbot」→ 连续对话 → 「退出」',
+      '💡 推送原则:机器人只在 进入/查询/审批/任务完成或失败 时主动推送;想看任务过程发「播报」或「进展 <id>」',
+      '💡 群聊安全:群里只聊天、不响应任何命令(防止他人远程操控电脑);完整功能请私聊机器人',
+      '💡 典型流程:直接发消息聊 → 「进入 qqbot」看会话列表挑一个 → 「任务 @qqbot 帮我…」',
     ].join('\n')
   }
 
   private async executeCommand(
     command: QQCommand,
     key: string,
+    ctxKey: string,
     pushTarget?: { scope: string; targetId: string },
   ): Promise<string> {
     switch (command.kind) {
@@ -680,17 +782,21 @@ export class RemoteCommandProcessor {
       case 'status':
         return this.cmdStatus()
       case 'sessions':
-        return this.cmdSessions()
+        return this.cmdSessions(ctxKey)
       case 'workspaces':
         return this.cmdWorkspaces()
       case 'models':
         return this.cmdModels()
       case 'model':
-        return this.cmdModelSwitch(key, command.query)
+        return this.cmdModelSwitch(ctxKey, command.query)
       case 'sched':
+        if (command.action === 'add') {
+          const denied = this.taskScopeGuard(pushTarget)
+          if (denied !== null) return denied
+          return this.cmdSchedAdd(key, command.delay, command.description, pushTarget)
+        }
         if (command.action === 'list') return this.cmdSchedList()
-        if (command.action === 'remove') return this.cmdSchedRemove(command.index)
-        return this.cmdSchedAdd(key, command.delay, command.description, pushTarget)
+        return this.cmdSchedRemove(command.index)
       case 'ls':
         return this.cmdLs(command.path)
       case 'cat':
@@ -711,14 +817,30 @@ export class RemoteCommandProcessor {
         const owner = this.ownerFromKey(key)
         return this.cmdBroadcast(owner.channel, owner.userId, command.sessionId, command.on)
       }
-      case 'run':
-        return this.cmdRun(key, command.description, pushTarget)
-      case 'retry':
-        return this.cmdRetry(key, command.taskId, pushTarget)
+      case 'run': {
+        const denied = this.taskScopeGuard(pushTarget)
+        if (denied !== null) return denied
+        return this.cmdRun(key, ctxKey, command.description, pushTarget)
+      }
+      case 'retry': {
+        const denied = this.taskScopeGuard(pushTarget)
+        if (denied !== null) return denied
+        return this.cmdRetry(key, ctxKey, command.taskId, pushTarget)
+      }
       case 'enter':
-        return this.cmdEnter(key, command.target, pushTarget)
+        return this.cmdEnter(ctxKey, key, command.target, pushTarget)
       case 'exit':
-        return this.cmdExit(key)
+        return this.cmdExit(ctxKey)
+      case 'newchat': {
+        // 强制开启一个全新的默认对话(重开线程)。
+        this.chatContexts.delete(ctxKey)
+        if (this.config !== undefined) {
+          const next = { ...this.config.get().chatSessions }
+          delete next[ctxKey]
+          this.config.update('chatSessions', next)
+        }
+        return this.cmdEnter(ctxKey, key, '', pushTarget)
+      }
       case 'allow':
         return this.cmdAllow(key, command.sessionId, 'allowed-once')
       case 'reject':
@@ -757,37 +879,60 @@ export class RemoteCommandProcessor {
   private async cmdSessions(key?: string): Promise<string> {
     const client = this.harness.client()
     try {
-      // 对话模式中:「会话」列出当前工作区的会话供选择(返回工作区一级)。
+      // 对话模式中:「会话」列出当前工作区的会话供选择(编号与「进入 ws N」一致)。
       if (key !== undefined) {
         const ctx = this.chatContexts.get(key)
         if (ctx !== undefined && !ctx.label.startsWith('(纯对话')) {
-          const ws = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string; sessions?: Array<{ sessionId: string; title?: string | null; blank?: boolean }> }> }>('workspace.list', {}, 20000)
-          const found = (ws.items ?? []).find((w) => w.title === ctx.label || w.path === ctx.label || w.workspaceId === ctx.label)
+          const wsData = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string; sessionIds?: string[] }>; archivedSessionIds?: string[] }>('workspace.list', {}, 20000)
+          const found = (wsData.items ?? []).find((w) => w.title === ctx.label || w.path === ctx.label || w.workspaceId === ctx.label)
           if (found !== undefined) {
-            const sessions = (found.sessions ?? []).filter((s) => !s.blank)
+            const sessions = await this.sessionsOfWorkspace(client, found, new Set(wsData.archivedSessionIds ?? []))
             if (sessions.length === 0) return '该工作区暂无会话,发「进入 ' + ctx.label + ' 新」新建。'
-            const lines = [`工作区「${ctx.label}」的会话(当前在 ${sessions.findIndex((s) => s.sessionId === ctx.sessionId) + 1 || 1} 号):`]
+            const currentIndex = sessions.findIndex((s) => s.sessionId === ctx.sessionId)
+            const lines = [`工作区「${ctx.label}」的会话(共 ${sessions.length} 个${currentIndex >= 0 ? `,当前在第 ${currentIndex + 1} 个` : ''}):`]
             sessions.slice(0, 8).forEach((s, i) => {
-              lines.push(`  ${i + 1}. ${(s.title ?? s.sessionId).slice(0, 40)}${s.sessionId === ctx.sessionId ? ' ← 当前' : ''}`)
+              const mark = s.running ? '▶' : '⏸'
+              lines.push(`  ${i + 1}. ${mark} ${(s.title ?? '新会话').slice(0, 32)}${s.sessionId === ctx.sessionId ? ' ← 当前' : ''}`)
             })
-            lines.push(`回复「进入 ${ctx.label} <编号>」切换会话`)
+            if (sessions.length > 8) lines.push(`  …还有 ${sessions.length - 8} 个`)
+            lines.push(`回复「进入 ${ctx.label} <编号>」切换`)
             return lines.join('\n')
           }
         }
       }
       const [list, ws] = await Promise.all([
-        client.rpc<{ items: Array<{ sessionId: string; title?: string | null; running?: boolean; blank?: boolean }> }>('session.list', {}, 20000),
+        client.rpc<{ items: Array<{ sessionId: string; title?: string | null; running?: boolean; blank?: boolean; origin?: string; updatedAt?: number }> }>('session.list', {}, 20000),
         client.rpc<{ archivedSessionIds?: string[] }>('workspace.list', {}, 20000),
       ])
       const archived = new Set(ws.archivedSessionIds ?? [])
-      // 隐藏:未发生的空会话(blank)与已归档会话。
+      // 隐藏:未发生的空会话(blank)、子代理(origin)与已归档会话;取最近 6 个。
       const items = (list.items ?? [])
-        .filter((s) => !s.blank && !archived.has(s.sessionId))
-        .slice(0, 5)
+        .filter((s) => !s.blank && !archived.has(s.sessionId) && !(typeof s.origin === 'string' && s.origin !== ''))
+        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+        .slice(0, 6)
       if (items.length === 0) return '暂无会话'
-      return items.map((s) =>
-        `${s.running ? '▶' : ' '} ${(s.title ?? s.sessionId).slice(0, 30)}\n  ${s.sessionId}`,
-      ).join('\n')
+      // 每个会话抓最近回复当摘要(并行,最多 6 次轻量查询;失败跳过不影响列表)。
+      const previews = await Promise.all(items.map(async (s) => {
+        try {
+          const hist = await client.rpc<{ events: HistoryEventLike[] }>(
+            'session.history', { sessionId: s.sessionId, maxMessages: 4 }, 12000,
+          )
+          return deliveredText(hist.events ?? [], 70)
+        } catch {
+          return ''
+        }
+      }))
+      const lines = ['📋 最近会话']
+      items.forEach((s, i) => {
+        const title = (s.title ?? '新会话').slice(0, 26)
+        const ago = s.updatedAt === undefined ? '' : `(${fmtAgo(s.updatedAt)})`
+        const summary = previews[i] === '' ? '(暂无消息)' : previews[i]
+        lines.push(`${i + 1}. ${s.running ? '▶' : '⏸'} ${title} ${ago}`)
+        lines.push(`   💬 ${summary}`)
+        lines.push(`   ${s.sessionId.slice(0, 24)}…`)
+      })
+      lines.push('回复「打开 <会话id>」查看完整内容')
+      return lines.join('\n')
     } catch (error) {
       return `查询失败:${error instanceof Error ? error.message : String(error)}`
     }
@@ -796,12 +941,37 @@ export class RemoteCommandProcessor {
   private async cmdWorkspaces(): Promise<string> {
     const client = this.harness.client()
     try {
-      const data = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string; sessionIds?: string[] }> }>('workspace.list')
+      const [data, list] = await Promise.all([
+        client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string; sessionIds?: string[] }>; archivedSessionIds?: string[] }>('workspace.list'),
+        client.rpc<{ items: Array<{ sessionId: string; cwd?: string; blank?: boolean; origin?: string; running?: boolean }> }>('session.list', {}, 20000),
+      ])
       const items = data.items ?? []
       if (items.length === 0) return '暂无工作区'
-      return items.slice(0, 8).map((w) =>
-        `${w.title ?? w.path}\n  ${w.path ?? ''} (${(w.sessionIds ?? []).length} 会话)`,
-      ).join('\n')
+      const archived = new Set(data.archivedSessionIds ?? [])
+      const sessions = (list.items ?? []).filter((s) => !s.blank && !archived.has(s.sessionId) && !(typeof s.origin === 'string' && s.origin !== ''))
+      // 每个工作区的会话数/运行数按 cwd/注册 id 归属统计(与「进入」一致,避免显示不全)。
+      const countOf = (w: { workspaceId: string; path?: string; sessionIds?: string[] }): { total: number; running: number } => {
+        const p = (w.path ?? '').replace(/\\/g, '/').toLowerCase()
+        const ids = new Set(w.sessionIds ?? [])
+        let total = 0
+        let running = 0
+        for (const s of sessions) {
+          const c = (s.cwd ?? '').replace(/\\/g, '/').toLowerCase()
+          const hit = ids.has(s.sessionId) || (p !== '' && (c === p || c.startsWith(`${p}/`)))
+          if (!hit) continue
+          total += 1
+          if (s.running) running += 1
+        }
+        return { total, running }
+      }
+      const rows = items.slice(0, 14).map((w) => {
+        const { total, running } = countOf(w)
+        const run = running > 0 ? `,${running} 运行中` : ''
+        return `${w.title ?? w.path}\n  ${w.path ?? ''} (${total} 会话${run})`
+      })
+      if (items.length > 14) rows.push(`…等共 ${items.length} 个工作区`)
+      rows.push('发「进入 <工作区名>」查看并进入某个工作区的会话')
+      return rows.join('\n')
     } catch (error) {
       return `查询失败:${error instanceof Error ? error.message : String(error)}`
     }
@@ -863,7 +1033,7 @@ export class RemoteCommandProcessor {
    */
   async handleButtonAction(channel: string, userId: string, sessionId: string, action: 'stop' | 'progress' | 'open'): Promise<string> {
     const owner = this.sessionOwners.get(sessionId)
-    if (owner === undefined || owner.channel !== channel || owner.userId !== userId) {
+    if (owner === undefined || owner.channel !== channel || normUserId(owner.userId) !== normUserId(userId)) {
       return '该会话不是由你发起,无权操作。'
     }
     if (action === 'stop') return this.cmdCancel(sessionId)
@@ -1249,7 +1419,8 @@ export class RemoteCommandProcessor {
         this.push(task.channel, task.userId, `⏰ 定时任务已触发:${task.description.slice(0, 60)}`, undefined, task.pushTarget ?? undefined)
       }
       const key = `${task.channel}:${task.userId}`
-      await this.cmdRun(key, task.description, task.pushTarget ?? undefined).catch(() => '')
+      // 定时任务按「添加时的身份」执行(无实时对话上下文,工作区走默认配置)。
+      await this.cmdRun(key, key, task.description, task.pushTarget ?? undefined).catch(() => '')
       if (task.delay.kind === 'daily') {
         remaining.push({ ...task, nextAt: this.nextFireTime(task.delay, now) })
       }
@@ -1351,24 +1522,21 @@ export class RemoteCommandProcessor {
     if (!/^session-/.test(sessionId)) return '请提供完整的会话 id(以 session- 开头)'
     const client = this.harness.client()
     try {
-      const data = await client.rpc<{ events: Array<{ event?: { type?: string; data?: { message?: { content?: unknown } } } }> }>('session.history', { sessionId, maxMessages: 2 }, 30000)
+      const data = await client.rpc<HistoryEventLike & { events?: HistoryEventLike[] }>('session.history', { sessionId, maxMessages: 2 }, 30000)
       const events = data.events ?? []
-      const assistantTexts: string[] = []
       const userTexts: string[] = []
       for (const entry of events) {
         const type = entry.event?.type
         const content = entry.event?.data?.message?.content
-        if (type === 'assistant/message' && Array.isArray(content)) {
-          const text = content.map((b) => (b as { text?: string }).text ?? '').join('')
-          if (text.trim() !== '') assistantTexts.push(text)
-        } else if (type === 'user/message' && Array.isArray(content)) {
+        if (type === 'user/message' && Array.isArray(content)) {
           const text = content.map((b) => (b as { text?: string }).text ?? '').join('')
           if (text.trim() !== '') userTexts.push(text)
         }
       }
       const lines: string[] = [`会话 ${sessionId}`]
       if (userTexts.length > 0) lines.push(`问:${userTexts[userTexts.length - 1].slice(0, 120)}`)
-      if (assistantTexts.length > 0) lines.push(`答:${assistantTexts[assistantTexts.length - 1].slice(0, 300)}`)
+      const answer = deliveredText(events, 600)
+      if (answer !== '') lines.push(`答:${answer}`)
       else lines.push('(尚无回复)')
       return lines.join('\n')
     } catch (error) {
@@ -1410,15 +1578,17 @@ export class RemoteCommandProcessor {
     }
     const lines = [`📡 现场播报 · 已运行 ${fmtDuration(Date.now() - live.startedAt)}`]
     if (live.tool !== '') lines.push(`🔧 ${live.tool}`)
-    // 整段定稿优先;仅 chunk 流(无 assistant/message)时用增量缓冲尾部兜底。
-    const showText = live.text !== '' ? live.text : live.chunkBuf.slice(-400).replace(/\s+/g, ' ').trim()
+    // 交付文本以 chunk 流为准(chunk 才是实际回复;assistant/message 可能只是推理)。
+    const showText = live.chunkBuf.replace(/\s+/g, ' ').trim() !== ''
+      ? live.chunkBuf.replace(/\s+/g, ' ').trim().slice(-400)
+      : live.text
     if (showText !== '') lines.push(`💬 ${showText}`)
     this.push(owner.channel, owner.userId, lines.join('\n'), undefined, owner.pushTarget)
     live.changed = false
   }
 
   /** 任务会话事件 → 播报素材:工具动作、助手文本(chunk 累积 + 整段定稿);turn/end 停止。 */
-  private accumulateLive(sessionId: string, owner: SessionOwner, ev: Record<string, unknown>): void {
+  private accumulateLive(sessionId: string, ev: Record<string, unknown>): void {
     if (ev.type === 'turn/end') {
       this.stopLiveView(sessionId)
       return
@@ -1427,8 +1597,7 @@ export class RemoteCommandProcessor {
     if (live === undefined) {
       // 新回合懒重建(TRANSPORT 重试 / 排队任务重跑 / 助手模式工作回合)。
       if (this.push === null) return
-      const defaultOn = owner.pushTarget === undefined || owner.pushTarget.scope !== 'group'
-      live = { tool: '', text: '', chunkBuf: '', changed: false, broadcast: defaultOn, startedAt: Date.now(), timer: null }
+      live = { tool: '', text: '', chunkBuf: '', changed: false, broadcast: false, startedAt: Date.now(), timer: null }
       this.liveViews.set(sessionId, live)
     }
     if (live.timer === null) {
@@ -1463,8 +1632,8 @@ export class RemoteCommandProcessor {
       const message = isRecord(data.message) ? data.message : {}
       const parts = Array.isArray(message.content) ? message.content : []
       const text = parts.map((b) => isRecord(b) && typeof b.text === 'string' ? b.text : '').join('')
-      live.chunkBuf = ''
-      if (text.trim() !== '') {
+      // 推理型模型的 message 可能是思考过程;只有无 chunk 流(非流式后端)才当交付文本。
+      if (live.chunkBuf === '' && text.trim() !== '') {
         live.text = text.replace(/\s+/g, ' ').trim().slice(0, 500)
         live.changed = true
       }
@@ -1477,19 +1646,26 @@ export class RemoteCommandProcessor {
     for (const [sid, live] of this.liveViews) {
       if (sessionId !== '' && sid !== sessionId) continue
       const owner = this.sessionOwners.get(sid)
-      if (owner === undefined || owner.channel !== channel || owner.userId !== userId) continue
+      if (owner === undefined || owner.channel !== channel || normUserId(owner.userId) !== normUserId(userId)) continue
       live.broadcast = on
       if (on) live.changed = true
       count += 1
     }
     if (count === 0) {
       return on
-        ? '没有正在运行的任务可开启播报(任务启动后自动开启,发「静音」可随时关闭)'
+        ? '没有正在运行的任务可开启播报(默认静默,任务运行中发「播报」开启 25 秒现场进展)'
         : '当前没有正在运行的任务,无需静音'
     }
     return on
-      ? `🔊 已开启现场播报(${count} 个运行中的会话,每 25 秒合并推送最新进展)`
-      : `🔇 已静音(${count} 个运行中的会话),本次任务结束后恢复默认`
+      ? `🔊 已开启现场播报(${count} 个运行中的会话,每 25 秒合并推送最新进展;发「静音」关闭)`
+      : `🔇 已静音(${count} 个运行中的会话),恢复默认静默`
+  }
+
+  /** 任务/定时等「工作指令」仅限私聊:群聊拒绝,防刷屏与身份混淆。 */
+  private taskScopeGuard(pushTarget?: { scope: string; targetId: string }): string | null {
+    return pushTarget !== undefined && pushTarget.scope === 'group'
+      ? '任务/定时等工作指令仅支持私聊:请私聊机器人使用(防群聊刷屏与身份混淆);群内对话/查询不受影响。'
+      : null
   }
 
   /** 任务进展:会话状态 + 工具调用统计 + 最近输出摘要。 */
@@ -1505,16 +1681,7 @@ export class RemoteCommandProcessor {
       const events = data.events ?? []
       const toolCalls = events.filter((e) => e.event?.type === 'tool/call').length
       const toolFails = events.filter((e) => e.event?.type === 'tool/result' && e.event.data?.error !== undefined).length
-      const assistantTexts: string[] = []
-      for (const entry of events) {
-        if (entry.event?.type === 'assistant/message' && Array.isArray(entry.event.data?.message?.content)) {
-          const text = (entry.event.data.message.content as Array<{ text?: string }>).map((b) => b.text ?? '').join('')
-          if (text.trim() !== '') assistantTexts.push(text)
-        }
-      }
-      const lastText = assistantTexts.length > 0
-        ? assistantTexts[assistantTexts.length - 1].replace(/\s+/g, ' ').slice(0, 200)
-        : '(暂无输出)'
+      const lastText = deliveredText(events, 200) || '(暂无输出)'
       const status = meta?.running ? '▶ 运行中' : '⏸ 空闲/已结束'
       const title = meta?.title ?? '(无标题)'
       // 现场播报的内存素材比历史拉取更新(含正在执行中的工具/未定稿文本)。
@@ -1535,7 +1702,7 @@ export class RemoteCommandProcessor {
     }
   }
 
-  private async cmdRetry(key: string, taskId: string, pushTarget?: { scope: string; targetId: string }): Promise<string> {
+  private async cmdRetry(key: string, ctxKey: string, taskId: string, pushTarget?: { scope: string; targetId: string }): Promise<string> {
     // 优先命中调度队列(失败/取消项可立即重试,保留退避状态)。
     const queueEntry = this.queueList().find((item) => item.id === taskId || item.sessionId === taskId)
     if (queueEntry !== undefined) {
@@ -1546,11 +1713,12 @@ export class RemoteCommandProcessor {
     const task = (this.config.get().taskHistory ?? []).find((item) => item.id === taskId || item.sessionId === taskId)
     if (task === undefined) return `未找到任务「${taskId}」,可从桌面端任务记录查看 ID`
     if (task.status !== 'failed' && task.status !== 'cancelled') return '只有失败或已取消的任务可以重试。'
-    return this.cmdRun(key, task.description, pushTarget)
+    return this.cmdRun(key, ctxKey, task.description, pushTarget)
   }
 
   private async cmdRun(
     key: string,
+    ctxKey: string,
     description: string,
     pushTarget?: { scope: string; targetId: string },
   ): Promise<string> {
@@ -1562,7 +1730,15 @@ export class RemoteCommandProcessor {
     try {
       let workspaceId: string | null = null
       let cwd = parsed.cwd
-      // 任务未指定工作区/目录时,回退到 QQ 配置的默认工作区/目录(仅 QQ 通道提供该配置)。
+      // 任务未指定工作区/目录时,优先沿用当前对话上下文的工作区(进入过工作区再发任务,
+      // 任务就落在那个工作区);否则回退到 QQ 配置的默认工作区/目录。
+      if (workspaceId === null && cwd === null) {
+        const ctx = this.chatContexts.get(ctxKey)
+        if (ctx !== undefined && ctx.workspace !== null && ctx.workspace !== '') {
+          if (/[\\/]/.test(ctx.workspace)) cwd = ctx.workspace
+          else workspaceId = ctx.workspace
+        }
+      }
       if (workspaceId === null && cwd === null) {
         const fallback = this.defaultTarget ?? ''
         if (fallback !== '') {
@@ -1599,10 +1775,8 @@ export class RemoteCommandProcessor {
       this.taskDescriptions.set(created.sessionId, taskText)
       const broadcastNote = pushTarget === undefined
         ? ''
-        : pushTarget.scope === 'group'
-          ? '\n💬 群聊默认静音防刷屏,发「播报」可开启现场进展'
-          : '\n🔊 现场播报已开启(每 25 秒推送进展,发「静音」关闭)'
-      if (pushTarget !== undefined) this.startLiveView(created.sessionId, pushTarget.scope !== 'group')
+        : '\n💡 推送原则:机器人只在 进入/查询/审批/完成/失败 时推送;想看任务过程发「播报」开启现场进展,或「进展 <会话id>」随时查看'
+      if (pushTarget !== undefined) this.startLiveView(created.sessionId, false)
       this.recordTask({ description: taskText, sessionId: created.sessionId, workspace: cwd ?? workspaceId, status: 'running' })
       this.enqueueTaskRun(taskText, created.sessionId, cwd ?? workspaceId)
       await client.rpc('session.prompt', {
@@ -1621,11 +1795,14 @@ export class RemoteCommandProcessor {
 
   /**
    * 进入对话模式:
-   * - target 为空 = 纯对话(不绑定工作区,朋友模式)
-   * - target = 工作区名 [编号]:进入该工作区(助手模式);工作区有多个会话时
-   *   列出会话供选择(回复「进入 <工作区> <编号>」);「会话」可随时返回选择。
+   * - target 为空 = 默认纯对话(朋友模式):同一用户只保留一条默认线程(配置持久化),
+   *   已存在则复用,只有「新对话」才重开;任务/工作区等穿插不会打断它。
+   * - target = 工作区名/目录 [编号|新]:进入该工作区(助手模式);不带编号且已有会话时
+   *   先列出会话摘要供选择(「进入 <工作区> <编号>」继续,「进入 <工作区> 新」新建)。
+   * ctxKey 定位对话上下文(私聊/群各自独立),key 是发起者身份(会话归属)。
    */
   private async cmdEnter(
+    ctxKey: string,
     key: string,
     target: string,
     pushTarget?: { scope: string; targetId: string },
@@ -1636,43 +1813,63 @@ export class RemoteCommandProcessor {
       let cwd: string | null = null
       let label = target
       let sessionIndex = -1
+      let forceNew = false
       if (target === '') {
         label = '(纯对话,不绑定工作区)'
+        // 默认线程:内存中已激活 → 复用;配置里有 → 恢复;否则新建。
+        const existing = this.chatContexts.get(ctxKey)
+        if (existing !== undefined) {
+          return [
+            `已在对话模式 ✓(会话 ${existing.sessionId},继续原对话)`,
+            '现在直接发消息即可对话,发送「退出」结束对话模式。',
+          ].join('\n')
+        }
+        const saved = this.defaultChatSession(ctxKey)
+        if (saved !== '') {
+          this.chatContexts.set(ctxKey, { sessionId: saved, label, workspace: null })
+          return [
+            `已在对话模式 ✓(会话 ${saved},继续原对话)`,
+            '现在直接发消息即可对话;发「新对话」可另开一段。',
+          ].join('\n')
+        }
       } else {
-        // 支持「工作区名 编号」选择已有会话。
+        // 支持「工作区名 编号」选择已有会话;「工作区名 新」强制新建。
         const parts = target.trim().split(/\s+/)
         const last = parts[parts.length - 1]
         if (/^\d+$/.test(last)) {
           sessionIndex = Number(last) - 1
           target = parts.slice(0, -1).join(' ')
           label = target
+        } else if (last === '新' || last === 'new' || last === '新建') {
+          forceNew = true
+          target = parts.slice(0, -1).join(' ')
+          label = target
         }
         if (/[\\/]/.test(target)) {
           cwd = target
         } else {
-          const workspaces = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string; sessions?: Array<{ sessionId: string; title?: string | null; blank?: boolean }> }> }>('workspace.list')
-          const found = (workspaces.items ?? []).find((w) => w.title === target || w.workspaceId === target || w.path === target)
+          const wsData = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string; sessionIds?: string[] }>; archivedSessionIds?: string[] }>('workspace.list')
+          const found = (wsData.items ?? []).find((w) => w.title === target || w.workspaceId === target || w.path === target)
           if (found === undefined) {
             return `未找到工作区「${target}」,发送「工作区」查看列表(或直接「进入」开始纯对话)`
           }
           workspaceId = found.workspaceId
           cwd = found.path ?? null
-          // 工作区有会话:列出供选择(除非用户已指定编号)。
-          const sessions = (found.sessions ?? []).filter((s) => !s.blank)
-          if (sessionIndex < 0 && sessions.length > 0) {
-            const lines = [`工作区「${target}」已有 ${sessions.length} 个会话,选择进入:`]
-            sessions.slice(0, 8).forEach((s, i) => {
-              lines.push(`  ${i + 1}. ${(s.title ?? s.sessionId).slice(0, 40)}`)
-            })
-            lines.push(`回复「进入 ${target} <编号>」选择;或「进入 ${target} 新」新建会话`)
-            return lines.join('\n')
+          // 同一上下文已在该工作区:直接复用,不新建。
+          const existing = this.chatContexts.get(ctxKey)
+          if (!forceNew && existing !== undefined && sessionIndex < 0 && existing.workspace === (cwd ?? workspaceId)) {
+            return `已在该工作区「${target}」对话中 ✓(会话 ${existing.sessionId})\n直接发消息即可;「会话」切换,「退出」结束。`
+          }
+          // 归属判定:workspace.list 的 sessionIds ∪ cwd 落在工作区路径下的会话(排除空会话/已归档)。
+          const sessions = await this.sessionsOfWorkspace(client, found, new Set(wsData.archivedSessionIds ?? []))
+          if (!forceNew && sessionIndex < 0 && sessions.length > 0) {
+            return await this.workspaceSessionPicker(client, target, sessions)
           }
           if (sessionIndex >= 0 && sessions[sessionIndex] !== undefined) {
             // 选择已有会话:直接切换,不新建。
             const chosen = sessions[sessionIndex]
             this.sessionOwners.set(chosen.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
-            this.chatContexts.set(key, { sessionId: chosen.sessionId, label: target })
-            this.persistChat(key)
+            this.chatContexts.set(ctxKey, { sessionId: chosen.sessionId, label: target, workspace: cwd ?? workspaceId })
             return [
               `已进入工作区「${target}」会话 ${sessionIndex + 1} ✓`,
               `会话: ${chosen.sessionId}`,
@@ -1688,17 +1885,16 @@ export class RemoteCommandProcessor {
       // 工作区 = 助手模式;纯对话 = 朋友模式。
       const kind = target === '' ? 'chat' : 'task'
       this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind })
-      this.chatContexts.set(key, { sessionId: created.sessionId, label })
-      this.persistChat(key)
+      this.chatContexts.set(ctxKey, { sessionId: created.sessionId, label, workspace: cwd ?? workspaceId })
+      this.persistChat(ctxKey)
       const lines = target === ''
         ? [
             '已进入对话模式 ✓(纯对话,不绑定工作区)',
             `会话: ${created.sessionId}`,
-            '现在直接发消息即可对话(无需指令前缀),发送「退出」结束对话模式。',
-            '提示:纯对话会话未绑定工作区,agent 一般不动文件;若它仍请求文件操作,可用「拒绝」拦截。',
+            '本会话将作为你的默认对话保留(「新对话」可另开);发任意消息即可聊天。',
           ]
         : [
-            `已进入工作区「${target}」对话模式 ✓`,
+            `已进入工作区「${target}」对话模式 ✓(新建会话)`,
             `会话: ${created.sessionId}`,
             '现在直接发消息即可对话;「会话」返回工作区选择,「退出」结束对话模式。',
           ]
@@ -1708,24 +1904,90 @@ export class RemoteCommandProcessor {
     }
   }
 
-  private cmdExit(key: string): string {
-    const ctx = this.chatContexts.get(key)
+  /**
+   * 工作区会话归属:workspace.list 的 sessionIds ∪ cwd 位于工作区路径下的会话;
+   * 排除空会话(blank)、子代理(origin)与已归档;运行中优先,再按最近更新排序。
+   * 说明:harness 的 workspace.list.items[].sessions 恒为空数组,不能作为数据源。
+   */
+  private async sessionsOfWorkspace(
+    client: { rpc: <T>(method: string, payload: unknown, timeoutMs?: number) => Promise<T> },
+    workspace: { workspaceId: string; path?: string; sessionIds?: string[] },
+    archived: Set<string>,
+  ): Promise<Array<{ sessionId: string; title?: string | null; running?: boolean; updatedAt?: number }>> {
+    let items: Array<{ sessionId: string; cwd?: string; blank?: boolean; origin?: string; running?: boolean; updatedAt?: number; title?: string | null }> = []
+    try {
+      const list = await client.rpc<{ items: Array<{ sessionId: string; cwd?: string; blank?: boolean; origin?: string; running?: boolean; updatedAt?: number; title?: string | null }> }>('session.list', {}, 20000)
+      items = list.items ?? []
+    } catch {
+      return []
+    }
+    const pathKey = (workspace.path ?? '').replace(/\\/g, '/').toLowerCase()
+    const ids = new Set(workspace.sessionIds ?? [])
+    return items.filter((s) => {
+      if (s.blank === true || archived.has(s.sessionId)) return false
+      if (typeof s.origin === 'string' && s.origin !== '') return false
+      if (ids.has(s.sessionId)) return true
+      const c = (s.cwd ?? '').replace(/\\/g, '/').toLowerCase()
+      return pathKey !== '' && (c === pathKey || c.startsWith(`${pathKey}/`))
+    }).sort((a, b) =>
+      ((b.running === true ? 1 : 0) - (a.running === true ? 1 : 0)) ||
+      ((b.updatedAt ?? 0) - (a.updatedAt ?? 0)) ||
+      (a.sessionId < b.sessionId ? -1 : 1),
+    )
+  }
+
+  /** 工作区会话选择器:带摘要的编号列表(摘要抓取失败时降级为标题;列表即选择索引,顺序与「进入 ws N」一致)。 */
+  private async workspaceSessionPicker(
+    client: { rpc: <T>(method: string, payload: unknown, timeoutMs?: number) => Promise<T> },
+    target: string,
+    sessions: Array<{ sessionId: string; title?: string | null; running?: boolean; updatedAt?: number }>,
+  ): Promise<string> {
+    try {
+      const pick = sessions.slice(0, 6)
+      const previews = await Promise.all(pick.map(async (s) => {
+        try {
+          const hist = await client.rpc<{ events: HistoryEventLike[] }>('session.history', { sessionId: s.sessionId, maxMessages: 3 }, 10000)
+          return deliveredText(hist.events ?? [], 64)
+        } catch {
+          return ''
+        }
+      }))
+      const lines = [`📁 工作区「${target}」的会话(${sessions.length}):`]
+      pick.forEach((s, i) => {
+        const mark = s.running ? '▶' : '⏸'
+        const ago = typeof s.updatedAt === 'number' ? `(${fmtAgo(s.updatedAt)})` : ''
+        const title = (s.title ?? '新会话').slice(0, 24)
+        lines.push(`${i + 1}. ${mark} ${title} ${ago}`)
+        if (previews[i] !== '') lines.push(`   💬 ${previews[i]}`)
+      })
+      if (sessions.length > pick.length) lines.push(`   …还有 ${sessions.length - pick.length} 个(按最近更新排序)`)
+      lines.push(`回复「进入 ${target} <编号>」继续对应会话;「进入 ${target} 新」新建`)
+      return lines.join('\n')
+    } catch (error) {
+      return `读取工作区会话失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  private cmdExit(ctxKey: string): string {
+    const ctx = this.chatContexts.get(ctxKey)
     if (ctx === undefined) return '当前不在对话模式。'
-    this.chatContexts.delete(key)
-    this.persistChat(key)
-    const hint = this.autoChatChannels.has(key.split(':')[0])
-      ? '开启默认对话模式时,发任意消息将自动进入纯对话。'
-      : ''
-    return `已退出「${ctx.label}」对话模式。会话 ${ctx.sessionId} 保留在后台。${hint}`.trim()
+    const isPureChat = ctx.label.startsWith('(纯对话')
+    this.chatContexts.delete(ctxKey)
+    if (isPureChat) {
+      // 默认线程持久化在配置里:退出只离开"激活态",下次消息自动回到同一会话。
+      return `已退出对话模式。默认对话 ${ctx.sessionId.slice(0, 20)}… 保留;下次发消息自动回到本对话(发「新对话」另开一段)。`
+    }
+    return `已退出工作区「${ctx.label}」对话模式。会话 ${ctx.sessionId.slice(0, 20)}… 保留;普通消息会回到你的默认对话(发「进入 <工作区名>」再次进入)。`
   }
 
   private async cmdChatMessage(
+    ctxKey: string,
     key: string,
     text: string,
     pushTarget?: { scope: string; targetId: string },
     image?: { mime: string; data: string },
   ): Promise<string> {
-    const ctx = this.chatContexts.get(key)
+    const ctx = this.chatContexts.get(ctxKey)
     if (ctx === undefined) return this.fullHelp()
     const client = this.harness.client()
     try {
@@ -1749,13 +2011,16 @@ export class RemoteCommandProcessor {
       // 注册回复推送:回合结束后把 agent 的回复主动推给发起者(对话体验)。
       // 重启后恢复的对话会话可能没有归属记录,这里补登记。
       if (owner === undefined) {
-        owner = { ...this.ownerFromKey(key), kind: 'chat' }
+        owner = { ...this.ownerFromKey(key), pushTarget, kind: 'chat' }
         this.sessionOwners.set(ctx.sessionId, owner)
-      } else if (pushTarget !== undefined && owner.pushTarget === undefined) {
-        // 补全推送目标(如会话从群创建、当前消息来自私聊)。
-        owner.pushTarget = pushTarget
+      } else {
+        // 每次消息都刷新推送目标:QQ 群/私聊回复的 msg_id 会过期,必须用最近一条。
+        if (pushTarget !== undefined) owner.pushTarget = pushTarget
+        else if (owner.pushTarget === undefined) owner.pushTarget = pushTarget
       }
-      if (owner.kind === 'chat') {
+      // 纯对话与工作区助手对话都注册回复推送;队列任务不注册(走任务完成汇报)。
+      const isQueueTask = this.taskDescriptions.has(ctx.sessionId)
+      if (!isQueueTask) {
         this.chatReplies.set(ctx.sessionId, {
           channel: owner.channel,
           userId: owner.userId,
@@ -1878,19 +2143,22 @@ export class RemoteCommandProcessor {
       }
     }
     if (owner === undefined) return
-    if (owner.kind === 'chat') {
-      // TRANSPORT 流中断时先自动重试;否则按常规收尾(流式定稿/整段推送)。
+    // 纯对话(kind chat)与「工作区助手对话」(kind task 但非队列任务)统一按聊天回合处理:
+    // chunk 流式/整段缓冲,回合结束推送回复;队列任务走任务汇报与队列同步。
+    const isQueueTask = this.taskDescriptions.has(sessionId)
+    if (owner.kind === 'chat' || !isQueueTask) {
       if (!this.handleChatTransport(sessionId, owner, payload.event)) {
         this.handleChatEvent(sessionId, owner, payload.event)
       }
       return
     }
-    // 任务现场播报素材:工具动作 + 助手文本(chunk/整段);回合结束自动停止。
-    if (owner.pushTarget !== undefined) this.accumulateLive(sessionId, owner, payload.event)
+    // 队列任务:现场播报素材(工具动作 + 助手文本);回合结束自动停止。
+    if (owner.pushTarget !== undefined) this.accumulateLive(sessionId, payload.event)
     if (payload.event.type !== 'turn/end') return
     const failure = turnEndFailure(payload.event)
-    if (failure === null) return
-    const { message, isTransport, failed } = failure
+    const failed = failure !== null
+    const message = failure?.message ?? ''
+    const isTransport = failure?.isTransport ?? false
     // TRANSPORT 中断(模型流错误,如中转站读取超时/流式通道不稳):同会话自动重试一次。
     if (isTransport && !this.retriedTransports.has(sessionId)) {
       this.retriedTransports.add(sessionId)
@@ -1905,7 +2173,7 @@ export class RemoteCommandProcessor {
         return
       }
     }
-    // 队列状态同步:不依赖主动汇报开关与推送去重(失败进入指数退避,完成即完结)。
+    // 队列状态同步:成功完成也必须落库并放行队列(否则队列会一直卡「运行中」,后续任务全部积压)。
     const queueDescription = this.taskDescriptions.get(sessionId)
     if (queueDescription !== undefined) {
       const queueNow = Date.now()
@@ -2006,35 +2274,28 @@ export class RemoteCommandProcessor {
     return true
   }
 
-  /** 对话回合结束:推送给发起者(非流式通道);优先用回合缓冲,兜底拉历史。 */
+  /** 对话回合结束:推送给发起者(非流式通道);优先用回合缓冲,兜底拉历史。
+   *  时效窗口 20 分钟:对话上下文里的回复永远有意义,避免模型想久了静默丢失。 */
   private pushChatReply(sessionId: string): void {
     const pending = this.chatReplies.get(sessionId)
     if (pending === undefined || this.push === null) return
     this.chatReplies.delete(sessionId)
-    // 5 分钟内有效;超时视为用户已离开,不再推送。
-    if (Date.now() - pending.ts > 5 * 60 * 1000) return
+    if (Date.now() - pending.ts > 20 * 60 * 1000) return
     const buffered = this.chatReplyBuffer.get(sessionId) ?? ''
     this.chatReplyBuffer.delete(sessionId)
     if (buffered.trim() !== '') {
-      this.push(pending.channel, pending.userId, `💬 ${buffered.slice(0, 1500)}`, undefined, pending.pushTarget)
+      this.push(pending.channel, pending.userId, buffered.trim().slice(0, 1500), undefined, pending.pushTarget)
       return
     }
     const client = this.harness.client()
-    void client.rpc<{ events: Array<{ event?: { type?: string; data?: { message?: { content?: unknown } } } }> }>(
+    void client.rpc<{ events: HistoryEventLike[] }>(
       'session.history', { sessionId, maxMessages: 2 }, 30000,
     ).then((data) => {
       const events = data.events ?? []
-      let reply = ''
-      for (let i = events.length - 1; i >= 0; i--) {
-        const ev = events[i].event
-        if (ev?.type === 'assistant/message' && Array.isArray(ev.data?.message?.content)) {
-          const text = (ev.data.message.content as Array<{ text?: string }>).map((b) => b.text ?? '').join('')
-          if (text.trim() !== '') { reply = text; break }
-        }
-      }
+      const reply = deliveredText(events, 1500)
       // 拉不到内容就不打扰用户(可发「进展」或手机端查看)。
       if (reply === '') return
-      this.push!(pending.channel, pending.userId, `💬 ${reply.slice(0, 1500)}`, undefined, pending.pushTarget)
+      this.push!(pending.channel, pending.userId, reply, undefined, pending.pushTarget)
     }).catch(() => {
       // 拉取失败:静默,用户可发「进展」查看。
     })
@@ -2188,7 +2449,7 @@ export class RemoteCommandProcessor {
       if (sessionId !== '' && pending.sessionId !== sessionId) continue
       if (approvalId !== '' && pending.approvalId !== approvalId) continue
       const o = this.sessionOwners.get(pending.sessionId)
-      if (o !== undefined && o.channel === owner.channel && o.userId === owner.userId) return pending
+      if (o !== undefined && o.channel === owner.channel && normUserId(o.userId) === normUserId(owner.userId)) return pending
     }
     return null
   }
@@ -2198,7 +2459,7 @@ export class RemoteCommandProcessor {
     for (const pending of this.pendingQuestions.values()) {
       if (sessionId !== undefined && sessionId !== '' && pending.sessionId !== sessionId) continue
       const o = this.sessionOwners.get(pending.sessionId)
-      if (o !== undefined && o.channel === owner.channel && o.userId === owner.userId) return pending
+      if (o !== undefined && o.channel === owner.channel && normUserId(o.userId) === normUserId(owner.userId)) return pending
     }
     return null
   }

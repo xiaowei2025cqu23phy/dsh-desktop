@@ -28,6 +28,7 @@ export type QQCommand =
   | { kind: 'usage' }
   | { kind: 'character'; text: string }
   | { kind: 'broadcast'; sessionId: string; on: boolean }
+  | { kind: 'newchat' }
   | { kind: 'unknown'; text: string }
 
 /** 定时任务的调度表达(解析结果)。 */
@@ -79,6 +80,10 @@ export function parseCommand(content: string): QQCommand {
     return { kind: 'exit' }
   }
   const parts = content.trim().split(/\s+/)
+  // 新对话/新会话:强制重开纯对话(默认对话锁定时的「重开」入口)。
+  if (parts[0] === '新对话' || parts[0] === '新会话' || parts[0] === 'new') {
+    return { kind: 'newchat' }
+  }
   // 角色扮演:角色 <设定> / 角色 无(清除)
   if (parts[0] === '角色' || parts[0] === '扮演' || parts[0] === 'character') {
     return { kind: 'character', text: content.trim().slice(parts[0].length).trim() }

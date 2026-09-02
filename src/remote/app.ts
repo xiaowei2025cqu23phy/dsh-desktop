@@ -145,6 +145,10 @@
   // ---- 本机临时会话缓存 ----
   function cacheKey(sid) { return 'dsh-cache-' + sid }
 
+  /** 缓存上限:只保留最近 N 条,避免 localStorage 越写越慢、越占越大。 */
+  var CACHE_MAX_MSGS = 300
+  var cacheTimer: ReturnType<typeof setTimeout> | null = null
+
   function loadCachedMessages(sid) {
     try {
       var raw = localStorage.getItem(cacheKey(sid))
@@ -152,9 +156,32 @@
     } catch (e) { return null }
   }
 
+  /** 防抖持久化:事件密集(流式输出)时合并写入,手机端明显更跟手。 */
   function persistCache() {
     if (!state.tempCache || state.sessionId === null) return
-    try { localStorage.setItem(cacheKey(state.sessionId), JSON.stringify(state.msgLog)) } catch (e) { /* 存储满忽略 */ }
+    if (cacheTimer !== null) return
+    cacheTimer = setTimeout(function () {
+      cacheTimer = null
+      try {
+        var log = state.msgLog
+        if (log.length > CACHE_MAX_MSGS) log = log.slice(log.length - CACHE_MAX_MSGS)
+        localStorage.setItem(cacheKey(state.sessionId), JSON.stringify(log))
+      } catch (e) { /* 存储满/配额不足忽略 */ }
+    }, 600)
+  }
+
+  /** 离开会话/卸载时立即落盘(不等防抖窗口)。 */
+  function flushCacheNow() {
+    if (cacheTimer !== null) {
+      clearTimeout(cacheTimer)
+      cacheTimer = null
+    }
+    if (!state.tempCache || state.sessionId === null) return
+    try {
+      var log = state.msgLog
+      if (log.length > CACHE_MAX_MSGS) log = log.slice(log.length - CACHE_MAX_MSGS)
+      localStorage.setItem(cacheKey(state.sessionId), JSON.stringify(log))
+    } catch (e) { /* 忽略 */ }
   }
 
   function clearAllCache() {
@@ -737,6 +764,8 @@
 
   // ---- 会话 ----
   function openSession(sessionId, cwd) {
+    // 切换会话前,把上一个会话的缓存立即落盘(防抖窗口内的增量不丢、不串会话)。
+    if (state.sessionId !== null && state.sessionId !== sessionId) flushCacheNow()
     state.sessionId = sessionId
     state.currentWsPath = cwd || state.currentWsPath
     state.currentWsId = findWorkspaceId(state.currentWsPath)
@@ -761,7 +790,7 @@
 
     // 历史加载带重试:桌面端服务重启/网关瞬时不可达时自动再试,避免一失败就停留在错误态。
     var loadHistory = function (attempt: number): void {
-      apiRpc('session.history', { sessionId: sessionId, maxMessages: 50 }).then(function (data) {
+      apiRpc('session.history', { sessionId: sessionId, maxMessages: 40 }).then(function (data) {
         state.lastSeq = 0
         state.msgLog = []
         $('chat-stream').querySelectorAll('.msg').forEach(function (el) { el.remove() })
@@ -2377,6 +2406,12 @@
       disconnect()
     })
     $('btn-disconnect').addEventListener('click', disconnect)
+
+    // 页面隐藏/退出前立即落盘缓存(防抖窗口内的消息不丢)。
+    window.addEventListener('pagehide', flushCacheNow)
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') flushCacheNow()
+    })
   }
 
   init()
