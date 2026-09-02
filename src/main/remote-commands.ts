@@ -225,6 +225,23 @@ export class RemoteCommandProcessor {
     return `${channel}:${userId}`
   }
 
+  /** 消息进入机器人对话前校验:活动会话若已被归档,自动另开新对话并持久化。
+   *  归档 = 仅从列表隐藏,不能再当对话目标;返回 true 表示已重建。 */
+  private async ensureChatAlive(ctxKey: string, key: string, pushTarget?: { scope: string; targetId: string }): Promise<boolean> {
+    if (!this.chatContexts.has(ctxKey)) return false
+    try {
+      const ws = await this.harness.client().rpc<{ archivedSessionIds?: string[] }>('workspace.list', {}, 15000)
+      const ctx = this.chatContexts.get(ctxKey)
+      if (ctx === undefined) return false
+      if ((ws.archivedSessionIds ?? []).indexOf(ctx.sessionId) < 0) return false
+      this.chatContexts.delete(ctxKey)
+      await this.cmdEnter(ctxKey, key, '', pushTarget)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** 注入流式输出实现(仅支持主动流式的通道,如 QQ 私聊)。 */
   setChatStream(sink: ChatStreamSink): void {
     this.chatStream = sink
@@ -636,7 +653,9 @@ export class RemoteCommandProcessor {
       if (command.kind === 'unknown') {
         const ctx = this.chatContexts.get(ctxKey)
         if (ctx !== undefined) {
-          reply = await this.cmdChatMessage(ctxKey, key, content, pushTarget, image)
+          const renewed = await this.ensureChatAlive(ctxKey, key, pushTarget)
+          reply = renewed ? '🔁 原对话已被归档,已自动开新对话,本条消息已发出。\n' : ''
+          reply += await this.cmdChatMessage(ctxKey, key, content, pushTarget, image)
         } else if (this.autoChatChannels.has(channel)) {
           // 默认对话模式:非指令消息自动进入纯对话并发送;复用旧线程时不重复播说明书。
           const entered = await this.cmdEnter(ctxKey, key, '', pushTarget)
@@ -674,7 +693,10 @@ export class RemoteCommandProcessor {
     image?: { mime: string; data: string },
   ): Promise<string> {
     let notice = ''
-    if (!this.chatContexts.has(ctxKey)) {
+    if (this.chatContexts.has(ctxKey)) {
+      // 原群聊会话被归档时自动另开(归档=仅隐藏,不能再当对话目标)。
+      if (await this.ensureChatAlive(ctxKey, key, pushTarget)) notice = '🔁 原对话已被归档,已自动开新对话。\n\n'
+    } else {
       if (!this.groupNoticed.has(ctxKey)) {
         this.groupNoticed.add(ctxKey)
         notice = `${GROUP_SAFETY_NOTICE}\n\n`
@@ -1898,11 +1920,20 @@ export class RemoteCommandProcessor {
         }
         const saved = this.defaultChatSession(ctxKey)
         if (saved !== '') {
-          this.chatContexts.set(ctxKey, { sessionId: saved, label, workspace: null })
-          return [
-            `已在对话模式 ✓(会话 ${saved},继续原对话)`,
-            '现在直接发消息即可对话;发「新对话」可另开一段。',
-          ].join('\n')
+          // 持久化的默认会话若已被归档(归档=仅隐藏),视为不存在 → 新建并覆盖持久化。
+          let usable = true
+          try {
+            const ws = await client.rpc<{ archivedSessionIds?: string[] }>('workspace.list', {}, 15000)
+            usable = (ws.archivedSessionIds ?? []).indexOf(saved) < 0
+          } catch { /* 查询失败按可用处理 */ }
+          if (usable) {
+            this.chatContexts.set(ctxKey, { sessionId: saved, label, workspace: null })
+            return [
+              `已在对话模式 ✓(会话 ${saved},继续原对话)`,
+              '现在直接发消息即可对话;发「新对话」可另开一段。',
+            ].join('\n')
+          }
+          // 已归档:继续向下走新建流程(会覆盖持久化键)。
         }
       } else {
         // 支持「工作区名 编号」选择已有会话;「工作区名 新」强制新建。
