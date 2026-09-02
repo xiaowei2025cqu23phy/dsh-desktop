@@ -214,6 +214,8 @@ export class RemoteCommandProcessor {
   private chatReplyBuffer = new Map<string, string>()
   /** 会话的现场播报状态(QQ/Telegram 可见 agent 过程)。 */
   private liveViews = new Map<string, LiveView>()
+  /** 无工作区任务的"默认任务会话"(按 channel:userId 复用;「任务 新:」另起)。 */
+  private defaultTaskSessions = new Map<string, string>()
   /** 已提示过安全提醒的群(进程内去重)。 */
   private groupNoticed = new Set<string>()
 
@@ -403,21 +405,30 @@ export class RemoteCommandProcessor {
       const client = this.harness.client()
       try {
         if (next.sessionId === null) {
-          // 排队任务(尚未创建会话):创建工作区/目录会话。
-          const payload: Record<string, unknown> = {}
-          if (next.workspace !== null) {
+          // 排队任务(尚未创建会话):无工作区的复用"默认任务会话",其余新建工作区/目录会话。
+          const key = `${next.channel}:${next.userId}`
+          let createdId = ''
+          if (next.workspace === null) {
+            createdId = this.defaultTaskSessions.get(key) ?? ''
+            if (createdId === '') {
+              const created = await client.rpc<{ sessionId: string }>('session.create', {})
+              createdId = created.sessionId
+              this.defaultTaskSessions.set(key, createdId)
+            }
+          } else {
+            const payload: Record<string, unknown> = {}
             if (/[\\/]/.test(next.workspace)) payload.cwd = next.workspace
             else payload.workspaceId = next.workspace
+            const created = await client.rpc<{ sessionId: string }>('session.create', payload)
+            createdId = created.sessionId
           }
-          const created = await client.rpc<{ sessionId: string }>('session.create', payload)
-          const key = `${next.channel}:${next.userId}`
-          this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget: next.pushTarget ?? undefined, kind: 'task' })
-          this.taskDescriptions.set(created.sessionId, next.description)
-          if (next.pushTarget !== null && next.pushTarget !== undefined) this.startLiveView(created.sessionId, false)
-          this.recordTask({ description: next.description, sessionId: created.sessionId, workspace: next.workspace, status: 'running' })
-          target.upsertTaskQueueEntry({ ...next, sessionId: created.sessionId, status: 'running', attempts: 1, updatedAt: Date.now() })
+          this.sessionOwners.set(createdId, { ...this.ownerFromKey(key), pushTarget: next.pushTarget ?? undefined, kind: 'task' })
+          this.taskDescriptions.set(createdId, next.description)
+          if (next.pushTarget !== null && next.pushTarget !== undefined) this.startLiveView(createdId, false)
+          this.recordTask({ description: next.description, sessionId: createdId, workspace: next.workspace, status: 'running' })
+          target.upsertTaskQueueEntry({ ...next, sessionId: createdId, status: 'running', attempts: 1, updatedAt: Date.now() })
           await client.rpc('session.prompt', {
-            sessionId: created.sessionId,
+            sessionId: createdId,
             mode: 'queue',
             content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(next.workspace !== null && /[\\/]/.test(next.workspace) ? next.workspace : null, next.description)) }],
           })
@@ -964,13 +975,16 @@ export class RemoteCommandProcessor {
         }
         return { total, running }
       }
-      const rows = items.slice(0, 14).map((w) => {
+      const rows = items.slice(0, 16).map((w) => {
         const { total, running } = countOf(w)
         const run = running > 0 ? `,${running} 运行中` : ''
-        return `${w.title ?? w.path}\n  ${w.path ?? ''} (${total} 会话${run})`
+        const name = w.title !== undefined && w.title !== ''
+          ? w.title
+          : ((w.path ?? '').split(/[\\/]/).filter((p) => p !== '').pop() ?? '未命名工作区')
+        return `${name}(${total} 会话${run})`
       })
-      if (items.length > 14) rows.push(`…等共 ${items.length} 个工作区`)
-      rows.push('发「进入 <工作区名>」查看并进入某个工作区的会话')
+      if (items.length > 16) rows.push(`…等共 ${items.length} 个工作区`)
+      rows.push('发「进入 <工作区名>」查看并进入其会话')
       return rows.join('\n')
     } catch (error) {
       return `查询失败:${error instanceof Error ? error.message : String(error)}`
@@ -1668,31 +1682,61 @@ export class RemoteCommandProcessor {
       : null
   }
 
-  /** 任务进展:会话状态 + 工具调用统计 + 最近输出摘要。 */
+  /** 任务进展:阶段(思考/工具/输出/完成)+ 统计 + 最近动作与输出 + 产物提示。 */
   private async cmdProgress(sessionId: string): Promise<string> {
     if (!/^session-/.test(sessionId)) return '请提供完整的会话 id(以 session- 开头)'
     const client = this.harness.client()
     try {
       const [list, data] = await Promise.all([
         client.rpc<{ items: Array<{ sessionId: string; running?: boolean; title?: string | null }> }>('session.list', {}, 20000),
-        client.rpc<{ events: Array<{ event?: { type?: string; seq?: number; data?: { message?: { content?: unknown }; name?: unknown; error?: unknown } } }> }>('session.history', { sessionId, maxMessages: 6 }, 30000),
+        client.rpc<{ events: Array<{ event?: { type?: string; seq?: number; data?: { message?: { content?: unknown }; name?: unknown; arguments?: unknown; error?: unknown; reason?: unknown } } }> }>('session.history', { sessionId, maxMessages: 8 }, 30000),
       ])
       const meta = (list.items ?? []).find((s) => s.sessionId === sessionId)
       const events = data.events ?? []
+      const running = meta?.running === true
       const toolCalls = events.filter((e) => e.event?.type === 'tool/call').length
       const toolFails = events.filter((e) => e.event?.type === 'tool/result' && e.event.data?.error !== undefined).length
-      const lastText = deliveredText(events, 200) || '(暂无输出)'
-      const status = meta?.running ? '▶ 运行中' : '⏸ 空闲/已结束'
-      const title = meta?.title ?? '(无标题)'
-      // 现场播报的内存素材比历史拉取更新(含正在执行中的工具/未定稿文本)。
       const live = this.liveViews.get(sessionId)
-      const liveText = live !== undefined && live.text !== '' ? live.text : ''
       const liveTool = live !== undefined && live.tool !== '' ? live.tool : ''
+      // 阶段判定:运行中按最近动向(工具/输出/思考)细分;已结束按 turn/end reason 定性。
+      let phase = ''
+      let failed = false
+      const endEv = [...events].reverse().find((e) => e.event?.type === 'turn/end')
+      if (endEv !== undefined && !running) {
+        const reason = endEv.event?.data?.reason
+        failed = isRecord(reason) && reason.kind === 'error'
+        phase = failed ? '❌ 已失败' : '✅ 已完成'
+      } else if (running && liveTool !== '') {
+        phase = `🔧 正在调用工具:${liveTool.slice(0, 130)}`
+      } else if (running) {
+        const tailTypes = events.slice(-4).map((e) => e.event?.type)
+        const outputting = tailTypes.some((t) => t === 'assistant/chunk' || t === 'assistant/message')
+        phase = outputting ? '💬 正在输出…' : '🤔 思考中…'
+      } else {
+        phase = '⏸ 空闲'
+      }
+      // 产物提示:最近一次成功的"写/执行类"工具调用。
+      let product = ''
+      const WRITEISH = /write|edit|save|create|mkdir|patch|apply|bash|exec|run|mv|cp|tar|npm|pnpm|git/i
+      for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i]?.event
+        if (ev?.type === 'tool/result' && ev.data?.error === undefined) {
+          const call = events[i - 1]?.event
+          if (call?.type === 'tool/call' && typeof call.data?.name === 'string' && WRITEISH.test(call.data.name)) {
+            const args = typeof call.data.arguments === 'string' ? call.data.arguments.replace(/\s+/g, ' ').trim().slice(0, 90) : ''
+            product = `📦 最近完成:${call.data.name}${args !== '' ? ` ${args}` : ''}`
+            break
+          }
+        }
+      }
+      const lastText = deliveredText(events, 200) || '(暂无输出)'
+      const liveText = live !== undefined && live.text !== '' ? live.text : ''
       const lines = [
         `会话 ${sessionId.slice(0, 20)}…`,
-        `${status} | ${title.slice(0, 30)}`,
-        `最近 6 条消息内:工具调用 ${toolCalls} 次${toolFails > 0 ? `,失败 ${toolFails} 次` : ''}`,
-        ...(liveTool !== '' ? [`最近工具:${liveTool.slice(0, 120)}`] : []),
+        phase,
+        `工具调用 ${toolCalls} 次${toolFails > 0 ? `,失败 ${toolFails} 次` : ''}`,
+        ...(liveTool !== '' && !phase.includes('正在调用') ? [`最近工具:${liveTool.slice(0, 120)}`] : []),
+        ...(product !== '' ? [product] : []),
         `最新输出: ${liveText !== '' ? liveText.slice(0, 300) : lastText}`,
         live !== undefined ? `播报:${live.broadcast ? '开(发「静音」关闭)' : '关(发「播报」开启)'}` : '',
       ].filter((line) => line !== '')
@@ -1725,7 +1769,9 @@ export class RemoteCommandProcessor {
     if (description === '') return '任务描述不能为空,示例:任务 分析这个仓库的架构'
     const client = this.harness.client()
     const parsed = parseTaskOptions(description)
-    const taskText = parsed.description
+    // 「任务 新:描述」= 强制另起一个新任务会话(默认任务会话是复用的)。
+    const forceNewSession = /^新:/.test(parsed.description)
+    const taskText = forceNewSession ? parsed.description.replace(/^新:\s*/, '') : parsed.description
     if (taskText === '') return '任务描述不能为空'
     try {
       let workspaceId: string | null = null
@@ -1767,24 +1813,48 @@ export class RemoteCommandProcessor {
         this.enqueueQueuedTask(key, taskText, pushTarget, cwd ?? workspaceId)
         return '已有任务在运行,新任务已排队,将串行执行。\n可在桌面端「工作台 → 任务队列」查看或取消。'
       }
-      const payload: Record<string, unknown> = {}
-      if (workspaceId !== null) payload.workspaceId = workspaceId
-      else if (cwd !== null) payload.cwd = cwd
-      const created = await client.rpc<{ sessionId: string }>('session.create', payload)
-      this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
-      this.taskDescriptions.set(created.sessionId, taskText)
+      // 无工作区的任务合并到"默认任务会话"(每用户一条,复用;「任务 新:」另起)。
+      // 会话保持独立可避免历史列表被一次性任务刷屏,也让任务有持续上下文。
+      let sessionId: string
       const broadcastNote = pushTarget === undefined
         ? ''
         : '\n💡 推送原则:机器人只在 进入/查询/审批/完成/失败 时推送;想看任务过程发「播报」开启现场进展,或「进展 <会话id>」随时查看'
-      if (pushTarget !== undefined) this.startLiveView(created.sessionId, false)
-      this.recordTask({ description: taskText, sessionId: created.sessionId, workspace: cwd ?? workspaceId, status: 'running' })
-      this.enqueueTaskRun(taskText, created.sessionId, cwd ?? workspaceId)
+      if (workspaceId === null && cwd === null) {
+        const existing = this.defaultTaskSessions.get(key)
+        if (existing !== undefined && !forceNewSession) {
+          sessionId = existing
+        } else {
+          const created = await client.rpc<{ sessionId: string }>('session.create', {})
+          sessionId = created.sessionId
+          if (!forceNewSession) this.defaultTaskSessions.set(key, sessionId)
+        }
+      } else {
+        const payload: Record<string, unknown> = {}
+        if (workspaceId !== null) payload.workspaceId = workspaceId
+        else if (cwd !== null) payload.cwd = cwd
+        const created = await client.rpc<{ sessionId: string }>('session.create', payload)
+        sessionId = created.sessionId
+      }
+      if (!this.sessionOwners.has(sessionId)) {
+        this.sessionOwners.set(sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
+      } else {
+        const owner = this.sessionOwners.get(sessionId)!
+        if (pushTarget !== undefined) owner.pushTarget = pushTarget
+      }
+      this.taskDescriptions.set(sessionId, taskText)
+      if (pushTarget !== undefined) this.startLiveView(sessionId, false)
+      this.recordTask({ description: taskText, sessionId, workspace: cwd ?? workspaceId, status: 'running' })
+      this.enqueueTaskRun(taskText, sessionId, cwd ?? workspaceId)
       await client.rpc('session.prompt', {
-        sessionId: created.sessionId,
+        sessionId,
         mode: 'queue',
         content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(cwd, taskText)) }],
       })
-      return `任务已启动 ✓\n会话: ${created.sessionId}\n描述: ${taskText.slice(0, 80)}${broadcastNote}\n发送「进展 ${created.sessionId}」查看详情`
+      const mergedPath = workspaceId === null && cwd === null
+      const extra = mergedPath
+        ? `${broadcastNote}\n(无工作区任务自动归入本默认任务会话并复用;发「任务 新:描述」可另起一段)`.trim()
+        : broadcastNote
+      return `任务已启动 ✓\n会话: ${sessionId}\n描述: ${taskText.slice(0, 80)}${extra}\n发送「进展 ${sessionId}」查看详情`
     } catch (error) {
       return `启动失败:${error instanceof Error ? error.message : String(error)}`
     }
@@ -2195,14 +2265,20 @@ export class RemoteCommandProcessor {
       void this.drainQueue().catch(() => {})
       return
     }
-    // 去重:同一会话的完成/失败汇报 5 分钟内只推一次(多轮任务不重复刷屏)。
+    // 去重:同一会话同一描述任务的完成/失败汇报 5 分钟内只推一次
+    // (默认任务会话会被多个不同任务复用,去重键必须带描述,否则后一个任务的 ✅ 会被吞)。
     const now = Date.now()
-    const record = this.lastTurnReports.get(sessionId) ?? { done: 0, fail: 0 }
+    const reportKey = `${sessionId}|${(queueDescription ?? '').slice(0, 60)}`
+    const record = this.lastTurnReports.get(reportKey) ?? { done: 0, fail: 0 }
     const last = failed ? record.fail : record.done
     if (now - last < 5 * 60 * 1000) return
     if (failed) record.fail = now
     else record.done = now
-    this.lastTurnReports.set(sessionId, record)
+    this.lastTurnReports.set(reportKey, record)
+    if (this.lastTurnReports.size > 300) {
+      const oldest = this.lastTurnReports.keys().next().value as string | undefined
+      if (oldest !== undefined) this.lastTurnReports.delete(oldest)
+    }
     this.recordTask({ sessionId, status: failed ? 'failed' : 'completed', ...(failed && message !== '' ? { error: message } : {}) })
     const text = failed
       ? `❌ 任务失败(会话 ${sessionId})${message !== '' ? `\n${message.slice(0, 200)}` : ''}` +
