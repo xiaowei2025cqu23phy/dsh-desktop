@@ -48,8 +48,9 @@ console.log(`测试网关:${baseUrl} ${token === '' ? '(无 token)' : '(已读 t
 {
   const res = await fetch(`${baseUrl}/app.js`)
   const text = await res.text()
-  // 中文在打包时被 esbuild 转义为 \uXXXX,按转义序列检查"重新启用"提示。
-  const fresh = text.includes('previewActionRow') && text.includes('openNewsessSheet') && text.includes('\\u91cd\\u65b0\\u542f\\u7528')
+  // 中文在打包时被 esbuild 转义为 \uXXXX(大写十六进制),统一转小写后按转义序列检查"重新启用"提示。
+  const fresh = text.includes('previewActionRow') && text.includes('openNewsessSheet')
+    && text.toLowerCase().includes('\\u91cd\\u65b0\\u542f\\u7528')
   if (res.status === 200 && fresh) pass('PWA 打包包含新功能(app.js)')
   else fail('PWA 打包包含新功能(app.js)', `status=${res.status}, fresh=${fresh}`)
 }
