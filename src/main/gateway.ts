@@ -273,13 +273,17 @@ export class RemoteGateway {
       if (req.method === 'GET' && path === '/api/info') {
         const appearance = this.config.get().appearance
         const spec = appearance.phone.path !== null ? appearance.phone : appearance.window
+        // 机器人通道的固定对话会话(手机端置顶展示):只认"纯对话"条目,
+        // 过滤历史版本误写入的工作区会话(标签不是 (纯对话… 前缀)。
         const chatSessions = this.config.get().chatSessions ?? {}
+        const botChatIds = Object.entries(chatSessions)
+          .filter(([, e]) => typeof e?.label === 'string' && e.label.startsWith('(纯对话'))
+          .map(([, e]) => e.sessionId)
         this.json(res, 200, {
           name: 'dsh-desktop-remote',
           version: '0.1.0',
           wallpaperPosition: spec.position,
-          // 机器人通道的固定对话会话(手机端置顶展示,直接看到 QQ 聊天)。
-          chatSessionIds: Object.values(chatSessions).map((e) => e.sessionId),
+          chatSessionIds: botChatIds,
         })
         return
       }
