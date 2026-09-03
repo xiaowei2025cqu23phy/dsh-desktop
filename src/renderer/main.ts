@@ -50,6 +50,21 @@ let previewStatus: HarnessStatus | null = null
   let logsTimer: ReturnType<typeof setInterval> | null = null
   let webviewWallpaperKey: string | null = null
   let webviewFailed = false
+  /** 内嵌页加载失败后的自动重试(重启后 harness 启动期会先失败几次)。 */
+  let webviewReloadTimer: ReturnType<typeof setTimeout> | null = null
+  /** 连续失败次数:成功(did-finish-load)清零;超过上限停止自动重试,避免死循环。 */
+  let webviewFailStreak = 0
+
+/** 排期一次内嵌页自动重载(间隔 2 秒;连续失败上限 12 次 ≈ 24 秒后停手)。 */
+function scheduleWebviewRetry(): void {
+  const view = harnessView()
+  if (webviewReloadTimer !== null || webviewFailStreak >= 12) return
+  webviewReloadTimer = setTimeout(() => {
+    webviewReloadTimer = null
+    webviewFailStreak += 1
+    if (webviewFailed) view.reload()
+  }, 2000)
+}
 
 function harnessView(): WebviewElement {
   return document.getElementById('harness-view') as unknown as WebviewElement
@@ -161,10 +176,9 @@ async function refreshStatus(): Promise<void> {
     modelSelect.disabled = false
     void loadModels()
   }
-  // harness 就绪后,若内嵌页面之前加载失败(启动期连接被拒),自动重载。
+  // harness 就绪后,若内嵌页面之前加载失败(启动期连接被拒),自动重载并重试到成功。
   if ((status.state === 'running' || status.state === 'external') && webviewFailed) {
-    webviewFailed = false
-    view.reload()
+    scheduleWebviewRetry()
   }
   if (status.state === 'error') {
     const text = $id('view-error-text')
@@ -1612,11 +1626,18 @@ function bind(): void {
     const details = event as unknown as { errorCode?: number; errorDescription?: string }
     $id('view-error-text').textContent = `加载失败(${String(details.errorCode)}):${details.errorDescription ?? '未知错误'}`
     $id('view-error').classList.remove('hidden')
+    // 失败即排期重试(harness 启动期会先失败几次,服务起来后自动恢复)。
+    scheduleWebviewRetry()
   })
   view.addEventListener('dom-ready', () => {
-    webviewFailed = false
+    // 仅隐藏错误浮层;是否真成功以 did-finish-load 为准(错误页也会触发 dom-ready)。
     $id('view-error').classList.add('hidden')
     void syncWebviewWallpaper()
+  })
+  view.addEventListener('did-finish-load', () => {
+    webviewFailed = false
+    webviewFailStreak = 0
+    $id('view-error').classList.add('hidden')
   })
 
   select('model-select').addEventListener('change', () => void applyModelSelection())
