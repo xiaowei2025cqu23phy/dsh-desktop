@@ -41,6 +41,8 @@ const state: {
   messages: StreamMessage[]
   title: string
   model: string
+  /** 任务结束后回到纯展示(壁纸+时钟)的延迟定时器。 */
+  ambientTimer: ReturnType<typeof setTimeout> | null
 } = {
   sessionId: null,
   resumed: false,
@@ -49,6 +51,38 @@ const state: {
   messages: [],
   title: 'AI 屏保',
   model: '',
+  ambientTimer: null,
+}
+
+// ---- 纯展示模式(壁纸 + 时钟;任务结束后回到这里,不滞留旧对话) ----
+
+function goAmbient(): void {
+  state.ambientTimer = null
+  const stream = streamEl()
+  stream.innerHTML = ''
+  state.messages = []
+  state.sessionId = null
+  state.lastSeq = 0
+  $id('ss-ambient').style.display = ''
+  setTitle('AI 屏保')
+  setModel('')
+  setStatus('待机', 'idle')
+}
+
+/** 任务结束后延迟回到纯展示;期间有新活动会取消。 */
+function scheduleAmbient(): void {
+  if (state.ambientTimer !== null) clearTimeout(state.ambientTimer)
+  state.ambientTimer = setTimeout(() => {
+    // 延迟期间没有新活动(否则 cancelAmbient 已取消)才回展示模式。
+    goAmbient()
+  }, 20_000)
+}
+
+function cancelAmbient(): void {
+  if (state.ambientTimer !== null) {
+    clearTimeout(state.ambientTimer)
+    state.ambientTimer = null
+  }
 }
 
 // ---- 渲染原语 ----
@@ -80,6 +114,7 @@ function setModel(text: string): void {
 function addMessage(kind: StreamMessage['kind']): StreamMessage {
   const stream = streamEl()
   $id('ss-ambient').style.display = 'none'
+  cancelAmbient()
   const root = document.createElement('div')
   root.className = `msg msg-${kind}`
 
@@ -198,6 +233,7 @@ function handleSessionEvent(event: { type?: unknown; seq?: unknown; data?: unkno
     case 'turn/end':
       state.status = 'idle'
       setStatus('空闲(本轮完成)', 'idle')
+      scheduleAmbient()
       break
     case 'user/message': {
       const text = S.textFromBlocks(data.content)
@@ -247,6 +283,7 @@ function handleSessionEvent(event: { type?: unknown; seq?: unknown; data?: unkno
         finishStreaming(message)
         state.status = 'idle'
         setStatus('空闲(本轮完成)', 'idle')
+        scheduleAmbient()
       }
       break
     }
@@ -311,6 +348,7 @@ function handleSessionEvent(event: { type?: unknown; seq?: unknown; data?: unkno
     case 'stream/error': {
       state.status = 'error'
       setStatus('事件流错误', 'error')
+      scheduleAmbient()
       break
     }
     default:
@@ -446,11 +484,22 @@ function bindExitEvents(): void {
   }
   // 注意:mousemove 不绑定 —— 鼠标微小抖动/合成移动会误触发退出,导致屏保闪退。
   // 退出只依赖明确输入:按键、点击、滚轮、触摸。
+  // 滚轮例外:内容可滚动时先滚动(长对话能翻阅),滚到底再触发退出。
   window.addEventListener('keydown', () => exit(), { passive: true })
   window.addEventListener('mousedown', () => exit(), { passive: true })
   window.addEventListener('pointerdown', () => exit(), { passive: true })
   window.addEventListener('click', () => exit(), { passive: true })
-  window.addEventListener('wheel', () => exit(), { passive: true })
+  window.addEventListener('wheel', (event: Event) => {
+    if (Date.now() < exitArmedAt) return
+    const el = streamEl()
+    const overflow = el.scrollHeight - el.clientHeight
+    if (overflow > 8) {
+      el.scrollTop += (event as WheelEvent).deltaY
+      if (el.scrollTop < 0) el.scrollTop = 0
+      return
+    }
+    exit()
+  }, { passive: true })
   window.addEventListener('touchstart', () => exit(), { passive: true })
 }
 boot()
