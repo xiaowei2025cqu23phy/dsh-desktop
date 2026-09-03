@@ -31,8 +31,23 @@
 
 安装版卸载时保留用户配置与壁纸(不会删除 `%APPDATA%` 数据);如需彻底清理请手动删除 `%APPDATA%/DeepSeek Harness Desktop`。
 
-> 系统要求:Windows x64、Node.js 18+(仅在桌面端需要托管拉起 harness 时使用)。
+> 系统要求:Windows x64、Node.js 18+(建议 22 或 24 LTS;仅在桌面端需要托管拉起 harness 时使用)。
 > 提示:先运行 `npx @deepseek-ai/dsh web` 并配置好模型密钥,再打开桌面端,体验最佳。
+
+### 🆕 新手部署三步走(给第一次装的朋友)
+
+安装包不包含智能体运行时与任何配置/密钥(隐私设计),新电脑只需三步:
+
+1. **装 Node.js(LTS)**
+   - 打开 https://nodejs.org/zh-cn/download ,下载 Windows Installer(.msi,LTS 版 22 或 24),一路「下一步」;
+   - 或 PowerShell 执行 `winget install OpenJS.NodeJS.LTS`;
+   - 装完重开终端,`node -v` 能看到版本号即成功;
+   - 国内网络慢可先执行 `npm config set registry https://registry.npmmirror.com`;
+2. **装本桌面端**:下载上方安装版(或便携版解压),双击安装;
+3. **配模型密钥**:打开桌面端 → 打开内置 Web UI(「设置 → 服务 → 打开 Web UI」)→ 设置 → Models,填入模型 API Key(如 DeepSeek 官方 Key);密钥只存在本机。
+
+> 不需要手动安装 dsh:桌面端首次启动会用 `npx` 自动下载智能体运行时;
+> 想用 QQ 机器人再加一步:QQ 开放平台注册机器人,把 AppID/Secret 填入「设置 → QQ 机器人」(见 [QQ-BOT.md](docs/QQ-BOT.md))。
 
 > 📖 完整安装、配置、手机端与 QQ 机器人使用步骤见 [实操指南(汉英双语)](docs/USAGE.md),接入钉钉/飞书/Home Assistant/iOS 捷径等更多方式见 [接入指南](docs/INTEGRATIONS.md)。
 > 🤖 QQ 机器人完整指南(部署/平台权限/指令集/FAQ)见 [docs/QQ-BOT.md](docs/QQ-BOT.md);📱 手机 PWA 特色功能见 [docs/PWA.md](docs/PWA.md)。

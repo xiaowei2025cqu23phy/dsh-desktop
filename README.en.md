@@ -32,8 +32,19 @@ Download from [GitHub Releases](https://github.com/xiaowei2025cqu23phy/dsh-deskt
 
 Uninstalling keeps user config and wallpapers (does not delete `%APPDATA%`); for a full cleanup remove `%APPDATA%/DeepSeek Harness Desktop` manually.
 
-> Requirements: Windows x64, Node.js 18+ (only needed when the desktop app manages/hosts the harness).
+> Requirements: Windows x64, Node.js 18+ (22 or 24 LTS recommended; only needed when the desktop hosts/manages the harness).
 > Tip: Run `npx @deepseek-ai/dsh web` and configure a model API key first for the best experience.
+
+### 🆕 Fresh-install in 3 steps (for new machines)
+
+The installer ships without the agent runtime and without any config/keys (by design — privacy first). On a new PC:
+
+1. **Install Node.js (LTS)** — download the Windows Installer (.msi, LTS 22/24) from https://nodejs.org/zh-cn/download and click through; or run `winget install OpenJS.NodeJS.LTS` in PowerShell. Verify with `node -v` in a new terminal. (Slow network? `npm config set registry https://registry.npmmirror.com`.)
+2. **Install this desktop app** — download the installer above (or the portable zip) and run it.
+3. **Add a model API key** — open the app → open the built-in Web UI (Settings → Service → Open Web UI) → Settings → Models, and enter a model API key (e.g. DeepSeek official). Keys stay on your machine.
+
+> No manual dsh install needed: on first launch the desktop fetches the agent runtime via `npx`.
+> Want the QQ bot too? Register a bot on the QQ Open Platform and paste AppID/Secret into Settings → QQ Bot (see [QQ-BOT.md](docs/QQ-BOT.md)).
 
 > 📖 Step-by-step installation, configuration, phone and QQ-bot usage: [Hands-on Guide (bilingual)](docs/USAGE.md). Hook up DingTalk / Feishu / Home Assistant / iOS Shortcuts and more: [Integration Guide](docs/INTEGRATIONS.md). 🤖 Full QQ-bot guide (deploy/permissions/commands/FAQ): [QQ-BOT.md](docs/QQ-BOT.md). 📱 Phone PWA features: [PWA.md](docs/PWA.md).
 
