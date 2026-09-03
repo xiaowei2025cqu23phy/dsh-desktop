@@ -217,6 +217,8 @@ export class RemoteCommandProcessor {
   private liveViews = new Map<string, LiveView>()
   /** 无工作区任务的"默认任务会话"(按 channel:userId 复用;「任务 新:」另起)。 */
   private defaultTaskSessions = new Map<string, string>()
+  /** 已自动命名过的对话会话(进程内去重;标题让列表可读,不再满屏"新会话")。 */
+  private renamedChatSessions = new Set<string>()
   /** 机器人对话工作区目录(纯对话/群聊会话的落点,让对话在侧边栏可见)。 */
   private robotChatDir: string | null = null
   /** 已提示过安全提醒的群(进程内去重)。 */
@@ -264,6 +266,13 @@ export class RemoteCommandProcessor {
     } catch {
       return false
     }
+  }
+
+  /** 会话自动命名(尽力而为):任务=描述、聊天=首句;失败静默,不影响主流程。 */
+  private autoRenameSession(sessionId: string, title: string): void {
+    const clean = title.replace(/\s+/g, ' ').trim().slice(0, 24)
+    if (clean === '') return
+    void this.harness.client().rpc('session.rename', { sessionId, title: clean }, 15000).catch(() => {})
   }
 
   /** 注入流式输出实现(仅支持主动流式的通道,如 QQ 私聊)。 */
@@ -475,6 +484,7 @@ export class RemoteCommandProcessor {
             mode: 'queue',
             content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(next.workspace !== null && /[\\/]/.test(next.workspace) ? next.workspace : null, next.description)) }],
           })
+          this.autoRenameSession(createdId, next.description)
         } else {
           // 已有会话(重试转排队):直接重新执行。
           target.upsertTaskQueueEntry({ ...next, status: 'running', nextAttemptAt: null, updatedAt: Date.now() })
@@ -483,6 +493,7 @@ export class RemoteCommandProcessor {
             mode: 'queue',
             content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(next.workspace !== null && /[\\/]/.test(next.workspace) ? next.workspace : null, next.description)) }],
           })
+          this.autoRenameSession(next.sessionId, next.description)
         }
         if (this.push !== null && next.pushTarget !== undefined && next.pushTarget !== null) {
           this.push(next.channel, next.userId, `▶️ 排队任务已开始执行:${next.description.slice(0, 60)}`, undefined, next.pushTarget)
@@ -1898,6 +1909,7 @@ export class RemoteCommandProcessor {
         mode: 'queue',
         content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(cwd, taskText)) }],
       })
+      this.autoRenameSession(sessionId, taskText)
       const mergedPath = workspaceId === null && cwd === null
       const extra = mergedPath
         ? `${broadcastNote}\n(无工作区任务自动归入本默认任务会话并复用;发「任务 新:描述」可另起一段)`.trim()
@@ -2159,6 +2171,15 @@ export class RemoteCommandProcessor {
           pushTarget: owner.pushTarget,
           ts: Date.now(),
         })
+      }
+      // 首次文本消息给会话命名(首句前 24 字),列表不再满屏"新会话"。
+      if (text.trim() !== '' && !this.renamedChatSessions.has(ctx.sessionId)) {
+        this.renamedChatSessions.add(ctx.sessionId)
+        if (this.renamedChatSessions.size > 200) {
+          const oldest = this.renamedChatSessions.keys().next().value as string | undefined
+          if (oldest !== undefined) this.renamedChatSessions.delete(oldest)
+        }
+        this.autoRenameSession(ctx.sessionId, text)
       }
       // 对话模式静默:不回复"已发送"确认(避免噪音;真实回复回合结束自动推送)。
       return ''
