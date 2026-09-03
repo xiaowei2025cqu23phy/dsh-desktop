@@ -372,7 +372,8 @@
           <label for="bot-chat-prompt">对话模式提示词(聊天时,agent 以朋友身份;留空 = 不注入)</label>
           <textarea id="bot-chat-prompt" rows="2" placeholder="你现在是用户的朋友,请用轻松亲切的语气…"></textarea>
         </div>
-        <p class="hint">启用后可在 QQ 私聊机器人发送指令:帮助 / 状态 / 会话 / 任务 &lt;描述&gt; / 停止 / 模型</p>
+        <p class="hint">启用后可在 QQ 私聊机器人发送指令:帮助 / 状态 / 会话 / 任务 &lt;描述&gt; / 停止 / 模型。群聊只聊天、不响应任何指令。</p>
+        <p class="hint">🔒 安全:官方机器人不能被任意添加为好友,私聊只有你主动发起后才会工作。请勿接入"可被搜索/加好友"的机器人形态(个人号协议、第三方框架),否则谁加了你的机器人,谁就能在私聊里指挥你的电脑。</p>
         <div class="field">
           <button id="btn-bot-help" class="btn btn-sm">📖 查看机器人指令集</button>
           <pre id="bot-help-text" class="help-pre hidden"></pre>
