@@ -971,7 +971,7 @@ export class RemoteCommandProcessor {
         }
       }
       const [list, ws] = await Promise.all([
-        client.rpc<{ items: Array<{ sessionId: string; title?: string | null; running?: boolean; blank?: boolean; origin?: string; updatedAt?: number }> }>('session.list', {}, 20000),
+        client.rpc<{ items: Array<{ sessionId: string; title?: string | null; running?: boolean; blank?: boolean; origin?: string; updatedAt?: number; projections?: { values?: { title?: unknown } } | null }> }>('session.list', {}, 20000),
         client.rpc<{ archivedSessionIds?: string[] }>('workspace.list', {}, 20000),
       ])
       const archived = new Set(ws.archivedSessionIds ?? [])
@@ -994,7 +994,7 @@ export class RemoteCommandProcessor {
       }))
       const lines = ['📋 最近会话']
       items.forEach((s, i) => {
-        const title = (s.title ?? '新会话').slice(0, 26)
+        const title = (this.sessionTitleOf(s) || '新会话').slice(0, 26)
         const ago = s.updatedAt === undefined ? '' : `(${fmtAgo(s.updatedAt)})`
         const summary = previews[i] === '' ? '(暂无消息)' : previews[i]
         lines.push(`${i + 1}. ${s.running ? '▶' : '⏸'} ${title} ${ago}`)
@@ -2048,6 +2048,14 @@ export class RemoteCommandProcessor {
     }
   }
 
+  /** 会话标题:优先 projections(标题/摘要投影),其次顶层 title。 */
+  private sessionTitleOf(s: { title?: string | null; projections?: { values?: { title?: unknown } } | null }): string {
+    const projected = s.projections?.values?.title
+    if (typeof projected === 'string' && projected.trim() !== '') return projected
+    if (typeof s.title === 'string' && s.title.trim() !== '') return s.title
+    return ''
+  }
+
   /**
    * 工作区会话归属:workspace.list 的 sessionIds ∪ cwd 位于工作区路径下的会话;
    * 排除空会话(blank)、子代理(origin)与已归档;运行中优先,再按最近更新排序。
@@ -2058,9 +2066,9 @@ export class RemoteCommandProcessor {
     workspace: { workspaceId: string; path?: string; sessionIds?: string[] },
     archived: Set<string>,
   ): Promise<Array<{ sessionId: string; title?: string | null; running?: boolean; updatedAt?: number }>> {
-    let items: Array<{ sessionId: string; cwd?: string; blank?: boolean; origin?: string; running?: boolean; updatedAt?: number; title?: string | null }> = []
+    let items: Array<{ sessionId: string; cwd?: string; blank?: boolean; origin?: string; running?: boolean; updatedAt?: number; title?: string | null; projections?: { values?: { title?: unknown } } | null }> = []
     try {
-      const list = await client.rpc<{ items: Array<{ sessionId: string; cwd?: string; blank?: boolean; origin?: string; running?: boolean; updatedAt?: number; title?: string | null }> }>('session.list', {}, 20000)
+      const list = await client.rpc<{ items: Array<{ sessionId: string; cwd?: string; blank?: boolean; origin?: string; running?: boolean; updatedAt?: number; title?: string | null; projections?: { values?: { title?: unknown } } | null }> }>('session.list', {}, 20000)
       items = list.items ?? []
     } catch {
       return []
@@ -2073,7 +2081,12 @@ export class RemoteCommandProcessor {
       if (ids.has(s.sessionId)) return true
       const c = (s.cwd ?? '').replace(/\\/g, '/').toLowerCase()
       return pathKey !== '' && (c === pathKey || c.startsWith(`${pathKey}/`))
-    }).sort((a, b) =>
+    }).map((s) => ({
+      sessionId: s.sessionId,
+      title: this.sessionTitleOf(s) || null,
+      running: s.running,
+      updatedAt: s.updatedAt,
+    })).sort((a, b) =>
       ((b.running === true ? 1 : 0) - (a.running === true ? 1 : 0)) ||
       ((b.updatedAt ?? 0) - (a.updatedAt ?? 0)) ||
       (a.sessionId < b.sessionId ? -1 : 1),
