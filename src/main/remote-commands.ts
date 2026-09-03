@@ -926,7 +926,7 @@ export class RemoteCommandProcessor {
     const client = this.harness.client()
     try {
       const host = await client.rpc<{ version?: string; cwd?: string; attachedSessions?: number }>('host.describe')
-      const list = await client.rpc<{ items: Array<{ running?: boolean; blank?: boolean; title?: string | null; sessionId: string }> }>('session.list', {}, 20000)
+      const list = await client.rpc<{ items: Array<{ running?: boolean; blank?: boolean; sessionId: string; title?: string | null; projections?: { values?: { title?: unknown } } | null }> }>('session.list', {}, 20000)
       const total = (list.items ?? []).length
       const running = (list.items ?? []).filter((s) => s.running === true)
       const lines = [
@@ -937,7 +937,7 @@ export class RemoteCommandProcessor {
       if (running.length > 0) {
         lines.push('运行中:')
         for (const item of running.slice(0, 5)) {
-          lines.push(`  ▶ ${(item.title ?? item.sessionId).slice(0, 30)}\n    ${item.sessionId}`)
+          lines.push(`  ▶ ${(this.sessionTitleOf(item) || item.sessionId).slice(0, 30)}\n    ${item.sessionId}`)
         }
       }
       return lines.join('\n')
@@ -1747,10 +1747,11 @@ export class RemoteCommandProcessor {
     const client = this.harness.client()
     try {
       const [list, data] = await Promise.all([
-        client.rpc<{ items: Array<{ sessionId: string; running?: boolean; title?: string | null }> }>('session.list', {}, 20000),
+        client.rpc<{ items: Array<{ sessionId: string; running?: boolean; title?: string | null; projections?: { values?: { title?: unknown } } | null }> }>('session.list', {}, 20000),
         client.rpc<{ events: Array<{ event?: { type?: string; seq?: number; data?: { message?: { content?: unknown }; name?: unknown; arguments?: unknown; error?: unknown; reason?: unknown } } }> }>('session.history', { sessionId, maxMessages: 8 }, 30000),
       ])
       const meta = (list.items ?? []).find((s) => s.sessionId === sessionId)
+      const metaTitle = meta === undefined ? '' : this.sessionTitleOf(meta)
       const events = data.events ?? []
       const running = meta?.running === true
       const toolCalls = events.filter((e) => e.event?.type === 'tool/call').length
@@ -1791,7 +1792,7 @@ export class RemoteCommandProcessor {
       const lastText = deliveredText(events, 200) || '(暂无输出)'
       const liveText = live !== undefined && live.text !== '' ? live.text : ''
       const lines = [
-        `会话 ${sessionId.slice(0, 20)}…`,
+        `会话 ${sessionId.slice(0, 20)}…${metaTitle !== '' ? ` | ${metaTitle.slice(0, 30)}` : ''}`,
         phase,
         `工具调用 ${toolCalls} 次${toolFails > 0 ? `,失败 ${toolFails} 次` : ''}`,
         ...(liveTool !== '' && !phase.includes('正在调用') ? [`最近工具:${liveTool.slice(0, 120)}`] : []),
