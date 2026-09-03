@@ -64,17 +64,6 @@ function promptTitleFrom(text: string): string {
   return t.slice(0, 24)
 }
 
-/** 严格指令形态的群聊查询(整条消息=指令才解析;日常聊天句子不误触)。
- *  支持:状态/会话/工作区/模型/用量/帮助,以及 进展|打开 <session-xxx>。
- *  返回 null = 不是查询指令(按聊天处理)。 */
-function groupQueryCommand(content: string): QQCommand | null {
-  const text = content.trim()
-  const simple = /^(帮助|help|状态|status|会话|sessions|工作区|workspaces|模型|models|用量|usage|统计|\?)$/i
-  const detail = /^(进展|progress|进度|打开|open)\s+session-[0-9a-f-]+\s*$/i
-  if (simple.test(text) || detail.test(text)) return parseCommand(text)
-  return null
-}
-
 interface HistoryEventLike {
   event?: { type?: string; data?: { message?: { content?: unknown }; chunk?: unknown } }
 }
@@ -133,9 +122,9 @@ interface ChatContext {
   workspace: string | null
 }
 
-/** 群聊首条消息的安全提醒(只聊天 + 只读查询;命令与文件访问仅私聊)。 */
+/** 群聊首条消息的安全提醒(只聊天,不响应任何指令/查询)。 */
 const GROUP_SAFETY_NOTICE =
-  '⚠️ 安全提醒:本群与机器人只聊天,支持只读查询(状态/会话/工作区/模型/用量/进展——仅限本群会话);任务、文件与审批请私聊机器人。\n机器人由电脑主人添加——请勿将不可信的机器人拉入本群,否则对方可能远程操控这台电脑。'
+  '⚠️ 安全提醒:本群与机器人仅限聊天,不响应任何指令(含查询);需要查询、任务或文件操作请私聊机器人。\n机器人由电脑主人添加——请勿将不可信的机器人拉入本群,否则对方可能远程操控这台电脑。'
 
 /** 会话归属:哪个通道的哪个用户发起了该会话(用于审批/提问的定向通知)。 */
 interface SessionOwner {
@@ -764,19 +753,9 @@ export class RemoteCommandProcessor {
     if (content === '' && image === undefined) {
       reply = ''
     } else if (pushTarget !== undefined && pushTarget.scope === 'group') {
-      // 群聊:聊天优先 + 只读查询 —— 群里任何人都可能触发命令,等于把电脑交给群成员
-      // 远程操控;任务/文件/审批等一律仅限私聊。只读查询(状态/会话/进展等)不改变
-      // 电脑状态,且进展/打开只放行本群自己的会话,避免泄露私聊内容。
-      // 只有"严格指令形态"(整条消息=指令)才解析,日常聊天(含以指令词开头的句子)不受影响。
-      const command = groupQueryCommand(content)
-      if (command === null) {
-        reply = await this.groupChatOnly(key, ctxKey, content, pushTarget, image)
-      } else {
-        const answer = await this.groupReadonlyGate(command, pushTarget)
-        reply = answer === null
-          ? await this.executeCommand(command, key, ctxKey, pushTarget)
-          : answer
-      }
+      // 群聊:只聊天,不解析任何指令(查询同样不放行)——群里任何人都可能触发,等于把
+      // 电脑交给群成员远程操控;完整功能(含状态/会话等查询)请私聊机器人。
+      reply = await this.groupChatOnly(key, ctxKey, content, pushTarget, image)
     } else {
       const command = parseCommand(content)
       if (command.kind === 'unknown') {
@@ -834,94 +813,6 @@ export class RemoteCommandProcessor {
     }
     const sent = await this.cmdChatMessage(ctxKey, key, content, pushTarget, image)
     return notice + sent
-  }
-
-  /**
-   * 群聊只读闸门:放行不改变电脑状态的查询;返回 null = 交给 executeCommand 执行,
-   * 否则返回直接应答的文本。会话级查询(进展/打开)只放行本群自己的会话,
-   * 「会话」只列本群对话,防止群成员窥探私聊内容。
-   */
-  private async groupReadonlyGate(
-    command: QQCommand,
-    pushTarget: { scope: string; targetId: string },
-  ): Promise<string | null> {
-    switch (command.kind) {
-      case 'status':
-      case 'workspaces':
-      case 'models':
-      case 'usage':
-        return null
-      case 'sessions':
-        return this.groupSessionsList(pushTarget.targetId)
-      case 'progress':
-      case 'open': {
-        if (command.sessionId === '' || !/^session-/.test(command.sessionId)) {
-          return '用法:进展 <会话id>(本群会话可用;发「会话」可查看)'
-        }
-        if (!this.sessionOwnedByGroup(command.sessionId, pushTarget.targetId)) {
-          return '该会话不属于本群。群内只能查看本群自己的对话(保护私聊隐私)。'
-        }
-        return null
-      }
-      case 'help':
-        return '群聊不展示完整指令集。支持:状态 / 会话 / 工作区 / 模型 / 用量 / 进展 <会话id>;其余操作请私聊机器人。'
-      default:
-        return '群聊仅支持聊天与只读查询(状态/会话/工作区/模型/用量/进展·仅本群会话);任务/文件/审批等操作请私聊机器人(防止他人远程操控电脑)。'
-    }
-  }
-
-  /** 会话是否属于某个群(该群发起的对话;跨重启后用 chatContexts 兜底)。 */
-  private sessionOwnedByGroup(sessionId: string, groupId: string): boolean {
-    const owner = this.sessionOwners.get(sessionId)
-    if (owner !== undefined) {
-      return owner.pushTarget?.scope === 'group' && owner.pushTarget.targetId === groupId
-    }
-    for (const [ctxKey, ctx] of this.chatContexts) {
-      if (ctx.sessionId === sessionId && ctxKey.endsWith(`:g:${groupId}`)) return true
-    }
-    return false
-  }
-
-  /** 列出本群自己的机器人对话线程(标题/时间/最近消息),群内「会话」用。 */
-  private async groupSessionsList(groupId: string): Promise<string> {
-    const client = this.harness.client()
-    const ids = new Set<string>()
-    for (const [sessionId, owner] of this.sessionOwners) {
-      if (owner.pushTarget?.scope === 'group' && owner.pushTarget.targetId === groupId) ids.add(sessionId)
-    }
-    for (const [ctxKey, ctx] of this.chatContexts) {
-      if (ctxKey.endsWith(`:g:${groupId}`)) ids.add(ctx.sessionId)
-    }
-    if (ids.size === 0) return '本群还没有机器人对话记录:直接发消息聊天即可自动创建。'
-    // 按最近更新排序(一次 session.list 拿元数据,再并行抓最近消息摘要)。
-    let order: Array<{ sessionId: string; updatedAt: number; title: string }> = []
-    try {
-      const list = await client.rpc<{ items: Array<{ sessionId: string; updatedAt?: number; title?: string | null; projections?: { values?: { title?: unknown } } | null }> }>('session.list', {}, 20000)
-      order = (list.items ?? [])
-        .filter((s) => ids.has(s.sessionId))
-        .map((s) => ({ sessionId: s.sessionId, updatedAt: s.updatedAt ?? 0, title: this.sessionTitleOf(s) }))
-    } catch {
-      order = [...ids].map((sessionId) => ({ sessionId, updatedAt: 0, title: '' }))
-    }
-    order.sort((a, b) => b.updatedAt - a.updatedAt)
-    const pick = order.slice(0, 6)
-    const previews = await Promise.all(pick.map(async (item) => {
-      try {
-        const hist = await client.rpc<{ events: HistoryEventLike[] }>('session.history', { sessionId: item.sessionId, maxMessages: 2 }, 10000)
-        return deliveredText(hist.events ?? [], 70)
-      } catch {
-        return ''
-      }
-    }))
-    const lines = [`📋 本群机器人对话(共 ${ids.size} 个):`]
-    pick.forEach((item, index) => {
-      const ago = item.updatedAt > 0 ? `(${fmtAgo(item.updatedAt)})` : ''
-      lines.push(`${index + 1}. ${(item.title || '新会话').slice(0, 26)} ${ago}`)
-      if (previews[index] !== '') lines.push(`   💬 ${previews[index]}`)
-      lines.push(`   ${item.sessionId.slice(0, 24)}…`)
-    })
-    lines.push('发「进展 <会话id>」查看详情;「打开 <会话id>」看完整内容')
-    return lines.join('\n')
   }
 
   /** 完整指令集(未知指令时也回复这份),每条指令带可直接复制的示例。 */
@@ -1019,7 +910,7 @@ export class RemoteCommandProcessor {
       '  例:文件 D:/work/proj/README.md',
       '',
       '💡 推送原则:机器人只在 进入/查询/审批/任务完成或失败 时主动推送;想看任务过程发「播报」或「进展 <id>」',
-      '💡 群聊安全:群里可聊天与只读查询(状态/会话/工作区/模型/用量/进展,进展仅限本群会话);任务、文件与审批请私聊机器人,防止他人远程操控电脑',
+      '💡 群聊安全:群里只聊天、不响应任何指令(查询也不放行,防止他人窥探或远程操控);完整功能请私聊机器人',
       '💡 典型流程:直接发消息聊 → 「进入 qqbot」看会话列表挑一个 → 「任务 @qqbot 帮我…」',
     ].join('\n')
   }
