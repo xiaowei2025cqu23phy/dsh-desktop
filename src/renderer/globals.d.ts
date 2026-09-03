@@ -71,6 +71,21 @@ interface QQConfigView {
   report: boolean
 }
 
+interface QQDiagView {
+  configured: boolean
+  connected: boolean
+  readyAt: number | null
+  lastError: { at: number; action: string; detail: string; hint: string } | null
+}
+
+interface TelegramDiagView {
+  configured: boolean
+  started: boolean
+  lastError: { at: number; action: string; detail: string } | null
+  lastIncomingAt: number | null
+  deniedChats: Array<{ id: number; at: number; kind: 'user' | 'group' }>
+}
+
 interface OnboardProgressView {
   status: 'pending' | 'completed' | 'expired' | 'error'
   qrDataUrl: string | null
@@ -114,7 +129,7 @@ interface DesktopApi {
     help(): Promise<string>
   }
   notifications: {
-    getConfig(): Promise<{ enabled: boolean; approval: boolean; question: boolean; taskDone: boolean; taskFail: boolean; quietHoursEnabled: boolean; quietStart: number; quietEnd: number; urgentBypassQuiet: boolean }>
+    getConfig(): Promise<{ enabled: boolean; approval: boolean; question: boolean; taskDone: boolean; taskFail: boolean; update: boolean; quietHoursEnabled: boolean; quietStart: number; quietEnd: number; urgentBypassQuiet: boolean }>
     setConfig(patch: object): Promise<unknown>
   }
   usage: {
@@ -228,6 +243,7 @@ interface DesktopApi {
     getConfig(): Promise<QQConfigView>
     setConfig(patch: object): Promise<QQConfigView>
     status(): Promise<boolean>
+    diag(): Promise<QQDiagView>
     onboardStart(): Promise<OnboardProgressView>
     onboardStatus(): Promise<OnboardProgressView | null>
     onboardCancel(): Promise<void>
@@ -236,6 +252,7 @@ interface DesktopApi {
     getConfig(): Promise<TelegramConfigView>
     setConfig(patch: object): Promise<TelegramConfigView>
     status(): Promise<boolean>
+    diag(): Promise<TelegramDiagView>
   }
   appearance: {
     getConfig(): Promise<AppearanceConfigView>

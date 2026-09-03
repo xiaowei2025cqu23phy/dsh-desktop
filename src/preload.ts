@@ -80,6 +80,7 @@ const api = {
     getConfig: () => ipcRenderer.invoke('qq:getConfig'),
     setConfig: (patch: object) => ipcRenderer.invoke('qq:setConfig', patch),
     status: () => ipcRenderer.invoke('qq:status'),
+    diag: () => ipcRenderer.invoke('qq:diag'),
     onboardStart: () => ipcRenderer.invoke('qq:onboardStart'),
     onboardStatus: () => ipcRenderer.invoke('qq:onboardStatus'),
     onboardCancel: () => ipcRenderer.invoke('qq:onboardCancel'),
@@ -88,6 +89,7 @@ const api = {
     getConfig: () => ipcRenderer.invoke('telegram:getConfig'),
     setConfig: (patch: object) => ipcRenderer.invoke('telegram:setConfig', patch),
     status: () => ipcRenderer.invoke('telegram:status'),
+    diag: () => ipcRenderer.invoke('telegram:diag'),
   },
   bot: {
     getConfig: () => ipcRenderer.invoke('bot:getConfig'),

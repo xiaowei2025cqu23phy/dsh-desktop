@@ -2,7 +2,7 @@
 import { BrowserWindow, Notification } from 'electron'
 import type { ConfigStore, NotificationConfig } from './config'
 
-export type NotificationKind = 'approval' | 'question' | 'taskDone' | 'taskFail'
+export type NotificationKind = 'approval' | 'question' | 'taskDone' | 'taskFail' | 'update'
 
 export class DesktopNotifications {
   constructor(private readonly config: ConfigStore) {}
@@ -15,7 +15,7 @@ export class DesktopNotifications {
     return this.config.update('notifications', patch)
   }
 
-  show(kind: NotificationKind, title: string, body: string): void {
+  show(kind: NotificationKind, title: string, body: string, onClick?: () => void): void {
     const config = this.getConfig()
     if (!config.enabled || !config[kind] || !Notification.isSupported()) return
     const hour = new Date().getHours()
@@ -26,6 +26,10 @@ export class DesktopNotifications {
     if (config.quietHoursEnabled && quiet && !(urgent && config.urgentBypassQuiet)) return
     const notification = new Notification({ title, body: body.slice(0, 240) })
     notification.on('click', () => {
+      if (onClick !== undefined) {
+        onClick()
+        return
+      }
       const win = BrowserWindow.getAllWindows().find((item) => !item.isDestroyed())
       if (win !== undefined) {
         if (win.isMinimized()) win.restore()

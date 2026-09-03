@@ -12,8 +12,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { networkInterfaces } from 'node:os'
-import { createReadStream, readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, statSync, accessSync, constants, statfsSync } from 'node:fs'
+import { networkInterfaces, homedir } from 'node:os'
+import { createReadStream, readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, statSync, accessSync, constants, statfsSync, renameSync } from 'node:fs'
 import { dirname, extname, join, resolve, sep, basename } from 'node:path'
 import { app, nativeImage } from 'electron'
 import type { ConfigStore } from './config'
@@ -57,6 +57,7 @@ const ALLOWED_METHODS = new Set([
   'workspace.create',
   'workspace.rename',
   'workspace.archiveSession',
+  'workspace.unarchiveSession',
   'llm.models',
   'llm.providers',
   'host.describe',
@@ -383,6 +384,47 @@ export class RemoteGateway {
     if (device !== undefined) this.config.appendAudit({ time: Date.now(), type: 'remote.device.revoked', detail: `撤销远程设备:${device.label} ${device.address}` })
   }
 
+  /**
+   * 恢复(取消归档)一个会话:把 sessionId 从 harness 工作区注册表的
+   * archivedSessionIds 中移除(harness 只提供 archiveSession,没有 unarchive RPC)。
+   * 注册表内存态在 harness 进程内:连接的是本应用托管的实例且当前无运行中会话时,
+   * 自动重启一次让列表立即生效;外部托管实例则提示重启后生效。
+   */
+  private async unarchiveSession(sessionId: string): Promise<{ note: string }> {
+    const harnessConfig = this.config.get().harness
+    const home = typeof harnessConfig.dshHome === 'string' && harnessConfig.dshHome.trim() !== ''
+      ? harnessConfig.dshHome.trim()
+      : join(homedir(), '.dsh')
+    const file = join(home, 'storages', 'workspace.json')
+    if (!existsSync(file)) throw new Error('找不到工作区注册表文件(可能从未初始化)')
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as { global?: { archivedSessionIds?: string[] } }
+    const list = parsed.global?.archivedSessionIds
+    if (!Array.isArray(list)) throw new Error('工作区注册表结构异常(archivedSessionIds 缺失)')
+    if (list.indexOf(sessionId) < 0) throw new Error('该会话不在归档列表(可能已恢复或不存在)')
+    if (parsed.global !== undefined) parsed.global.archivedSessionIds = list.filter((id) => id !== sessionId)
+    const tmp = `${file}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(parsed, null, 2), 'utf8')
+    renameSync(tmp, file)
+    const status = this.harness.status()
+    if (status.state === 'running' || status.state === 'starting') {
+      // 本应用托管的实例:空闲(无运行中会话)时重启一次,让注册表内存态生效。
+      try {
+        const current = await this.harness.client().rpc<{ items: Array<{ running?: boolean }> }>('session.list', {}, 15000)
+        const busy = (current.items ?? []).some((s) => s.running === true)
+        if (!busy) {
+          setTimeout(() => {
+            void this.harness.restart().catch(() => { /* 重启失败会在服务状态里体现 */ })
+          }, 600)
+          return { note: '会话已恢复,正在刷新服务…' }
+        }
+      } catch {
+        /* 查询失败按有任务处理,不冒险重启。 */
+      }
+      return { note: '会话已恢复(有任务运行中,将在服务空闲重启后生效)' }
+    }
+    return { note: '会话已恢复(当前服务由外部进程托管,重启电脑或服务后彻底生效)' }
+  }
+
   private serveStatic(path: string, res: ServerResponse): void {
     const name = path === '/' ? 'index.html' : path.slice(1)
     const file = join(this.remoteDir, name)
@@ -462,6 +504,23 @@ export class RemoteGateway {
         this.json(res, 403, { error: 'cwd not allowed: 仅限工作区或预设根目录' })
         return
       }
+    }
+    // 恢复归档会话:harness 无 unarchive RPC,由本机落盘注册表实现(见 unarchiveSession)。
+    if (body.method === 'workspace.unarchiveSession') {
+      const payload = body.payload as { sessionId?: unknown }
+      if (typeof payload?.sessionId !== 'string' || !/^session-/.test(payload.sessionId)) {
+        this.json(res, 400, { error: 'sessionId required (session-xxxx)' })
+        return
+      }
+      try {
+        const value = await this.unarchiveSession(payload.sessionId)
+        this.config.appendAudit({ time: Date.now(), type: 'remote.rpc', detail: `恢复归档会话:${payload.sessionId}` })
+        this.json(res, 200, { ok: true, value })
+      } catch (error) {
+        this.config.appendAudit({ time: Date.now(), type: 'remote.rpc-fail', detail: `workspace.unarchiveSession: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300) })
+        this.json(res, 200, { ok: false, error: { code: 'unarchive_failed', message: error instanceof Error ? error.message : String(error) } })
+      }
+      return
     }
     const timeoutMs = SLOW_METHODS.has(body.method) ? 120000 : 30000
     try {

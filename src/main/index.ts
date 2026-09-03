@@ -31,6 +31,42 @@ const SCREENSAVER_ARGS = ['/s', '-s', '--screensaver']
 const isScreensaverLaunch = (): boolean =>
   process.argv.some((arg) => SCREENSAVER_ARGS.includes(arg.toLowerCase()))
 
+/** 「状态」指令附带的通道健康行:QQ/Telegram 连接与最近失败原因(群聊"没反应"时自检用)。 */
+function botHealthLines(qqBot: QQBotAdapter | null, telegramBot: TelegramBotAdapter | null): string[] {
+  const lines: string[] = []
+  const fmt = (ts: number): string => new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
+  const q = qqBot?.diag()
+  if (q !== undefined) {
+    if (!q.configured) {
+      lines.push('🤖 QQ 机器人:未启用(设置 → QQ 机器人填入凭据)')
+    } else if (q.connected) {
+      lines.push(`🤖 QQ 机器人:✓ 已连接${q.readyAt !== null ? `(${fmt(q.readyAt)})` : ''}`)
+    } else {
+      lines.push('🤖 QQ 机器人:⚠️ 未连接(见下方最近失败;仍无头绪看服务日志)')
+    }
+    if (q.lastError !== null) {
+      lines.push(`  ⚠️ 最近失败(${q.lastError.action}):${q.lastError.detail.slice(0, 120)}`)
+      if (q.lastError.hint !== '') lines.push(`  💡 ${q.lastError.hint}`)
+    }
+  }
+  const t = telegramBot?.diag()
+  if (t !== undefined) {
+    if (!t.configured) {
+      lines.push('✈️ Telegram 机器人:未启用(设置 → Telegram 机器人填入 Token)')
+    } else if (t.started) {
+      lines.push('✈️ Telegram 机器人:✓ 运行中(长轮询)')
+    } else {
+      lines.push('✈️ Telegram 机器人:⚠️ 未运行(令牌无效或已停止)')
+    }
+    if (t.lastError !== null) lines.push(`  ⚠️ 最近失败(${t.lastError.action}):${t.lastError.detail.slice(0, 120)}`)
+    if (t.deniedChats.length > 0) {
+      const latest = t.deniedChats[t.deniedChats.length - 1]
+      lines.push(`  🔒 最近被拒绝的${latest.kind === 'user' ? '用户' : '群组'} ID:${latest.id}(不在允许列表,已自动回提示)`)
+    }
+  }
+  return lines
+}
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   // 已有实例在运行:把屏保请求转发给它,然后退出。
@@ -86,9 +122,14 @@ if (!gotLock) {
     // 主动推送:Telegram 与 QQ(交互后 48h 窗口)都能即时通知审批/提问。
     commands.setPush((channel, userId, text, meta, target) => {
       if (text.startsWith('✅') || text.startsWith('❌')) notifications.show(text.startsWith('✅') ? 'taskDone' : 'taskFail', text.startsWith('✅') ? '任务完成' : '任务失败', text)
-      if (channel === 'telegram' && telegramBot !== null) void telegramBot.sendMessage(Number(userId), text)
-      else if (channel === 'qq' && qqBot !== null) void qqBot.sendToUser(userId, text, meta, target)
+      if (channel === 'telegram' && telegramBot !== null) {
+        // 群聊推送回群(处理器传 target),私聊按用户推送。
+        const chatId = target !== undefined && target.scope === 'group' ? target.targetId : userId
+        void telegramBot.sendMessage(Number(chatId), text)
+      } else if (channel === 'qq' && qqBot !== null) void qqBot.sendToUser(userId, text, meta, target)
     })
+    // 通道健康(QQ/Telegram 连接状态 + 最近失败原因)注入「状态」指令。
+    commands.setBotHealth(() => botHealthLines(qqBot, telegramBot))
     // QQ 私聊对话流式输出(打字机效果)。
     commands.setChatStream({
       onDelta: (channel, userId, delta, target) => {
@@ -170,10 +211,18 @@ if (!gotLock) {
     // 恢复任务队列:上次运行中被退出中断的项标记失败,等待手动重试。
     commands.recoverQueue()
 
-    // 启动后延迟自动检查更新(设置面板可关闭);有新版本时托盘刷新提示。
+    // 启动后延迟自动检查更新(设置面板可关闭);有新版本时托盘刷新提示 + 桌面通知。
     if (config.get().updater.autoCheck) {
       setTimeout(() => {
-        void updater.check().then(() => tray?.refresh())
+        void updater.check().then((info) => {
+          tray?.refresh()
+          const url = info.url
+          if (updater.hasUpdate() && url !== null) {
+            notifications.show('update', `发现新版本 v${info.latest}`, '点击通知前往下载页(当前 v' + info.current + ')', () => {
+              void shell.openExternal(url)
+            })
+          }
+        })
       }, 20000)
     }
 

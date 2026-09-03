@@ -213,6 +213,8 @@ export interface NotificationConfig {
   question: boolean
   taskDone: boolean
   taskFail: boolean
+  /** 发现新版本可用时提示。 */
+  update: boolean
   quietHoursEnabled: boolean
   quietStart: number
   quietEnd: number
@@ -249,6 +251,10 @@ export interface AppConfig {
   window: { width: number; height: number }
   /** 机器人对话模式持久化:channel:userId → 固定对话会话(重启后继续同一会话)。 */
   chatSessions: Record<string, { sessionId: string; label: string }>
+  /** 无工作区任务的"默认任务会话"映射(channel:userId → 固定会话;重启后继续复用,不再另开)。 */
+  defaultTaskSessions: Record<string, { sessionId: string }>
+  /** 已自动命名过的对话会话(进程内去重;重启后保留,避免重复用新首句覆盖标题)。 */
+  namedChatSessions: string[]
   bot: BotPromptConfig
   /** 定时任务(桌面端调度,重启保留)。 */
   scheduledTasks: Array<{
@@ -353,6 +359,8 @@ const DEFAULTS: AppConfig = {
   },
   window: { width: 1280, height: 800 },
   chatSessions: {},
+  defaultTaskSessions: {},
+  namedChatSessions: [],
   scheduledTasks: [],
   bot: {
     taskPrompt: '你是一个专业、高效的 AI 助手。执行任务时请条理清晰、直接给出可用的结果,必要时说明关键步骤。',
@@ -366,7 +374,7 @@ const DEFAULTS: AppConfig = {
     cachePricePerM: 0.5,
   },
   taskHistory: [],
-  notifications: { enabled: true, approval: true, question: true, taskDone: true, taskFail: true, quietHoursEnabled: false, quietStart: 22, quietEnd: 8, urgentBypassQuiet: true },
+  notifications: { enabled: true, approval: true, question: true, taskDone: true, taskFail: true, update: true, quietHoursEnabled: false, quietStart: 22, quietEnd: 8, urgentBypassQuiet: true },
   taskQueue: [],
   activities: [],
   workspaceMemories: {},

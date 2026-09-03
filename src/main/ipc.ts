@@ -142,6 +142,7 @@ export function registerIpc(deps: IpcDeps): void {
     ipcMain.handle('qq:getConfig', () => qqBot.getConfig())
     ipcMain.handle('qq:setConfig', (_event, patch: object) => qqBot.setConfig(patch))
     ipcMain.handle('qq:status', () => qqBot.isStarted())
+    ipcMain.handle('qq:diag', () => qqBot.diag())
     ipcMain.handle('qq:onboardStart', () => qqBot.onboardStart())
     ipcMain.handle('qq:onboardStatus', () => qqBot.onboardStatus())
     ipcMain.handle('qq:onboardCancel', () => qqBot.onboardCancel())
@@ -153,6 +154,7 @@ export function registerIpc(deps: IpcDeps): void {
     ipcMain.handle('telegram:getConfig', () => telegramBot.getConfig())
     ipcMain.handle('telegram:setConfig', (_event, patch: object) => telegramBot.setConfig(patch))
     ipcMain.handle('telegram:status', () => telegramBot.isStarted())
+    ipcMain.handle('telegram:diag', () => telegramBot.diag())
   }
 
   // ---- 机器人提示词(工作=助手 / 对话=朋友,桌面端自定义) ----

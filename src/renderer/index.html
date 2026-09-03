@@ -151,6 +151,7 @@
         <label class="check-row"><input id="notify-question" type="checkbox" />提问请求</label>
         <label class="check-row"><input id="notify-task-done" type="checkbox" />任务完成</label>
         <label class="check-row"><input id="notify-task-fail" type="checkbox" />任务失败</label>
+        <label class="check-row"><input id="notify-update" type="checkbox" />发现新版本提示</label>
         <label class="check-row"><input id="notify-quiet" type="checkbox" />启用勿扰时段</label>
         <div class="field-row"><label>开始 <input id="notify-quiet-start" type="number" min="0" max="23" /></label><label>结束 <input id="notify-quiet-end" type="number" min="0" max="23" /></label></div>
         <label class="check-row"><input id="notify-urgent-bypass" type="checkbox" />审批和失败可绕过勿扰</label>
@@ -390,8 +391,9 @@
           <input id="tg-token" type="password" placeholder="123456:ABC-DEF..." />
         </div>
         <div class="field">
-          <label for="tg-users">允许的用户 ID(逗号分隔,留空=允许所有)</label>
+          <label for="tg-users">允许的用户 ID(逗号分隔;建议必填,留空=任何人可用)</label>
           <input id="tg-users" type="text" placeholder="例如 123456789, 987654321" />
+          <p class="hint">如何获取自己的 ID:在 Telegram 里给 @userinfobot 发任意消息即可看到。私聊 = 完整指令集(可远程操控电脑),请只填可信的人;群聊只聊天、不执行命令。</p>
         </div>
         <label class="check-row">
           <input id="tg-autochat" type="checkbox" />

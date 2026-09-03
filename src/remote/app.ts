@@ -1010,10 +1010,16 @@
       var presetRoots = results[3].filter(function (r) { return r.isPreset })
       state.presetRoots = presetRoots
       // 隐藏:子代理会话(origin)、未发生的空会话(blank)、已归档会话。
-      var archived = new Set(wsData.archivedSessionIds || [])
+      var archivedIds = wsData.archivedSessionIds || []
+      var archived = new Set(archivedIds)
       var sessions = (sessData.items || []).filter(function (s) {
         return !s.origin && !s.blank && !archived.has(s.sessionId)
       })
+      // 已归档会话单独收进底部「已归档」分组,可一键恢复或打开查看。
+      var archivedList = (sessData.items || []).filter(function (s) {
+        return !s.origin && !s.blank && archived.has(s.sessionId)
+      })
+      archivedList.sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0) })
       sessions.sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0) })
       // 机器人通道的固定对话会话(QQ/Telegram 聊天)→ 置顶分组,手机直接看到。
       var botChatIds = new Set(info.chatSessionIds || [])
@@ -1051,7 +1057,7 @@
       })
       state.workspaces = workspaces
       state.currentWsId = findWorkspaceId(state.currentWsPath) || state.currentWsId
-      renderSidebar(unmatched, botChats, presetRoots)
+      renderSidebar(unmatched, botChats, presetRoots, archivedList)
     }).catch(function (err) {
       list.innerHTML = '<p class="empty">加载失败:' + S.escapeHtml(err.message) + '</p>'
     })
@@ -1061,7 +1067,7 @@
     return (s.projections && s.projections.values && s.projections.values.title) || '新会话'
   }
 
-  function renderSidebar(unmatched, botChats, presetRoots) {
+  function renderSidebar(unmatched, botChats, presetRoots, archivedList) {
     var list = $('workspace-list')
     list.innerHTML = ''
     var frag = document.createDocumentFragment()
@@ -1081,13 +1087,72 @@
         frag.appendChild(presetRootGroupElement(root, unmatched.length === 0 && state.workspaces.length === 0 && i === 0))
       })
     }
-    if (state.workspaces.length === 0 && unmatched.length === 0 && (!presetRoots || presetRoots.length === 0)) {
+    // 已归档会话:折叠分组,可恢复或打开查看(归档 = 只隐藏,日志仍在)。
+    if (archivedList && archivedList.length > 0) {
+      frag.appendChild(archivedGroupElement(archivedList))
+    }
+    if (state.workspaces.length === 0 && unmatched.length === 0 && (!presetRoots || presetRoots.length === 0) &&
+        (!archivedList || archivedList.length === 0)) {
       var empty = document.createElement('p')
       empty.className = 'empty'
       empty.textContent = '还没有工作区,点上方「新建工作区」添加'
       frag.appendChild(empty)
     }
     list.appendChild(frag)
+  }
+
+  /** 底部「已归档」折叠分组:列出已归档会话,可一键恢复(或点开查看内容)。 */
+  function archivedGroupElement(sessions) {
+    var group = document.createElement('div')
+    group.className = 'ws-group'
+    var head = document.createElement('div')
+    head.className = 'ws-item'
+    var title = document.createElement('span')
+    title.className = 'ws-name'
+    title.textContent = '🗄 已归档'
+    var count = document.createElement('span')
+    count.className = 'ws-count'
+    count.textContent = String(sessions.length)
+    var arrow = document.createElement('span')
+    arrow.className = 'ws-arrow'
+    arrow.textContent = '›'
+    head.appendChild(title)
+    head.appendChild(count)
+    head.appendChild(arrow)
+    var body = document.createElement('div')
+    body.className = 'ws-body'
+    sessions.slice(0, 30).forEach(function (s) {
+      var row = document.createElement('div')
+      row.className = 'session-row'
+      var t = document.createElement('span')
+      t.className = 'session-title'
+      t.textContent = sessionTitle(s)
+      row.appendChild(t)
+      var restore = document.createElement('button')
+      restore.className = 'row-act'
+      restore.textContent = '↩'
+      restore.title = '恢复会话(重新显示在列表)'
+      restore.addEventListener('click', function (event) {
+        event.stopPropagation()
+        restoreSession(s.sessionId)
+      })
+      row.appendChild(restore)
+      row.addEventListener('click', function () { openSession(s.sessionId, s.cwd) })
+      body.appendChild(row)
+    })
+    if (sessions.length > 30) {
+      var more = document.createElement('p')
+      more.className = 'empty'
+      more.textContent = '…还有 ' + (sessions.length - 30) + ' 个(桌面端会话管理可查全部)'
+      body.appendChild(more)
+    }
+    head.addEventListener('click', function () {
+      var open = head.classList.toggle('open')
+      body.classList.toggle('open', open)
+    })
+    group.appendChild(head)
+    group.appendChild(body)
+    return group
   }
 
   function sessionRowElement(s, cwd) {
@@ -1383,9 +1448,9 @@
     })
   }
 
-  /** 归档会话(隐藏出列表;日志保留,可随时从会话历史找回)。 */
+  /** 归档会话(隐藏出列表;日志保留,可在底部「已归档」随时恢复)。 */
   function archiveSession(sessionId) {
-    if (!window.confirm('归档会话 ' + sessionId + '?\n(归档后从列表隐藏,日志保留)')) return
+    if (!window.confirm('归档会话 ' + sessionId + '?\n(归档后从列表隐藏;可在侧边栏底部「已归档」一键恢复)')) return
     apiRpc('workspace.archiveSession', { sessionId: sessionId }).then(function () {
       S.toast('会话已归档', 'ok')
       if (state.sessionId === sessionId) {
@@ -1396,6 +1461,17 @@
       loadSidebar()
     }).catch(function (err) {
       S.toast('归档失败:' + err.message, 'error')
+    })
+  }
+
+  /** 恢复(取消归档)会话:从注册表移除后重新显示在对应列表。 */
+  function restoreSession(sessionId) {
+    apiRpc('workspace.unarchiveSession', { sessionId: sessionId }).then(function (result) {
+      var note = result && result.note ? result.note : '会话已恢复'
+      S.toast(note, 'ok')
+      loadSidebar()
+    }).catch(function (err) {
+      S.toast('恢复失败:' + err.message, 'error')
     })
   }
 

@@ -369,6 +369,7 @@ async function loadNotificationConfig(): Promise<void> {
   input('notify-question').checked = config.question
   input('notify-task-done').checked = config.taskDone
   input('notify-task-fail').checked = config.taskFail
+  input('notify-update').checked = config.update === true
   input('notify-quiet').checked = config.quietHoursEnabled
   input('notify-quiet-start').value = String(config.quietStart)
   input('notify-quiet-end').value = String(config.quietEnd)
@@ -1516,8 +1517,21 @@ async function loadQQConfig(): Promise<void> {
     taskPromptEl.value = botConfig.taskPrompt
     const chatPromptEl = $id('bot-chat-prompt') as HTMLTextAreaElement
     chatPromptEl.value = botConfig.chatPrompt
-    const started = await API.qq.status()
-    $id('qq-status').textContent = started ? '✓ 已连接 QQ' : (config.enabled && config.appId ? '连接中/失败,查看日志' : '')
+    const diag = await API.qq.diag()
+    const time = diag.readyAt !== null ? new Date(diag.readyAt).toLocaleTimeString('zh-CN', { hour12: false }) : ''
+    const lines: string[] = []
+    if (!config.enabled || !config.appId) {
+      lines.push(config.enabled && !config.appId ? '⚠️ 已启用但凭据为空:请填写 AppID/AppSecret' : '')
+    } else if (diag.connected) {
+      lines.push(`✓ 已连接 QQ${time !== '' ? `(${time})` : ''}`)
+    } else {
+      lines.push('⚠️ QQ 未连接(凭据错误、网络不通或连接断开;看服务日志)')
+    }
+    if (diag.lastError !== null) {
+      lines.push(`最近失败(${diag.lastError.action}):${diag.lastError.detail.slice(0, 120)}`)
+      if (diag.lastError.hint !== '') lines.push(diag.lastError.hint)
+    }
+    $id('qq-status').textContent = lines.filter((line) => line !== '').join('\n')
   } catch {
     // 忽略
   }
@@ -1533,8 +1547,23 @@ async function loadTelegramConfig(): Promise<void> {
     input('tg-users').value = config.allowedUserIds ?? ''
     input('tg-autochat').checked = config.autoChat === true
     input('tg-report').checked = config.report === true
-    const started = await API.telegram.status()
-    $id('tg-status').textContent = started ? '✓ 已启动' : (config.enabled && config.token ? '启动中/失败,查看日志' : '')
+    const diag = await API.telegram.diag()
+    const lines: string[] = []
+    if (!config.enabled || !config.token) {
+      lines.push('')
+    } else if (diag.started) {
+      lines.push('✓ Telegram 机器人运行中(长轮询)')
+    } else {
+      lines.push('⚠️ Telegram 未运行(令牌无效、网络不通或已停止;看服务日志)')
+    }
+    if (diag.lastError !== null) {
+      lines.push(`最近失败(${diag.lastError.action}):${diag.lastError.detail.slice(0, 120)}`)
+    }
+    if (diag.deniedChats.length > 0) {
+      const latest = diag.deniedChats[diag.deniedChats.length - 1]
+      lines.push(`有人尝试使用被拒绝(${latest.kind === 'user' ? '私聊' : '群组'} ID:${latest.id}):如是你自己,把它加入「允许的用户 ID」`)
+    }
+    $id('tg-status').textContent = lines.filter((line) => line !== '').join('\n')
   } catch {
     // 忽略
   }
@@ -1877,6 +1906,7 @@ function bind(): void {
     'notify-question': 'question',
     'notify-task-done': 'taskDone',
     'notify-task-fail': 'taskFail',
+    'notify-update': 'update',
     'notify-quiet': 'quietHoursEnabled',
     'notify-urgent-bypass': 'urgentBypassQuiet',
   }

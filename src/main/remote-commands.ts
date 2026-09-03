@@ -215,9 +215,9 @@ export class RemoteCommandProcessor {
   private chatReplyBuffer = new Map<string, string>()
   /** 会话的现场播报状态(QQ/Telegram 可见 agent 过程)。 */
   private liveViews = new Map<string, LiveView>()
-  /** 无工作区任务的"默认任务会话"(按 channel:userId 复用;「任务 新:」另起)。 */
+  /** 无工作区任务的"默认任务会话"(按 channel:userId 复用;「任务 新:」另起;重启后沿用配置持久化)。 */
   private defaultTaskSessions = new Map<string, string>()
-  /** 已自动命名过的对话会话(进程内去重;标题让列表可读,不再满屏"新会话")。 */
+  /** 已自动命名过的对话会话(进程内去重;标题让列表可读,不再满屏"新会话";重启后沿用配置持久化)。 */
   private renamedChatSessions = new Set<string>()
   /** 机器人对话工作区目录(纯对话/群聊会话的落点,让对话在侧边栏可见)。 */
   private robotChatDir: string | null = null
@@ -288,12 +288,26 @@ export class RemoteCommandProcessor {
         if (typeof entry?.label !== 'string' || !entry.label.startsWith('(纯对话')) continue
         this.chatContexts.set(key, { sessionId: entry.sessionId, label: entry.label, workspace: null })
       }
+      // 恢复"默认任务会话"与"已命名对话"记录:重启后继续复用同一任务会话,
+      // 聊天命名标记不丢,避免旧会话的标题被新首句反复覆盖。
+      for (const [key, entry] of Object.entries(config.get().defaultTaskSessions ?? {})) {
+        if (typeof entry?.sessionId === 'string' && entry.sessionId !== '') this.defaultTaskSessions.set(key, entry.sessionId)
+      }
+      for (const sessionId of config.get().namedChatSessions ?? []) {
+        if (typeof sessionId === 'string' && sessionId !== '') this.renamedChatSessions.add(sessionId)
+      }
     }
   }
 
   /** 注入主动推送实现(QQ / Telegram 等支持主动消息的通道)。 */
   setPush(push: PushFn): void {
     this.push = push
+  }
+
+  /** 注入通道健康行(QQ/Telegram 连接状态与最近错误),「状态」指令里一并展示。 */
+  private botHealth: (() => string[]) | null = null
+  setBotHealth(fn: () => string[]): void {
+    this.botHealth = fn
   }
 
   /** 当前待处理审批/提问的脱敏摘要,供桌面端与 PWA 统一展示。 */
@@ -361,6 +375,39 @@ export class RemoteCommandProcessor {
     if (this.config === undefined) return ''
     const entry = this.config.get().chatSessions?.[key]
     return entry?.sessionId ?? ''
+  }
+
+  /** 持久化"默认任务会话"映射(重启后继续复用;只保留最近 100 条,防无限膨胀)。 */
+  private persistTaskDefaults(): void {
+    if (this.config === undefined) return
+    const entries: Record<string, { sessionId: string }> = {}
+    for (const [key, sessionId] of [...this.defaultTaskSessions.entries()].slice(-100)) {
+      entries[key] = { sessionId }
+    }
+    this.config.update('defaultTaskSessions', entries)
+  }
+
+  /** 持久化"已自动命名"标记(重启后不重复命名;只保留最近 300 个会话)。 */
+  private persistNamedChats(): void {
+    if (this.config === undefined) return
+    this.config.update('namedChatSessions', [...this.renamedChatSessions].slice(-300))
+  }
+
+  /** 校验持久化的默认任务会话是否仍可复用(存在、非空、非子代理、未被归档);查询失败按不可用处理。 */
+  private async taskSessionUsable(sessionId: string): Promise<boolean> {
+    try {
+      const client = this.harness.client()
+      const [list, ws] = await Promise.all([
+        client.rpc<{ items: Array<{ sessionId: string; blank?: boolean; origin?: string }> }>('session.list', {}, 20000),
+        client.rpc<{ archivedSessionIds?: string[] }>('workspace.list', {}, 20000),
+      ])
+      const found = (list.items ?? []).find((s) => s.sessionId === sessionId)
+      if (found === undefined || found.blank === true) return false
+      if (typeof found.origin === 'string' && found.origin !== '') return false
+      return (ws.archivedSessionIds ?? []).indexOf(sessionId) < 0
+    } catch {
+      return false
+    }
   }
 
   private appendAudit(entry: { time: number; type: string; sessionId?: string; activityId?: string; detail: string }): void {
@@ -462,10 +509,16 @@ export class RemoteCommandProcessor {
           let createdId = ''
           if (next.workspace === null) {
             createdId = this.defaultTaskSessions.get(key) ?? ''
-            if (createdId === '') {
+            if (createdId === '' || !(await this.taskSessionUsable(createdId))) {
+              // 记录失效(重启后配置里仍指向旧会话,或被归档/删除):另起并更新持久化。
+              if (createdId !== '') {
+                this.defaultTaskSessions.delete(key)
+                this.persistTaskDefaults()
+              }
               const created = await client.rpc<{ sessionId: string }>('session.create', {})
               createdId = created.sessionId
               this.defaultTaskSessions.set(key, createdId)
+              this.persistTaskDefaults()
             }
           } else {
             const payload: Record<string, unknown> = {}
@@ -940,6 +993,9 @@ export class RemoteCommandProcessor {
           lines.push(`  ▶ ${(this.sessionTitleOf(item) || item.sessionId).slice(0, 30)}\n    ${item.sessionId}`)
         }
       }
+      // 通道健康(QQ/Telegram 连接状态 + 最近失败原因):群里"没反应"时一眼定位。
+      const health = this.botHealth?.() ?? []
+      if (health.length > 0) lines.push('', ...health)
       return lines.join('\n')
     } catch (error) {
       return `查询失败:${error instanceof Error ? error.message : String(error)}`
@@ -1002,6 +1058,10 @@ export class RemoteCommandProcessor {
         lines.push(`   ${s.sessionId.slice(0, 24)}…`)
       })
       lines.push('回复「打开 <会话id>」查看完整内容')
+      const archivedCount = (list.items ?? [])
+        .filter((s) => !s.blank && !(typeof s.origin === 'string' && s.origin !== '') && archived.has(s.sessionId))
+        .length
+      if (archivedCount > 0) lines.push(`🗄 已归档 ${archivedCount} 个会话(手机 PWA 侧边栏底部「已归档」可一键恢复)`)
       return lines.join('\n')
     } catch (error) {
       return `查询失败:${error instanceof Error ? error.message : String(error)}`
@@ -1881,12 +1941,20 @@ export class RemoteCommandProcessor {
         : '\n💡 推送原则:机器人只在 进入/查询/审批/完成/失败 时推送;想看任务过程发「播报」开启现场进展,或「进展 <会话id>」随时查看'
       if (workspaceId === null && cwd === null) {
         const existing = this.defaultTaskSessions.get(key)
-        if (existing !== undefined && !forceNewSession) {
+        if (existing !== undefined && !forceNewSession && await this.taskSessionUsable(existing)) {
           sessionId = existing
         } else {
+          // 记录缺失或已失效(重启后旧会话被归档/删除):另起一段并更新持久化。
+          if (existing !== undefined) {
+            this.defaultTaskSessions.delete(key)
+            this.persistTaskDefaults()
+          }
           const created = await client.rpc<{ sessionId: string }>('session.create', {})
           sessionId = created.sessionId
-          if (!forceNewSession) this.defaultTaskSessions.set(key, sessionId)
+          if (!forceNewSession) {
+            this.defaultTaskSessions.set(key, sessionId)
+            this.persistTaskDefaults()
+          }
         }
       } else {
         const payload: Record<string, unknown> = {}
@@ -2187,12 +2255,14 @@ export class RemoteCommandProcessor {
         })
       }
       // 首次文本消息给会话命名(首句前 24 字),列表不再满屏"新会话"。
+      // 标记持久化:重启后不重复命名,避免旧会话标题被新消息首句覆盖。
       if (text.trim() !== '' && !this.renamedChatSessions.has(ctx.sessionId)) {
         this.renamedChatSessions.add(ctx.sessionId)
-        if (this.renamedChatSessions.size > 200) {
+        if (this.renamedChatSessions.size > 300) {
           const oldest = this.renamedChatSessions.keys().next().value as string | undefined
           if (oldest !== undefined) this.renamedChatSessions.delete(oldest)
         }
+        this.persistNamedChats()
         this.autoRenameSession(ctx.sessionId, text)
       }
       // 对话模式静默:不回复"已发送"确认(避免噪音;真实回复回合结束自动推送)。

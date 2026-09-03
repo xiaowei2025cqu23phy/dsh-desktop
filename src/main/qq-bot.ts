@@ -49,6 +49,18 @@ interface PushTarget {
 /** 主动推送窗口:用户交互后 48 小时内可推送。 */
 const PUSH_WINDOW_MS = 48 * 60 * 60 * 1000
 
+/** QQ 通道自检信息(「状态」指令与桌面端诊断展示)。 */
+export interface QQDiagState {
+  /** 是否已启用且凭据完整。 */
+  configured: boolean
+  /** 是否已连接(QQ 长连接 ready)。 */
+  connected: boolean
+  /** 连接就绪时间(ms);从未连上为 null。 */
+  readyAt: number | null
+  /** 最近一次失败(发送成功后清除);null = 最近无失败。 */
+  lastError: { at: number; action: string; detail: string; hint: string } | null
+}
+
 /** SDK 实例的最小类型(createRequire 加载 ESM 入口后可用)。 */
 interface QQBotLike {
   on: (event: string, listener: (...args: unknown[]) => void) => void
@@ -74,6 +86,10 @@ export class QQBotAdapter {
   /** 扫码登录流程状态。 */
   private onboardAbort: AbortController | null = null
   private onboardProgress: OnboardProgress | null = null
+  /** QQ 连接就绪时间(ready 事件后;null = 本次运行从未连上)。 */
+  private readyAt: number | null = null
+  /** 最近一次失败(发送成功后清除);供「状态」自检一眼定位。 */
+  private lastError: { at: number; action: string; detail: string; hint: string } | null = null
 
   constructor(
     private config: ConfigStore,
@@ -95,6 +111,28 @@ export class QQBotAdapter {
 
   isStarted(): boolean {
     return this.started
+  }
+
+  /** 通道自检信息(「状态」指令、桌面端设置页与诊断导出共用)。 */
+  diag(): QQDiagState {
+    const config = this.getConfig()
+    return {
+      configured: config.enabled && config.appId.trim() !== '' && config.appSecret.trim() !== '',
+      connected: this.started,
+      readyAt: this.readyAt,
+      lastError: this.lastError,
+    }
+  }
+
+  /** 记录一次失败(自检用;动作名 + 分类提示)。 */
+  private noteError(action: string, error: unknown): void {
+    const classified = classifyQQError(error)
+    this.lastError = { at: Date.now(), action, detail: classified.detail, hint: classified.hint }
+  }
+
+  /** 发送成功后清除最近失败标记。 */
+  private clearError(): void {
+    this.lastError = null
   }
 
   // ---- 扫码登录(onboard) ----
@@ -160,6 +198,8 @@ export class QQBotAdapter {
       console.log('[qq-bot] 未配置或未启用,跳过')
       return
     }
+    this.started = false
+    this.readyAt = null
     try {
       // SDK 为纯 ESM 且 exports 只声明 import 条件(CJS 包名解析报 ERR_PACKAGE_PATH_NOT_EXPORTED,
       // Electron CJS 主进程的动态 import 也会被转成 require)。因此绕过包名解析:
@@ -178,16 +218,20 @@ export class QQBotAdapter {
       // 上线以 SDK ready 事件为准(start() 可能等待更长握手,不阻塞应用启动)。
       bot.on('ready', () => {
         this.started = true
+        this.readyAt = Date.now()
+        this.clearError()
         console.log('[qq-bot] QQ 机器人已连接')
       })
       bot.on('message', (_ctx, msg) => {
         void this.handleMessage(msg).catch((error) => {
           console.error('[qq-bot] 消息处理失败:', error)
+          this.noteError('消息处理失败', error)
         })
       })
       bot.on('interaction', (_ctx, event) => {
         void this.handleInteraction(event).catch((error) => {
           console.error('[qq-bot] 按钮点击处理失败:', error)
+          this.noteError('按钮处理失败', error)
         })
       })
       await bot.start()
@@ -195,6 +239,7 @@ export class QQBotAdapter {
       console.error('[qq-bot] 启动失败:', error)
       this.bot = null
       this.started = false
+      this.noteError('启动失败', error)
     }
   }
 
@@ -208,6 +253,7 @@ export class QQBotAdapter {
       this.bot = null
     }
     this.started = false
+    this.readyAt = null
     this.userTargets.clear()
     // welcomed 持久化保留:重启/重连后不再重复欢迎同一用户/群。
   }
@@ -368,6 +414,7 @@ export class QQBotAdapter {
       if (done) session.buffer = ''
     } catch (error) {
       console.error('[qq-bot] 流式发送失败:', error)
+      this.noteError('流式发送失败', error)
       // 只删自己:中断重试期间可能已创建新会话。
       if (this.streamSessions.get(userId) === session) this.streamSessions.delete(userId)
       // 兜底:只补发尚未显示的后缀(已显示前缀保留在流式消息里),既避免整段重复又防止截断。
@@ -409,7 +456,9 @@ export class QQBotAdapter {
     if (entry === undefined) return
     const fresh = Date.now() - entry.ts <= PUSH_WINDOW_MS
     if (!fresh) {
+      // 超窗:QQ 只允许在交互后 48h 内主动推送;记录下来,「状态」里可见。
       this.userTargets.delete(userId)
+      this.noteError('主动推送跳过', new Error('该用户已超过 48 小时主动推送窗口'))
       return
     }
     await this.pushText(bot, entry.target, text, meta)
@@ -462,9 +511,11 @@ export class QQBotAdapter {
   ): Promise<boolean> {
     try {
       await this.pushBody(bot, target, text, meta)
+      this.clearError()
       return true
     } catch (error) {
       console.error('[qq-bot] 主动推送失败(尝试回退):', error)
+      this.noteError('主动推送失败', error)
       return false
     }
   }
@@ -477,8 +528,10 @@ export class QQBotAdapter {
   ): Promise<void> {
     try {
       await this.pushBody(bot, target, text, meta)
+      this.clearError()
     } catch (error) {
       console.error('[qq-bot] 主动推送失败(靠下次回复提醒兜底):', error)
+      this.noteError('主动推送失败', error)
     }
   }
 
@@ -520,16 +573,25 @@ export class QQBotAdapter {
     // 应答结果回发:群按钮点击回发群里(回复式,带最新群消息 id),私聊点击回发私聊。
     const groupOpenid = topGroupOpenid !== '' ? topGroupOpenid : findEventGroupOpenid(raw.data)
     if (groupOpenid !== '') {
-      await this.sendGroup(bot, groupOpenid, result).catch((e) => console.error('[qq-bot] group 回发失败:', e))
+      await this.sendGroup(bot, groupOpenid, result).catch((e) => {
+        console.error('[qq-bot] group 回发失败:', e)
+        this.noteError('群按钮回发失败', e)
+      })
       return
     }
     if (userId !== '') {
-      await bot.sendText({ scope: 'c2c', targetId: userId }, result).catch((e) => console.error('[qq-bot] c2c 回发失败:', e))
+      await bot.sendText({ scope: 'c2c', targetId: userId }, result).catch((e) => {
+        console.error('[qq-bot] c2c 回发失败:', e)
+        this.noteError('按钮回发失败', e)
+      })
       return
     }
     const entry = this.userTargets.get(userId)
     if (entry !== undefined) {
-      await bot.sendText(entry.target, result).catch((e) => console.error('[qq-bot] 登记目标回发失败:', e))
+      await bot.sendText(entry.target, result).catch((e) => {
+        console.error('[qq-bot] 登记目标回发失败:', e)
+        this.noteError('按钮回发失败', e)
+      })
     }
   }
 
@@ -691,6 +753,7 @@ export class QQBotAdapter {
         await bot.sendText(target, segment)
       }
     }
+    this.clearError()
   }
 }
 
@@ -736,6 +799,26 @@ function isStreamRateLimit(error: unknown): boolean {
   if (msg.includes('rate limit')) return true
   const code = (error as { code?: unknown }).code ?? (error as { err_code?: unknown }).err_code
   return code === 429 || code === 50002
+}
+
+/** QQ 错误分类:提取平台错误码并给出可操作提示(状态自检用)。 */
+function classifyQQError(error: unknown): { detail: string; hint: string } {
+  const raw = error instanceof Error ? error.message : String(error)
+  const code = (error as { code?: unknown }).code ?? (error as { err_code?: unknown }).err_code
+  const codes = typeof code === 'string' || typeof code === 'number' ? String(code) : ''
+  const text = `${codes !== '' ? `[${codes}] ` : ''}${raw}`.slice(0, 240)
+  const joined = `${codes} ${raw}`
+  if (joined.includes('40034105')) {
+    return { detail: text, hint: '机器人缺少「主动消息」权限:QQ 开放平台 → 开发设置 → 开通主动消息;或对方已超过 48 小时交互窗口' }
+  }
+  if (joined.includes('40034005')) {
+    return { detail: text, hint: '回复窗口过期:让对方再发一条消息,机器人只能回复或在其交互后 48 小时内推送' }
+  }
+  if (joined.includes('50002') || /rate limit/i.test(joined)) {
+    return { detail: text, hint: '触发频控:稍等片刻再试(机器人不要发太快/太频繁)' }
+  }
+  if (raw === '') return { detail: '未知错误', hint: '' }
+  return { detail: text, hint: '' }
 }
 
 /** 提问(单选)内联键盘:每个选项一个按钮,data 供点击回传识别。 */

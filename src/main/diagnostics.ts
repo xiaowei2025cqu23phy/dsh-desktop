@@ -42,7 +42,7 @@ export function collectDiagnostics(deps: DiagnosticsDeps): Record<string, unknow
     configPath: deps.config.filePath(),
     harness: { status: deps.harness.status(), logs: deps.harness.logs.slice(-80) },
     gateway: deps.gateway === undefined ? null : { config: deps.gateway.getConfig(), addresses: deps.gateway.lanAddresses() },
-    qq: deps.qqBot === undefined ? null : { started: deps.qqBot.isStarted() },
-    telegram: deps.telegramBot === undefined ? null : { started: deps.telegramBot.isStarted() },
+    qq: deps.qqBot === undefined ? null : { started: deps.qqBot.isStarted(), diag: deps.qqBot.diag() },
+    telegram: deps.telegramBot === undefined ? null : { started: deps.telegramBot.isStarted(), diag: deps.telegramBot.diag() },
   }) as Record<string, unknown>
 }
