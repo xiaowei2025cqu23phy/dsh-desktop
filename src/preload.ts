@@ -66,6 +66,12 @@ const api = {
     approveDevice: (id: string) => ipcRenderer.invoke('remote:approveDevice', id),
     rejectDevice: (id: string) => ipcRenderer.invoke('remote:rejectDevice', id),
     revokeDevice: (id: string) => ipcRenderer.invoke('remote:revokeDevice', id),
+    setPaused: (paused: boolean) => ipcRenderer.invoke('remote:setPaused', paused),
+    pauseDevice: (id: string) => ipcRenderer.invoke('remote:pauseDevice', id),
+    resumeDevice: (id: string) => ipcRenderer.invoke('remote:resumeDevice', id),
+    blacklistDevice: (id: string) => ipcRenderer.invoke('remote:blacklistDevice', id),
+    unblacklistDevice: (id: string) => ipcRenderer.invoke('remote:unblacklistDevice', id),
+    blacklistedDevices: () => ipcRenderer.invoke('remote:blacklistedDevices'),
     onDevicePending: (callback: (device: { id: string; label: string; address: string }) => void) => {
       const listener = (_event: unknown, device: { id: string; label: string; address: string }): void => callback(device)
       ipcRenderer.on('remote:device-pending', listener)

@@ -105,12 +105,20 @@ export interface RemoteConfig {
   enabled: boolean
   /** 网关监听端口。 */
   port: number
+  /** 监听地址:0.0.0.0 = 全部网卡(默认);或具体局域网 IP = 只暴露该网卡。 */
+  bindHost: string
+  /** 桌面端一键暂停:临时断开所有远程连接(保留令牌与设备,恢复后原样可用)。 */
+  paused: boolean
+  /** 锁屏/睡眠时自动暂停远程访问(解锁后需桌面端手动恢复)。 */
+  pauseOnLock: boolean
+  /** 被桌面端拉黑的设备:令牌正确也拒绝,且不再弹批准。 */
+  blacklistedDevices: Array<{ id: string; label: string; address: string; blockedAt: number }>
   /** Bearer 令牌(首次启用时自动生成)。 */
   token: string
   /** 远程访问过期时间;null 表示不自动过期(不建议长期启用)。 */
   expiresAt: number | null
-  /** 已获得桌面批准的远程设备。 */
-  approvedDevices: Array<{ id: string; label: string; address: string; approvedAt: number; lastSeenAt: number }>
+  /** 已获得桌面批准的远程设备(paused = 桌面端已暂停该设备)。 */
+  approvedDevices: Array<{ id: string; label: string; address: string; approvedAt: number; lastSeenAt: number; paused?: boolean }>
   /** 等待桌面批准的远程设备。 */
   pendingDevices: Array<{ id: string; label: string; address: string; requestedAt: number; lastSeenAt: number }>
   /**
@@ -336,6 +344,10 @@ const DEFAULTS: AppConfig = {
   remote: {
     enabled: false,
     port: 3082,
+    bindHost: '0.0.0.0',
+    paused: false,
+    pauseOnLock: true,
+    blacklistedDevices: [],
     token: '',
     expiresAt: null,
     approvedDevices: [],
@@ -433,6 +445,7 @@ export class ConfigStore {
       }
       if (!Array.isArray(config.remote.approvedDevices)) config.remote.approvedDevices = []
       if (!Array.isArray(config.remote.pendingDevices)) config.remote.pendingDevices = []
+      if (!Array.isArray(config.remote.blacklistedDevices)) config.remote.blacklistedDevices = []
       if (!Array.isArray(config.taskHistory)) config.taskHistory = []
       if (!Array.isArray(config.taskQueue)) config.taskQueue = []
       if (!Array.isArray(config.activities)) config.activities = []

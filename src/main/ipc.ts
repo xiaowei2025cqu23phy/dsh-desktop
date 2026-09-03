@@ -104,6 +104,12 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('remote:approveDevice', (_event, id: string) => gateway.approveDevice(id))
   ipcMain.handle('remote:rejectDevice', (_event, id: string) => gateway.rejectDevice(id))
   ipcMain.handle('remote:revokeDevice', (_event, id: string) => gateway.revokeDevice(id))
+  ipcMain.handle('remote:setPaused', (_event, paused: boolean) => gateway.setPaused(paused))
+  ipcMain.handle('remote:pauseDevice', (_event, id: string) => gateway.pauseDevice(id))
+  ipcMain.handle('remote:resumeDevice', (_event, id: string) => gateway.resumeDevice(id))
+  ipcMain.handle('remote:blacklistDevice', (_event, id: string) => gateway.blacklistDevice(id))
+  ipcMain.handle('remote:unblacklistDevice', (_event, id: string) => gateway.unblacklistDevice(id))
+  ipcMain.handle('remote:blacklistedDevices', () => gateway.blacklistedDevices())
     // 用系统文件资源管理器挑选预设工作区根目录(多选)。
     ipcMain.handle('dialog:pickDirectories', async (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)

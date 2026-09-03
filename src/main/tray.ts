@@ -12,6 +12,8 @@ export interface TrayDeps {
   harness: HarnessManager
   screensaver: ScreensaverController
   updater?: UpdateChecker
+  /** 远程访问暂停开关(桌面端掌握连接控制权)。 */
+  remoteControl?: { paused: () => boolean; toggle: () => void }
   showMainWindow: () => void
   openWebUi: () => void
   quit: () => void
@@ -49,9 +51,11 @@ export class AppTray {
     }
     const hasUpdate = this.deps.updater?.hasUpdate() === true
     const updateInfo = this.deps.updater?.getInfo()
+    const remotePaused = this.deps.remoteControl?.paused() === true
     const menu = Menu.buildFromTemplate([
       { label: `DeepSeek Harness Desktop — ${stateLabel[status.state] ?? status.state}`, enabled: false },
       { label: `地址:${status.baseUrl}`, enabled: false },
+      ...(remotePaused ? [{ label: '🔒 远程访问:已暂停', enabled: false }] : []),
       ...(hasUpdate && updateInfo !== undefined
         ? [
             { type: 'separator' as const },
@@ -66,6 +70,14 @@ export class AppTray {
       { type: 'separator' },
       { label: '显示主窗口', click: () => this.deps.showMainWindow() },
       { label: '打开 Web UI', click: () => this.deps.openWebUi() },
+      ...(this.deps.remoteControl !== undefined
+        ? [
+            {
+              label: remotePaused ? '▶ 恢复远程访问' : '⏸ 暂停远程访问(立即断开)',
+              click: () => this.deps.remoteControl!.toggle(),
+            },
+          ]
+        : []),
       { type: 'separator' },
       {
         label: this.deps.screensaver.isActive() ? '退出 AI 屏保' : '立即启动 AI 屏保',
@@ -92,7 +104,9 @@ export class AppTray {
       { label: '退出', click: () => this.deps.quit() },
     ])
     this.tray.setContextMenu(menu)
-    if (hasUpdate) this.tray.setToolTip(`DeepSeek Harness Desktop — 发现新版本 v${updateInfo?.latest}`)
+    if (remotePaused) this.tray.setToolTip('DeepSeek Harness Desktop — 远程访问已暂停')
+    else if (hasUpdate) this.tray.setToolTip(`DeepSeek Harness Desktop — 发现新版本 v${updateInfo?.latest}`)
+    else this.tray.setToolTip('DeepSeek Harness Desktop')
   }
 
   dispose(): void {

@@ -23,25 +23,8 @@ import { parseSchedDelay } from './qq-commands'
 import type { RemoteCommandProcessor } from './remote-commands'
 import { dshHomeOf, unarchiveInRegistry } from './workspace-registry'
 
-export interface RemoteConfig {
-  enabled: boolean
-  port: number
-  token: string
-  expiresAt: number | null
-  approvedDevices: Array<{ id: string; label: string; address: string; approvedAt: number; lastSeenAt: number }>
-  pendingDevices: Array<{ id: string; label: string; address: string; requestedAt: number; lastSeenAt: number }>
-  presetWorkspaceRoots: string[]
-}
-
-export const REMOTE_DEFAULTS: RemoteConfig = {
-  enabled: false,
-  port: 3082,
-  token: '',
-  expiresAt: null,
-  approvedDevices: [],
-  pendingDevices: [],
-  presetWorkspaceRoots: [],
-}
+/** 远程访问配置:直接复用 ConfigStore 的完整结构(监听地址/暂停/黑名单等)。 */
+export type RemoteConfig = ReturnType<ConfigStore['get']>['remote']
 
 /** 手机端允许调用的 RPC 白名单(纵深防御:token 之外的访问边界)。 */
 const ALLOWED_METHODS = new Set([
@@ -79,6 +62,8 @@ export class RemoteGateway {
   private expiryTimer: ReturnType<typeof setTimeout> | null = null
   private sseTickets = new Map<string, { deviceId: string; expiresAt: number }>()
   private remoteDir: string
+  /** 认证失败计数(防暴力尝试):ip → {count, until}。 */
+  private authFails = new Map<string, { count: number; until: number }>()
   /** 新设备请求批准时的回调(桌面端据此拉起审批)。 */
   onPendingDevice: ((device: { id: string; label: string; address: string }) => void) | null = null
 
@@ -122,6 +107,107 @@ export class RemoteGateway {
       }
     }
     return result
+  }
+
+  /** 当前监听状态(设置面板与托盘展示)。 */
+  state(): { enabled: boolean; paused: boolean; bindHost: string; listenHost: string } {
+    const config = this.config.get().remote
+    return {
+      enabled: config.enabled,
+      paused: config.paused === true,
+      bindHost: config.bindHost ?? '0.0.0.0',
+      listenHost: this.server !== null ? (config.bindHost ?? '0.0.0.0') : '(未监听)',
+    }
+  }
+
+  /** 桌面端一键暂停/恢复(暂停 = 立即断开所有连接;令牌与设备保留)。 */
+  setPaused(paused: boolean): void {
+    const config = this.config.get().remote
+    if (config.paused === paused) return
+    this.config.update('remote', { paused })
+    if (paused) {
+      this.stop()
+      console.warn('[gateway] 远程访问已由桌面端暂停(所有连接已断开)')
+    } else {
+      this.start()
+      console.log('[gateway] 远程访问已恢复')
+    }
+    this.config.appendAudit({ time: Date.now(), type: 'remote.paused', detail: paused ? '桌面端暂停远程访问' : '桌面端恢复远程访问' })
+  }
+
+  /** 是否处于桌面端暂停状态。 */
+  paused(): boolean {
+    return this.config.get().remote.paused === true
+  }
+
+  /** 暂停 ↔ 恢复(托盘快捷开关)。 */
+  togglePause(): void {
+    this.setPaused(!this.paused())
+  }
+
+  /** 暂停/恢复单个已批准设备(桌面端控制权)。 */
+  pauseDevice(id: string): void {
+    const remote = this.config.get().remote
+    this.config.update('remote', { approvedDevices: remote.approvedDevices.map((device) => device.id === id ? { ...device, paused: true } : device) })
+    this.config.appendAudit({ time: Date.now(), type: 'remote.device.paused', detail: `暂停设备:${id}` })
+  }
+
+  resumeDevice(id: string): void {
+    const remote = this.config.get().remote
+    this.config.update('remote', { approvedDevices: remote.approvedDevices.map((device) => device.id === id ? { ...device, paused: false } : device) })
+    this.config.appendAudit({ time: Date.now(), type: 'remote.device.resumed', detail: `恢复设备:${id}` })
+  }
+
+  /** 拉黑设备:从批准/待批准中移除并加入黑名单(令牌正确也拒绝)。 */
+  blacklistDevice(id: string): void {
+    const remote = this.config.get().remote
+    const known = [...remote.approvedDevices, ...remote.pendingDevices].find((device) => device.id === id)
+    const entry = { id, label: known?.label ?? '未知设备', address: known?.address ?? '', blockedAt: Date.now() }
+    this.config.update('remote', {
+      approvedDevices: remote.approvedDevices.filter((device) => device.id !== id),
+      pendingDevices: remote.pendingDevices.filter((device) => device.id !== id),
+      blacklistedDevices: [...remote.blacklistedDevices.filter((device) => device.id !== id), entry],
+    })
+    this.config.appendAudit({ time: Date.now(), type: 'remote.device.blacklisted', detail: `拉黑设备:${entry.label} ${entry.address}` })
+  }
+
+  unblacklistDevice(id: string): void {
+    const remote = this.config.get().remote
+    this.config.update('remote', { blacklistedDevices: remote.blacklistedDevices.filter((device) => device.id !== id) })
+    this.config.appendAudit({ time: Date.now(), type: 'remote.device.unblacklisted', detail: `解除拉黑设备:${id}` })
+  }
+
+  blacklistedDevices(): RemoteConfig['blacklistedDevices'] {
+    return this.config.get().remote.blacklistedDevices
+  }
+
+  /** 认证失败计数(防暴力尝试):同一来源短时间内多次令牌错误 → 拉黑 15 分钟。 */
+  private authFailBlocked(remote: string): boolean {
+    const entry = this.authFails.get(remote)
+    if (entry === undefined) return false
+    if (Date.now() >= entry.until) {
+      this.authFails.delete(remote)
+      return false
+    }
+    return true
+  }
+
+  private noteAuthFail(remote: string): void {
+    const entry = this.authFails.get(remote) ?? { count: 0, until: 0 }
+    entry.count += 1
+    if (entry.count >= 8) {
+      entry.count = 0
+      entry.until = Date.now() + 15 * 60 * 1000
+      console.warn(`[gateway] 远程访问认证失败过多,来源 ${remote} 已临时封锁 15 分钟`)
+      this.config.appendAudit({ time: Date.now(), type: 'remote.brute-blocked', detail: `认证失败过多,临时封锁来源:${remote}` })
+    }
+    this.authFails.set(remote, entry)
+    if (this.authFails.size > 200) {
+      const now = Date.now()
+      for (const [key, value] of this.authFails) {
+        if (now >= value.until) this.authFails.delete(key)
+      }
+    }
   }
 
   /** 二维码内容:手机扫码后打开 PWA 并自动填入地址与 token。 */
@@ -178,12 +264,19 @@ export class RemoteGateway {
     if (this.server !== null) return
     const config = this.getConfig()
     if (!config.enabled) return
+    // 桌面端暂停中:不监听任何端口(控制权在桌面端)。
+    if (config.paused === true) {
+      console.log('[gateway] 远程访问已暂停(桌面端掌控中),不监听端口')
+      return
+    }
+    const bindHost = typeof config.bindHost === 'string' && config.bindHost.trim() !== '' ? config.bindHost.trim() : '0.0.0.0'
     const server = createServer((req, res) => void this.handle(req, res))
     server.on('error', (error) => {
       console.error('[gateway] 监听失败:', error.message)
+      this.config.appendAudit({ time: Date.now(), type: 'remote.listen-error', detail: `监听 ${bindHost}:${config.port} 失败:${error.message}` })
     })
-    server.listen(config.port, '0.0.0.0', () => {
-      console.log(`[gateway] 远程网关已启动,端口 ${config.port} (仅可信局域网客户端)`)
+    server.listen(config.port, bindHost, () => {
+      console.log(`[gateway] 远程网关已启动,监听 ${bindHost}:${config.port} (仅可信局域网客户端)`)
     })
     if (config.expiresAt !== null) {
       const delay = Math.max(0, config.expiresAt - Date.now())
@@ -219,6 +312,11 @@ export class RemoteGateway {
       res.setHeader('Access-Control-Allow-Origin', '*')
       res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization')
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      if (this.config.get().remote.paused === true) {
+        // 桌面端暂停期间一律拒绝(通常服务器已停止,这里是竞态窗口内的兜底)。
+        this.json(res, 503, { error: 'remote access paused by desktop' })
+        return
+      }
       if (req.method === 'OPTIONS') {
         res.writeHead(204)
         res.end()
@@ -332,14 +430,27 @@ export class RemoteGateway {
     if (token === null) return 'denied'
     const config = this.getConfig()
     if (config.expiresAt !== null && Date.now() >= config.expiresAt) return 'denied'
-    if (config.token === '' || token !== config.token) return 'denied'
+    if (this.authFailBlocked(remote)) return 'denied'
+    if (config.token === '' || token !== config.token) {
+      // 令牌错误:计数,短时间多次 → 临时封锁该来源(防暴力尝试)。
+      this.noteAuthFail(remote)
+      return 'denied'
+    }
+    this.authFails.delete(remote)
     if (remote === '127.0.0.1' || remote === '::1' || remote.endsWith('::ffff:127.0.0.1')) return 'ok'
     const id = req.headers['x-dsh-device'] ?? url.searchParams.get('device') ?? ''
     const deviceId = typeof id === 'string' && id.trim() !== '' ? id.trim().slice(0, 120) : ''
+    // 黑名单:令牌正确也拒绝(桌面端拉黑优先于一切)。
+    if (config.blacklistedDevices.some((device) => device.id === deviceId)) {
+      this.config.appendAudit({ time: Date.now(), type: 'remote.request', detail: `已拉黑设备尝试连接:${deviceId}` })
+      return 'denied'
+    }
     const address = remote.replace(/^::ffff:/i, '')
     if (deviceId === '') return 'pending'
     const approved = config.approvedDevices.find((device) => device.id === deviceId)
     if (approved !== undefined) {
+      // 桌面端暂停了该设备:即使令牌正确也拒绝。
+      if (approved.paused === true) return 'denied'
       if (Date.now() - approved.lastSeenAt > 60_000) {
         approved.lastSeenAt = Date.now()
         this.config.update('remote', { approvedDevices: config.approvedDevices })

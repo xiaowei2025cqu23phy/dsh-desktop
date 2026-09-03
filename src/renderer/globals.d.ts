@@ -55,10 +55,14 @@ interface AppearanceConfigView {
 interface RemoteConfigView {
   enabled: boolean
   port: number
+  bindHost: string
+  paused: boolean
+  pauseOnLock: boolean
+  blacklistedDevices: Array<{ id: string; label: string; address: string; blockedAt: number }>
   token: string
   expiresAt: number | null
   presetWorkspaceRoots: string[]
-  approvedDevices: Array<{ id: string; label: string; address: string; approvedAt: number; lastSeenAt: number }>
+  approvedDevices: Array<{ id: string; label: string; address: string; approvedAt: number; lastSeenAt: number; paused?: boolean }>
   pendingDevices: Array<{ id: string; label: string; address: string; requestedAt: number; lastSeenAt: number }>
 }
 
@@ -236,6 +240,12 @@ interface DesktopApi {
     approveDevice(id: string): Promise<void>
     rejectDevice(id: string): Promise<void>
     revokeDevice(id: string): Promise<void>
+    setPaused(paused: boolean): Promise<void>
+    pauseDevice(id: string): Promise<void>
+    resumeDevice(id: string): Promise<void>
+    blacklistDevice(id: string): Promise<void>
+    unblacklistDevice(id: string): Promise<void>
+    blacklistedDevices(): Promise<Array<{ id: string; label: string; address: string; blockedAt: number }>>
     onDevicePending(callback: (device: { id: string; label: string; address: string }) => void): () => void
   }
   dialog: {

@@ -1413,7 +1413,12 @@ async function loadRemoteConfig(): Promise<void> {
     input('remote-enabled').checked = config.enabled
     input('remote-port').value = '' + config.port
     input('remote-token').value = '' + config.token
+    input('remote-pause-on-lock').checked = config.pauseOnLock !== false
+    const bindSelect = $id('remote-bind') as HTMLSelectElement
+    bindSelect.value = config.bindHost === '0.0.0.0' || !config.bindHost ? '0.0.0.0' : 'lan'
+    renderRemoteBindStatus(config.bindHost || '0.0.0.0')
     await renderRemoteDevices()
+    renderRemotePause(config.paused === true)
     const expiry = $id('remote-expiry') as HTMLSelectElement
     if (config.expiresAt === null) expiry.value = '0'
     else {
@@ -1429,11 +1434,33 @@ async function loadRemoteConfig(): Promise<void> {
   }
 }
 
+function renderRemoteBindStatus(bindHost: string): void {
+  const el = $id('remote-bind-status')
+  if (bindHost === '0.0.0.0' || bindHost === '') {
+    el.textContent = '当前:监听全部网卡(0.0.0.0)。含 VPN/虚拟网卡——如果你只有一张网卡,建议改为「仅当前局域网 IP」。'
+  } else {
+    el.textContent = `当前:仅监听 ${bindHost}(换网络/换网卡后需重新启用)。`
+  }
+}
+
+function renderRemotePause(paused: boolean): void {
+  const pauseBtn = $id('btn-remote-pause')
+  const resumeBtn = $id('btn-remote-resume')
+  const status = $id('remote-pause-status')
+  pauseBtn.classList.toggle('hidden', paused)
+  resumeBtn.classList.toggle('hidden', !paused)
+  status.textContent = paused ? '⚠️ 已暂停:所有远程连接已断开(桌面端掌控中)' : '运行中:手机 PWA 与 Webhook 正常响应'
+  if (paused) status.classList.add('security-warning')
+  else status.classList.remove('security-warning')
+}
+
 async function renderRemoteDevices(): Promise<void> {
   const pending = await API.remote.pendingDevices()
   const approved = await API.remote.approvedDevices()
+  const blacklisted = await API.remote.blacklistedDevices()
   const pendingHost = $id('remote-pending-devices')
   const approvedHost = $id('remote-approved-devices')
+  const blacklistHost = $id('remote-blacklist-devices')
   pendingHost.textContent = pending.length === 0 ? '暂无待批准设备' : ''
   pending.forEach((device) => {
     const row = document.createElement('div')
@@ -1446,19 +1473,56 @@ async function renderRemoteDevices(): Promise<void> {
     reject.className = 'btn btn-sm btn-danger'
     reject.textContent = '拒绝'
     reject.onclick = async () => { await API.remote.rejectDevice(device.id); await renderRemoteDevices() }
-    row.append(allow, reject)
+    const black = document.createElement('button')
+    black.className = 'btn btn-sm btn-danger'
+    black.textContent = '拉黑'
+    black.title = '拉黑:即使令牌正确也永远拒绝,不再提示'
+    black.onclick = async () => { await API.remote.blacklistDevice(device.id); await renderRemoteDevices() }
+    row.append(allow, reject, black)
     pendingHost.appendChild(row)
   })
   approvedHost.textContent = approved.length === 0 ? '暂无已批准设备' : ''
   approved.forEach((device) => {
     const row = document.createElement('div')
-    row.textContent = `${device.label} · ${device.address} `
+    row.textContent = `${device.label} · ${device.address} ${device.paused ? '⏸(已暂停)' : ''} `
+    if (device.paused) {
+      const resume = document.createElement('button')
+      resume.className = 'btn btn-sm'
+      resume.textContent = '▶ 恢复'
+      resume.onclick = async () => { await API.remote.resumeDevice(device.id); await renderRemoteDevices() }
+      row.appendChild(resume)
+    } else {
+      const pause = document.createElement('button')
+      pause.className = 'btn btn-sm'
+      pause.textContent = '⏸ 暂停'
+      pause.title = '暂停该设备连接(可随时恢复)'
+      pause.onclick = async () => { await API.remote.pauseDevice(device.id); await renderRemoteDevices() }
+      row.appendChild(pause)
+    }
+    const black = document.createElement('button')
+    black.className = 'btn btn-sm btn-danger'
+    black.textContent = '🚫 拉黑'
+    black.title = '拉黑:令牌正确也拒绝,永久加入黑名单'
+    black.onclick = async () => { await API.remote.blacklistDevice(device.id); await renderRemoteDevices() }
+    row.appendChild(black)
     const revoke = document.createElement('button')
     revoke.className = 'btn btn-sm btn-danger'
     revoke.textContent = '撤销'
+    revoke.title = '撤销授权:设备需重新扫码申请'
     revoke.onclick = async () => { await API.remote.revokeDevice(device.id); await renderRemoteDevices() }
     row.appendChild(revoke)
     approvedHost.appendChild(row)
+  })
+  blacklistHost.textContent = blacklisted.length === 0 ? '暂无拉黑设备' : ''
+  blacklisted.forEach((device) => {
+    const row = document.createElement('div')
+    row.textContent = `${device.label} · ${device.address} · ${new Date(device.blockedAt).toLocaleString()} `
+    const unblack = document.createElement('button')
+    unblack.className = 'btn btn-sm'
+    unblack.textContent = '解除拉黑'
+    unblack.onclick = async () => { await API.remote.unblacklistDevice(device.id); await renderRemoteDevices() }
+    row.appendChild(unblack)
+    blacklistHost.appendChild(row)
   })
 }
 
@@ -1812,7 +1876,7 @@ function bind(): void {
   input('remote-enabled').addEventListener('change', async () => {
     const enabled = input('remote-enabled').checked
     await API.remote.setConfig({ enabled, expiresAt: enabled ? Date.now() + 120 * 60 * 1000 : null })
-    await renderQr()
+    await loadRemoteConfig()
     S.toast(enabled ? '远程访问已启用(默认 2 小时后自动关闭)' : '远程访问已关闭', 'ok')
   })
   select('remote-expiry').addEventListener('change', async () => {
@@ -1859,6 +1923,38 @@ function bind(): void {
     el.value = existing.join('\n')
     await API.remote.setConfig({ presetWorkspaceRoots: existing })
     S.toast(`已添加 ${added} 个预设根目录`, 'ok')
+  })
+  // 监听地址:仅局域网 = 自动选当前第一个局域网 IP(换网络后需重新启用)。
+  select('remote-bind').addEventListener('change', async () => {
+    const mode = select('remote-bind').value
+    let bindHost = '0.0.0.0'
+    if (mode !== '0.0.0.0') {
+      const addresses = await API.remote.lanAddresses()
+      bindHost = addresses[0] ?? '0.0.0.0'
+      if (bindHost === '0.0.0.0') {
+        S.toast('未检测到局域网地址,保持全部网卡监听', 'error')
+        select('remote-bind').value = '0.0.0.0'
+        return
+      }
+    }
+    await API.remote.setConfig({ bindHost })
+    renderRemoteBindStatus(bindHost)
+    S.toast(bindHost === '0.0.0.0' ? '已改为监听全部网卡' : `已改为仅监听 ${bindHost}`, 'ok')
+  })
+  $id('btn-remote-pause').addEventListener('click', async () => {
+    await API.remote.setPaused(true)
+    renderRemotePause(true)
+    S.toast('远程访问已暂停,所有连接已断开', 'ok')
+  })
+  $id('btn-remote-resume').addEventListener('click', async () => {
+    await API.remote.setPaused(false)
+    renderRemotePause(false)
+    await renderQr()
+    S.toast('远程访问已恢复', 'ok')
+  })
+  input('remote-pause-on-lock').addEventListener('change', async () => {
+    await API.remote.setConfig({ pauseOnLock: input('remote-pause-on-lock').checked })
+    S.toast(input('remote-pause-on-lock').checked ? '已开启:锁屏/睡眠时自动暂停远程访问' : '已关闭自动暂停', 'ok')
   })
 
   // QQ 机器人

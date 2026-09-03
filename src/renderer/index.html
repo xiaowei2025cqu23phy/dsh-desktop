@@ -289,7 +289,25 @@
           <label for="remote-port">端口</label>
           <input id="remote-port" type="number" min="1024" max="65535" />
         </div>
-        <p class="security-warning">⚠️ 仅限可信家庭/办公局域网。不要使用 frp、ngrok、Cloudflare Tunnel、端口转发或任何内网穿透暴露到公网。Harness 插件可能拥有主机级执行权限。若手机无法连接,请检查 Windows 防火墙是否放行本程序的入站连接(端口见上方)。</p>
+        <div class="field">
+          <label for="remote-bind">监听地址(网络接口)</label>
+          <select id="remote-bind">
+            <option value="0.0.0.0">全部网卡(0.0.0.0,默认)</option>
+            <option value="lan">仅当前局域网 IP(更安全;换网络后需重新启用)</option>
+          </select>
+          <p class="hint" id="remote-bind-status"></p>
+        </div>
+        <p class="security-warning">⚠️ 仅限可信家庭/办公局域网。不要使用 frp、ngrok、Cloudflare Tunnel、端口转发或任何内网穿透暴露到公网。Harness 插件可能拥有主机级执行权限。0.0.0.0 会同时监听 VPN/虚拟网卡等所有接口——如果你只用一张网卡,请选「仅当前局域网 IP」。若手机无法连接,请检查 Windows 防火墙是否放行本程序的入站连接(端口见上方)。</p>
+        <div class="field-row">
+          <button id="btn-remote-pause" class="btn btn-danger btn-sm">⏸ 立即暂停(断开所有连接)</button>
+          <button id="btn-remote-resume" class="btn btn-sm hidden">▶ 恢复远程访问</button>
+          <span id="remote-pause-status" class="hint"></span>
+        </div>
+        <label class="check-row">
+          <input id="remote-pause-on-lock" type="checkbox" />
+          锁屏/睡眠时自动暂停远程访问(解锁后需在桌面端手动恢复)
+        </label>
+        <p class="hint">🔒 控制权永远在桌面端:可随时暂停全部连接,或对单个设备暂停/拉黑;被拉黑的设备即使令牌正确也会被拒绝。</p>
         <div class="field">
           <label>访问令牌</label>
           <div class="field-row">
@@ -312,8 +330,12 @@
           <pre id="remote-pending-devices" class="help-pre">暂无待批准设备</pre>
         </div>
         <div class="field">
-          <label>已批准设备</label>
+          <label>已批准设备(可暂停/拉黑)</label>
           <pre id="remote-approved-devices" class="help-pre">暂无已批准设备</pre>
+        </div>
+        <div class="field">
+          <label>已拉黑设备(桌面端拉黑,令牌正确也拒绝)</label>
+          <pre id="remote-blacklist-devices" class="help-pre">暂无拉黑设备</pre>
         </div>
         <div class="field">
           <label>手机扫码连接</label>

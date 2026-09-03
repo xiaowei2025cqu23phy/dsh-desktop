@@ -6,7 +6,7 @@
  * - 无参数:正常模式(主窗口 + 托盘 + 空闲检测)。
  */
 
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, powerMonitor, shell } from 'electron'
 import { join } from 'node:path'
 import { AppearanceManager } from './appearance'
 import { ConfigStore } from './config'
@@ -185,6 +185,15 @@ if (!gotLock) {
     tray = new AppTray({
       harness,
       screensaver,
+      updater,
+      // 托盘快捷开关:暂停/恢复远程访问(桌面端掌握连接控制权)。
+      remoteControl: {
+        paused: () => gateway.paused(),
+        toggle: () => {
+          gateway.togglePause()
+          tray?.refresh()
+        },
+      },
       showMainWindow: () => {
         if (mainWindow === null) {
           mainWindow = createMainWindow(join(__dirname, '..', 'preload.js'), config)
@@ -208,6 +217,17 @@ if (!gotLock) {
       },
     })
     tray.create()
+
+    // 锁屏/睡眠自动暂停远程访问(解锁后需桌面端手动恢复)——控制权始终在桌面端。
+    const autoPauseRemote = (reason: string): void => {
+      const remote = config.get().remote
+      if (!remote.enabled || remote.paused === true || remote.pauseOnLock === false) return
+      gateway.setPaused(true)
+      console.warn(`[main] 远程访问已自动暂停(原因:${reason})`)
+      tray?.refresh()
+    }
+    powerMonitor.on('lock-screen', () => autoPauseRemote('屏幕锁定'))
+    powerMonitor.on('suspend', () => autoPauseRemote('系统睡眠'))
 
     await harness.start()
     // 恢复任务队列:上次运行中被退出中断的项标记失败,等待手动重试。
