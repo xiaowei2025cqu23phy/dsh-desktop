@@ -53,15 +53,17 @@ function botHealthLines(qqBot: QQBotAdapter | null, telegramBot: TelegramBotAdap
   if (t !== undefined) {
     if (!t.configured) {
       lines.push('✈️ Telegram 机器人:未启用(设置 → Telegram 机器人填入 Token)')
+    } else if (t.locked) {
+      lines.push('✈️ Telegram 机器人:🔒 锁定(未填「允许的用户 ID」,不服务任何聊天;设置页可一键绑定)')
     } else if (t.started) {
-      lines.push('✈️ Telegram 机器人:✓ 运行中(长轮询)')
+      lines.push('✈️ Telegram 机器人:✓ 运行中(仅服务白名单用户)')
     } else {
       lines.push('✈️ Telegram 机器人:⚠️ 未运行(令牌无效或已停止)')
     }
     if (t.lastError !== null) lines.push(`  ⚠️ 最近失败(${t.lastError.action}):${t.lastError.detail.slice(0, 120)}`)
     if (t.deniedChats.length > 0) {
       const latest = t.deniedChats[t.deniedChats.length - 1]
-      lines.push(`  🔒 最近被拒绝的${latest.kind === 'user' ? '用户' : '群组'} ID:${latest.id}(不在允许列表,已自动回提示)`)
+      lines.push(`  🔒 最近被拒绝的用户 ID:${latest.id}(不在白名单)`)
     }
   }
   return lines
@@ -210,6 +212,10 @@ if (!gotLock) {
     await harness.start()
     // 恢复任务队列:上次运行中被退出中断的项标记失败,等待手动重试。
     commands.recoverQueue()
+    // 历史老会话补名:旧版本遗留的「新会话」按首条消息批量命名(限 15 个,避免拖慢启动)。
+    setTimeout(() => {
+      void commands.backfillSessionTitles().catch(() => {})
+    }, 8000)
 
     // 启动后延迟自动检查更新(设置面板可关闭);有新版本时托盘刷新提示 + 桌面通知。
     if (config.get().updater.autoCheck) {

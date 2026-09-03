@@ -90,6 +90,8 @@ const api = {
     setConfig: (patch: object) => ipcRenderer.invoke('telegram:setConfig', patch),
     status: () => ipcRenderer.invoke('telegram:status'),
     diag: () => ipcRenderer.invoke('telegram:diag'),
+    bindStart: () => ipcRenderer.invoke('telegram:bindStart'),
+    bindCancel: () => ipcRenderer.invoke('telegram:bindCancel'),
   },
   bot: {
     getConfig: () => ipcRenderer.invoke('bot:getConfig'),

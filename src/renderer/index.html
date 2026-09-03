@@ -391,9 +391,19 @@
           <input id="tg-token" type="password" placeholder="123456:ABC-DEF..." />
         </div>
         <div class="field">
-          <label for="tg-users">允许的用户 ID(逗号分隔;建议必填,留空=任何人可用)</label>
-          <input id="tg-users" type="text" placeholder="例如 123456789, 987654321" />
-          <p class="hint">如何获取自己的 ID:在 Telegram 里给 @userinfobot 发任意消息即可看到。私聊 = 完整指令集(可远程操控电脑),请只填可信的人;群聊只聊天、不执行命令。</p>
+          <label for="tg-users">允许的用户 ID(必填,只填你自己的 ID;留空 = 锁定,机器人不服务任何人)</label>
+          <input id="tg-users" type="text" placeholder="例如 123456789" />
+        </div>
+        <div class="field-row">
+          <button id="btn-tg-bind" class="btn btn-sm">🔐 绑定我的 ID(一键)</button>
+          <span id="tg-bind-status" class="hint"></span>
+        </div>
+        <div id="tg-bind-area" class="hidden">
+          <p id="tg-bind-hint" class="hint"></p>
+          <div class="field-row">
+            <button id="btn-tg-bind-confirm" class="btn btn-sm hidden">确认填入并启动</button>
+            <button id="btn-tg-bind-cancel" class="btn btn-sm btn-ghost hidden">取消绑定</button>
+          </div>
         </div>
         <label class="check-row">
           <input id="tg-autochat" type="checkbox" />
@@ -403,7 +413,7 @@
           <input id="tg-report" type="checkbox" />
           主动汇报(任务完成/失败、审批、提问时主动推送)
         </label>
-        <p class="hint">与 QQ 机器人共用同一套指令集与对话模式;支持主动推送(审批/提问通知即时送达)。</p>
+        <p class="hint">⚠️ 安全:私聊 = 完整指令集(可远程操控电脑),只允许你本人的 ID;群聊消息一律忽略,不会响应任何人。图片消息支持理解;支持 /start /help /status 等斜杠指令。</p>
         <div id="tg-status" class="hint"></div>
       </section>
 

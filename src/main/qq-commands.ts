@@ -25,6 +25,7 @@ export type QQCommand =
   | { kind: 'ls'; path: string }
   | { kind: 'cat'; path: string }
   | { kind: 'export'; sessionId: string }
+  | { kind: 'restore'; sessionId: string }
   | { kind: 'usage' }
   | { kind: 'character'; text: string }
   | { kind: 'broadcast'; sessionId: string; on: boolean }
@@ -164,6 +165,10 @@ export function parseCommand(content: string): QQCommand {
   // 会话导出:导出 <会话id>
   if (parts[0] === '导出' || parts[0] === 'export') {
     return { kind: 'export', sessionId: parts[1] ?? '' }
+  }
+  // 恢复归档会话:恢复 <会话id>(归档 = 仅隐藏,可随时恢复)
+  if (parts[0] === '恢复' || parts[0] === 'restore' || parts[0] === '取消归档') {
+    return { kind: 'restore', sessionId: parts[1] ?? '' }
   }
   return { kind: 'unknown', text: content.trim() }
 }

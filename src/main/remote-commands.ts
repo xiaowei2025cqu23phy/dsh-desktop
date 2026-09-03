@@ -17,6 +17,7 @@ import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { parseCommand, parseTaskOptions, type QQCommand } from './qq-commands'
+import { dshHomeOf, unarchiveInRegistry } from './workspace-registry'
 
 /** 单条回复长度上限(超长由通道分段)。 */
 export const MAX_REPLY_LENGTH = 1500
@@ -42,6 +43,36 @@ function fmtAgo(ts: number): string {
   if (delta < 3600_000) return `${Math.floor(delta / 60_000)} 分钟前`
   if (delta < 86_400_000) return `${Math.floor(delta / 3600_000)} 小时前`
   return `${Math.floor(delta / 86_400_000)} 天前`
+}
+
+/**
+ * 从模型提示文本提炼会话标题:先取 [消息] 之后、去掉 [系统注记] 包装,
+ * 再剥离 [xxx] 类型的声明行,取首个正文段(历史会话补名用)。
+ */
+function promptTitleFrom(text: string): string {
+  let t = text
+  const messageIdx = t.lastIndexOf('[消息]')
+  if (messageIdx >= 0) t = t.slice(messageIdx + '[消息]'.length)
+  const noteIdx = t.indexOf('[系统注记]')
+  if (noteIdx >= 0) t = t.slice(0, noteIdx)
+  t = t
+    .split('\n')
+    .filter((line) => !/^\s*\[[^\]]+\]\s*$/.test(line.trim()))
+    .join('\n')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return t.slice(0, 24)
+}
+
+/** 严格指令形态的群聊查询(整条消息=指令才解析;日常聊天句子不误触)。
+ *  支持:状态/会话/工作区/模型/用量/帮助,以及 进展|打开 <session-xxx>。
+ *  返回 null = 不是查询指令(按聊天处理)。 */
+function groupQueryCommand(content: string): QQCommand | null {
+  const text = content.trim()
+  const simple = /^(帮助|help|状态|status|会话|sessions|工作区|workspaces|模型|models|用量|usage|统计|\?)$/i
+  const detail = /^(进展|progress|进度|打开|open)\s+session-[0-9a-f-]+\s*$/i
+  if (simple.test(text) || detail.test(text)) return parseCommand(text)
+  return null
 }
 
 interface HistoryEventLike {
@@ -102,9 +133,9 @@ interface ChatContext {
   workspace: string | null
 }
 
-/** 群聊首条消息的安全提醒(仅限对话、禁止命令、警惕机器人添加者)。 */
+/** 群聊首条消息的安全提醒(只聊天 + 只读查询;命令与文件访问仅私聊)。 */
 const GROUP_SAFETY_NOTICE =
-  '⚠️ 安全提醒:本群与机器人仅限对话,不响应任何命令;涉及任务与文件操作请私聊机器人。\n机器人由电脑主人添加——请勿将不可信的机器人拉入本群,否则对方可能远程操控这台电脑。'
+  '⚠️ 安全提醒:本群与机器人只聊天,支持只读查询(状态/会话/工作区/模型/用量/进展——仅限本群会话);任务、文件与审批请私聊机器人。\n机器人由电脑主人添加——请勿将不可信的机器人拉入本群,否则对方可能远程操控这台电脑。'
 
 /** 会话归属:哪个通道的哪个用户发起了该会话(用于审批/提问的定向通知)。 */
 interface SessionOwner {
@@ -733,9 +764,19 @@ export class RemoteCommandProcessor {
     if (content === '' && image === undefined) {
       reply = ''
     } else if (pushTarget !== undefined && pushTarget.scope === 'group') {
-      // 群聊:只对话,不解析任何命令 —— 群里任何人都可能触发命令,等于把电脑
-      // 交给群成员远程操控;私聊才有任务/查询等完整指令集。
-      reply = await this.groupChatOnly(key, ctxKey, content, pushTarget, image)
+      // 群聊:聊天优先 + 只读查询 —— 群里任何人都可能触发命令,等于把电脑交给群成员
+      // 远程操控;任务/文件/审批等一律仅限私聊。只读查询(状态/会话/进展等)不改变
+      // 电脑状态,且进展/打开只放行本群自己的会话,避免泄露私聊内容。
+      // 只有"严格指令形态"(整条消息=指令)才解析,日常聊天(含以指令词开头的句子)不受影响。
+      const command = groupQueryCommand(content)
+      if (command === null) {
+        reply = await this.groupChatOnly(key, ctxKey, content, pushTarget, image)
+      } else {
+        const answer = await this.groupReadonlyGate(command, pushTarget)
+        reply = answer === null
+          ? await this.executeCommand(command, key, ctxKey, pushTarget)
+          : answer
+      }
     } else {
       const command = parseCommand(content)
       if (command.kind === 'unknown') {
@@ -793,6 +834,94 @@ export class RemoteCommandProcessor {
     }
     const sent = await this.cmdChatMessage(ctxKey, key, content, pushTarget, image)
     return notice + sent
+  }
+
+  /**
+   * 群聊只读闸门:放行不改变电脑状态的查询;返回 null = 交给 executeCommand 执行,
+   * 否则返回直接应答的文本。会话级查询(进展/打开)只放行本群自己的会话,
+   * 「会话」只列本群对话,防止群成员窥探私聊内容。
+   */
+  private async groupReadonlyGate(
+    command: QQCommand,
+    pushTarget: { scope: string; targetId: string },
+  ): Promise<string | null> {
+    switch (command.kind) {
+      case 'status':
+      case 'workspaces':
+      case 'models':
+      case 'usage':
+        return null
+      case 'sessions':
+        return this.groupSessionsList(pushTarget.targetId)
+      case 'progress':
+      case 'open': {
+        if (command.sessionId === '' || !/^session-/.test(command.sessionId)) {
+          return '用法:进展 <会话id>(本群会话可用;发「会话」可查看)'
+        }
+        if (!this.sessionOwnedByGroup(command.sessionId, pushTarget.targetId)) {
+          return '该会话不属于本群。群内只能查看本群自己的对话(保护私聊隐私)。'
+        }
+        return null
+      }
+      case 'help':
+        return '群聊不展示完整指令集。支持:状态 / 会话 / 工作区 / 模型 / 用量 / 进展 <会话id>;其余操作请私聊机器人。'
+      default:
+        return '群聊仅支持聊天与只读查询(状态/会话/工作区/模型/用量/进展·仅本群会话);任务/文件/审批等操作请私聊机器人(防止他人远程操控电脑)。'
+    }
+  }
+
+  /** 会话是否属于某个群(该群发起的对话;跨重启后用 chatContexts 兜底)。 */
+  private sessionOwnedByGroup(sessionId: string, groupId: string): boolean {
+    const owner = this.sessionOwners.get(sessionId)
+    if (owner !== undefined) {
+      return owner.pushTarget?.scope === 'group' && owner.pushTarget.targetId === groupId
+    }
+    for (const [ctxKey, ctx] of this.chatContexts) {
+      if (ctx.sessionId === sessionId && ctxKey.endsWith(`:g:${groupId}`)) return true
+    }
+    return false
+  }
+
+  /** 列出本群自己的机器人对话线程(标题/时间/最近消息),群内「会话」用。 */
+  private async groupSessionsList(groupId: string): Promise<string> {
+    const client = this.harness.client()
+    const ids = new Set<string>()
+    for (const [sessionId, owner] of this.sessionOwners) {
+      if (owner.pushTarget?.scope === 'group' && owner.pushTarget.targetId === groupId) ids.add(sessionId)
+    }
+    for (const [ctxKey, ctx] of this.chatContexts) {
+      if (ctxKey.endsWith(`:g:${groupId}`)) ids.add(ctx.sessionId)
+    }
+    if (ids.size === 0) return '本群还没有机器人对话记录:直接发消息聊天即可自动创建。'
+    // 按最近更新排序(一次 session.list 拿元数据,再并行抓最近消息摘要)。
+    let order: Array<{ sessionId: string; updatedAt: number; title: string }> = []
+    try {
+      const list = await client.rpc<{ items: Array<{ sessionId: string; updatedAt?: number; title?: string | null; projections?: { values?: { title?: unknown } } | null }> }>('session.list', {}, 20000)
+      order = (list.items ?? [])
+        .filter((s) => ids.has(s.sessionId))
+        .map((s) => ({ sessionId: s.sessionId, updatedAt: s.updatedAt ?? 0, title: this.sessionTitleOf(s) }))
+    } catch {
+      order = [...ids].map((sessionId) => ({ sessionId, updatedAt: 0, title: '' }))
+    }
+    order.sort((a, b) => b.updatedAt - a.updatedAt)
+    const pick = order.slice(0, 6)
+    const previews = await Promise.all(pick.map(async (item) => {
+      try {
+        const hist = await client.rpc<{ events: HistoryEventLike[] }>('session.history', { sessionId: item.sessionId, maxMessages: 2 }, 10000)
+        return deliveredText(hist.events ?? [], 70)
+      } catch {
+        return ''
+      }
+    }))
+    const lines = [`📋 本群机器人对话(共 ${ids.size} 个):`]
+    pick.forEach((item, index) => {
+      const ago = item.updatedAt > 0 ? `(${fmtAgo(item.updatedAt)})` : ''
+      lines.push(`${index + 1}. ${(item.title || '新会话').slice(0, 26)} ${ago}`)
+      if (previews[index] !== '') lines.push(`   💬 ${previews[index]}`)
+      lines.push(`   ${item.sessionId.slice(0, 24)}…`)
+    })
+    lines.push('发「进展 <会话id>」查看详情;「打开 <会话id>」看完整内容')
+    return lines.join('\n')
   }
 
   /** 完整指令集(未知指令时也回复这份),每条指令带可直接复制的示例。 */
@@ -858,6 +987,8 @@ export class RemoteCommandProcessor {
       '  例:停止 session-xxxxxxxx',
       '导出 <会话id> — 导出会话为 Markdown(存到桌面端 exports/)',
       '  例:导出 session-xxxxxxxx',
+      '恢复 <会话id> — 把归档(隐藏)的会话恢复显示',
+      '  例:恢复 session-xxxxxxxx',
       '播报 / 静音 — 任务过程现场播报开关(默认静默,需要时开启)',
       '  例:播报',
       '  例:静音',
@@ -888,7 +1019,7 @@ export class RemoteCommandProcessor {
       '  例:文件 D:/work/proj/README.md',
       '',
       '💡 推送原则:机器人只在 进入/查询/审批/任务完成或失败 时主动推送;想看任务过程发「播报」或「进展 <id>」',
-      '💡 群聊安全:群里只聊天、不响应任何命令(防止他人远程操控电脑);完整功能请私聊机器人',
+      '💡 群聊安全:群里可聊天与只读查询(状态/会话/工作区/模型/用量/进展,进展仅限本群会话);任务、文件与审批请私聊机器人,防止他人远程操控电脑',
       '💡 典型流程:直接发消息聊 → 「进入 qqbot」看会话列表挑一个 → 「任务 @qqbot 帮我…」',
     ].join('\n')
   }
@@ -926,6 +1057,8 @@ export class RemoteCommandProcessor {
         return this.cmdCat(command.path)
       case 'export':
         return this.cmdExport(command.sessionId)
+      case 'restore':
+        return this.cmdRestore(command.sessionId)
       case 'usage':
         return this.cmdUsage()
       case 'character':
@@ -1061,7 +1194,7 @@ export class RemoteCommandProcessor {
       const archivedCount = (list.items ?? [])
         .filter((s) => !s.blank && !(typeof s.origin === 'string' && s.origin !== '') && archived.has(s.sessionId))
         .length
-      if (archivedCount > 0) lines.push(`🗄 已归档 ${archivedCount} 个会话(手机 PWA 侧边栏底部「已归档」可一键恢复)`)
+      if (archivedCount > 0) lines.push(`🗄 已归档 ${archivedCount} 个会话(发「恢复 <会话id>」或手机 PWA 底部「已归档」可恢复)`)
       return lines.join('\n')
     } catch (error) {
       return `查询失败:${error instanceof Error ? error.message : String(error)}`
@@ -1279,6 +1412,86 @@ export class RemoteCommandProcessor {
       return `📄 已导出会话 ${sessionId}\n共 ${count} 条消息\n文件:${path}\n\n${preview.slice(0, 400)}`
     } catch (error) {
       return `导出失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  /** 恢复(取消归档)一个会话:改注册表;本应用托管且空闲时自动重启让列表生效。 */
+  private async cmdRestore(sessionId: string): Promise<string> {
+    if (!/^session-/.test(sessionId)) return '用法:恢复 <会话id>(会话被归档时发「会话」会提示)'
+    try {
+      const home = dshHomeOf(this.config?.get().harness.dshHome)
+      unarchiveInRegistry(home, sessionId)
+      this.appendAudit({ time: Date.now(), type: 'session.restored', sessionId, detail: `恢复归档会话:${sessionId}` })
+      const status = this.harness.status()
+      if (status.state === 'running' || status.state === 'starting') {
+        // 本应用托管的实例:空闲(无运行中会话)时重启一次,让注册表内存态生效。
+        try {
+          const current = await this.harness.client().rpc<{ items: Array<{ running?: boolean }> }>('session.list', {}, 15000)
+          const busy = (current.items ?? []).some((s) => s.running === true)
+          if (!busy) {
+            setTimeout(() => { void this.harness.restart().catch(() => { /* 重启失败会在服务状态体现 */ }) }, 600)
+            return '✅ 会话已恢复,正在刷新服务…'
+          }
+        } catch { /* 查询失败按有任务处理,不冒险重启。 */ }
+        return '✅ 会话已恢复(有任务运行中,服务空闲重启后生效)'
+      }
+      return '✅ 会话已恢复(当前服务由外部程序托管,重启电脑/服务后彻底生效)'
+    } catch (error) {
+      return `恢复失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  // ---- 历史会话补名(旧版遗留的"新会话"批量命名) ----
+
+  /** 老会话批量补名:从未命名的历史会话按首条用户消息生成标题(一次最多 15 个)。 */
+  async backfillSessionTitles(): Promise<number> {
+    try {
+      const client = this.harness.client()
+      const [list, ws] = await Promise.all([
+        client.rpc<{ items: Array<{ sessionId: string; blank?: boolean; origin?: string; updatedAt?: number; title?: string | null; projections?: { values?: { title?: unknown } } | null }> }>('session.list', {}, 20000),
+        client.rpc<{ archivedSessionIds?: string[] }>('workspace.list', {}, 20000),
+      ])
+      const archived = new Set(ws.archivedSessionIds ?? [])
+      // 最老的无标题会话优先(它们最常出现在列表底部、最容易被误当新会话)。
+      const targets = (list.items ?? [])
+        .filter((s) => !s.blank && !(typeof s.origin === 'string' && s.origin !== '') && !archived.has(s.sessionId) && this.sessionTitleOf(s) === '')
+        .sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0))
+        .slice(0, 15)
+      let renamed = 0
+      for (const item of targets) {
+        const title = await this.firstUserMessageTitle(item.sessionId)
+        if (title === '') continue
+        try {
+          await client.rpc('session.rename', { sessionId: item.sessionId, title }, 15000)
+          renamed += 1
+        } catch { /* 单个会话补名失败跳过 */ }
+      }
+      if (renamed > 0) console.log(`[remote-commands] 历史会话补名 ${renamed} 个`)
+      return renamed
+    } catch {
+      return 0
+    }
+  }
+
+  /** 取会话历史里第一条用户消息并提炼标题(去掉任务/对话模式的提示包装)。 */
+  private async firstUserMessageTitle(sessionId: string): Promise<string> {
+    try {
+      const client = this.harness.client()
+      const data = await client.rpc<{ events: Array<{ event?: { type?: string; data?: { message?: { content?: unknown } } } }> }>(
+        'session.history', { sessionId, maxMessages: 8 }, 15000,
+      )
+      for (const entry of data.events ?? []) {
+        const ev = entry.event
+        if (ev === undefined || ev.type !== 'user/message') continue
+        const content = ev.data?.message?.content
+        if (!Array.isArray(content)) continue
+        const text = content.map((b) => (b as { text?: string }).text ?? '').join('').trim()
+        const title = promptTitleFrom(text)
+        if (title !== '') return title
+      }
+      return ''
+    } catch {
+      return ''
     }
   }
 

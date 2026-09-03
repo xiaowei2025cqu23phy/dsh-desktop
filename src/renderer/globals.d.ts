@@ -81,9 +81,12 @@ interface QQDiagView {
 interface TelegramDiagView {
   configured: boolean
   started: boolean
+  locked: boolean
+  bindUntilAt: number | null
+  bindOffer: number | null
   lastError: { at: number; action: string; detail: string } | null
   lastIncomingAt: number | null
-  deniedChats: Array<{ id: number; at: number; kind: 'user' | 'group' }>
+  deniedChats: Array<{ id: number; at: number }>
 }
 
 interface OnboardProgressView {
@@ -253,6 +256,8 @@ interface DesktopApi {
     setConfig(patch: object): Promise<TelegramConfigView>
     status(): Promise<boolean>
     diag(): Promise<TelegramDiagView>
+    bindStart(): Promise<{ ok: boolean; message: string }>
+    bindCancel(): Promise<{ ok: boolean; message: string }>
   }
   appearance: {
     getConfig(): Promise<AppearanceConfigView>

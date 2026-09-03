@@ -143,7 +143,10 @@ export interface TelegramConfig {
   enabled: boolean
   /** BotFather 颁发的机器人 token。 */
   token: string
-  /** 允许使用的用户 ID(逗号分隔;空 = 允许所有)。 */
+  /**
+   * 允许的用户 ID(逗号分隔)。**留空 = 锁定**:机器人不服务任何聊天、不执行任何指令
+   * (私聊等于远程操控电脑,只允许桌面端主人自己的 ID;首次使用走「绑定我的 ID」流程)。
+   */
   allowedUserIds: string
   /** 默认对话模式:非指令消息自动进入纯对话(无需先发「进入」)。 */
   autoChat: boolean

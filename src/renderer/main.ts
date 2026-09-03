@@ -700,6 +700,7 @@ async function openDrawer(): Promise<void> {
 
 function closeDrawer(): void {
   drawerOpen = false
+  clearTgBindTimer()
   $id('drawer').classList.add('hidden')
 }
 
@@ -1539,6 +1540,15 @@ async function loadQQConfig(): Promise<void> {
 
 // ---- Telegram 机器人 ----
 
+let tgBindTimer: number | null = null
+
+function clearTgBindTimer(): void {
+  if (tgBindTimer !== null) {
+    window.clearInterval(tgBindTimer)
+    tgBindTimer = null
+  }
+}
+
 async function loadTelegramConfig(): Promise<void> {
   try {
     const config = await API.telegram.getConfig()
@@ -1548,25 +1558,76 @@ async function loadTelegramConfig(): Promise<void> {
     input('tg-autochat').checked = config.autoChat === true
     input('tg-report').checked = config.report === true
     const diag = await API.telegram.diag()
-    const lines: string[] = []
-    if (!config.enabled || !config.token) {
-      lines.push('')
-    } else if (diag.started) {
-      lines.push('✓ Telegram 机器人运行中(长轮询)')
-    } else {
-      lines.push('⚠️ Telegram 未运行(令牌无效、网络不通或已停止;看服务日志)')
-    }
-    if (diag.lastError !== null) {
-      lines.push(`最近失败(${diag.lastError.action}):${diag.lastError.detail.slice(0, 120)}`)
-    }
-    if (diag.deniedChats.length > 0) {
-      const latest = diag.deniedChats[diag.deniedChats.length - 1]
-      lines.push(`有人尝试使用被拒绝(${latest.kind === 'user' ? '私聊' : '群组'} ID:${latest.id}):如是你自己,把它加入「允许的用户 ID」`)
-    }
-    $id('tg-status').textContent = lines.filter((line) => line !== '').join('\n')
+    renderTelegramStatus(config, diag)
   } catch {
     // 忽略
   }
+}
+
+/** 渲染 Telegram 状态行 + 绑定窗口 UI(锁定提示/等待消息/确认 ID)。 */
+function renderTelegramStatus(config: TelegramConfigView, diag: TelegramDiagView): void {
+  const lines: string[] = []
+  const bindBtn = $id('btn-tg-bind') as HTMLButtonElement
+  if (!config.enabled || !config.token) {
+    lines.push('')
+  } else if (diag.locked) {
+    lines.push('🔒 锁定:未配置「允许的用户 ID」,机器人不服务任何聊天。点上方「🔐 绑定我的 ID」或手动填入')
+  } else if (diag.started) {
+    lines.push('✓ Telegram 运行中(仅服务白名单中的用户)')
+  } else {
+    lines.push('⚠️ Telegram 未运行(令牌无效、网络不通或已停止;看服务日志)')
+  }
+  if (diag.lastError !== null) lines.push(`最近失败(${diag.lastError.action}):${diag.lastError.detail.slice(0, 120)}`)
+  if (diag.deniedChats.length > 0) {
+    const latest = diag.deniedChats[diag.deniedChats.length - 1]
+    lines.push(`有未授权消息被拒(ID:${latest.id}):如是你自己,把它填入「允许的用户 ID」即可`)
+  }
+  $id('tg-status').textContent = lines.filter((line) => line !== '').join('\n')
+  $id('tg-bind-status').textContent = ''
+  // 绑定窗口状态:有 offer → 显示确认;窗口进行中 → 显示倒计时。
+  const area = $id('tg-bind-area')
+  const hint = $id('tg-bind-hint')
+  const confirmBtn = $id('btn-tg-bind-confirm')
+  const cancelBtn = $id('btn-tg-bind-cancel')
+  const bindUntil = diag.bindUntilAt
+  const bindActive = bindUntil !== null && bindUntil > Date.now()
+  if (diag.bindOffer !== null && bindActive) {
+    area.classList.remove('hidden')
+    confirmBtn.classList.remove('hidden')
+    cancelBtn.classList.remove('hidden')
+    hint.textContent = `✅ 已收到来自 ID ${diag.bindOffer} 的消息。确认后机器人只服务这个 ID(可稍后在输入框修改)。`
+  } else if (bindActive) {
+    area.classList.remove('hidden')
+    confirmBtn.classList.add('hidden')
+    cancelBtn.classList.remove('hidden')
+    hint.textContent = `⏳ 绑定窗口剩余 ${Math.ceil((bindUntil - Date.now()) / 1000)} 秒:用你的 Telegram 给机器人发任意一条消息…`
+  } else {
+    area.classList.add('hidden')
+    confirmBtn.classList.add('hidden')
+    cancelBtn.classList.add('hidden')
+    if (diag.bindOffer !== null && diag.locked) {
+      $id('tg-bind-status').textContent = '绑定窗口已过期(未确认),可重新开始'
+    }
+  }
+  bindBtn.classList.toggle('hidden', !diag.locked)
+}
+
+/** 绑定窗口期间轮询 diag(拿 bindOffer / 刷新倒计时)。 */
+function startTgBindPoll(): void {
+  clearTgBindTimer()
+  tgBindTimer = window.setInterval(async () => {
+    try {
+      const [config, diag] = await Promise.all([API.telegram.getConfig(), API.telegram.diag()])
+      renderTelegramStatus(config, diag)
+      const finished = !(diag.bindUntilAt !== null && diag.bindUntilAt > Date.now()) || diag.bindOffer !== null
+      if (finished) {
+        clearTgBindTimer()
+        if (diag.bindOffer !== null) S.toast('已收到你的 Telegram 消息,确认后即可使用', 'ok')
+      }
+    } catch {
+      clearTgBindTimer()
+    }
+  }, 1500)
 }
 
 // ---- 用量与费用 ----
@@ -2030,6 +2091,8 @@ function bind(): void {
   })
   input('tg-users').addEventListener('change', async () => {
     await API.telegram.setConfig({ allowedUserIds: input('tg-users').value.trim() })
+    clearTgBindTimer()
+    await loadTelegramConfig()
   })
   input('tg-autochat').addEventListener('change', async () => {
     await API.telegram.setConfig({ autoChat: input('tg-autochat').checked })
@@ -2037,6 +2100,33 @@ function bind(): void {
   input('tg-report').addEventListener('change', async () => {
     await API.telegram.setConfig({ report: input('tg-report').checked })
     S.toast(input('tg-report').checked ? '已开启主动汇报(完成/失败/审批/提问)' : '已关闭主动汇报', 'ok')
+  })
+  $id('btn-tg-bind').addEventListener('click', async () => {
+    const result = await API.telegram.bindStart()
+    S.toast(result.message, result.ok ? 'ok' : 'error')
+    await loadTelegramConfig()
+    if (result.ok) startTgBindPoll()
+  })
+  $id('btn-tg-bind-confirm').addEventListener('click', async () => {
+    try {
+      const diag = await API.telegram.diag()
+      if (diag.bindOffer === null) {
+        S.toast('没有待确认的 ID,请重新开始绑定', 'error')
+        return
+      }
+      input('tg-users').value = String(diag.bindOffer)
+      await API.telegram.setConfig({ allowedUserIds: String(diag.bindOffer) })
+      clearTgBindTimer()
+      S.toast(`已绑定 ID ${diag.bindOffer},机器人启用(仅服务该 ID)`, 'ok')
+      await loadTelegramConfig()
+    } catch (error) {
+      S.toast('绑定失败:' + String(error), 'error')
+    }
+  })
+  $id('btn-tg-bind-cancel').addEventListener('click', async () => {
+    await API.telegram.bindCancel()
+    clearTgBindTimer()
+    await loadTelegramConfig()
   })
 
   // 更新

@@ -12,8 +12,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { networkInterfaces, homedir } from 'node:os'
-import { createReadStream, readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, statSync, accessSync, constants, statfsSync, renameSync } from 'node:fs'
+import { networkInterfaces } from 'node:os'
+import { createReadStream, readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, statSync, accessSync, constants, statfsSync } from 'node:fs'
 import { dirname, extname, join, resolve, sep, basename } from 'node:path'
 import { app, nativeImage } from 'electron'
 import type { ConfigStore } from './config'
@@ -21,6 +21,7 @@ import type { EventHub } from './event-hub'
 import type { HarnessManager } from './harness'
 import { parseSchedDelay } from './qq-commands'
 import type { RemoteCommandProcessor } from './remote-commands'
+import { dshHomeOf, unarchiveInRegistry } from './workspace-registry'
 
 export interface RemoteConfig {
   enabled: boolean
@@ -385,26 +386,14 @@ export class RemoteGateway {
   }
 
   /**
-   * 恢复(取消归档)一个会话:把 sessionId 从 harness 工作区注册表的
-   * archivedSessionIds 中移除(harness 只提供 archiveSession,没有 unarchive RPC)。
+   * 恢复(取消归档)一个会话:从 harness 工作区注册表的 archivedSessionIds 移除
+   * (harness 只提供 archiveSession,没有 unarchive RPC,见 workspace-registry.ts)。
    * 注册表内存态在 harness 进程内:连接的是本应用托管的实例且当前无运行中会话时,
    * 自动重启一次让列表立即生效;外部托管实例则提示重启后生效。
    */
   private async unarchiveSession(sessionId: string): Promise<{ note: string }> {
-    const harnessConfig = this.config.get().harness
-    const home = typeof harnessConfig.dshHome === 'string' && harnessConfig.dshHome.trim() !== ''
-      ? harnessConfig.dshHome.trim()
-      : join(homedir(), '.dsh')
-    const file = join(home, 'storages', 'workspace.json')
-    if (!existsSync(file)) throw new Error('找不到工作区注册表文件(可能从未初始化)')
-    const parsed = JSON.parse(readFileSync(file, 'utf8')) as { global?: { archivedSessionIds?: string[] } }
-    const list = parsed.global?.archivedSessionIds
-    if (!Array.isArray(list)) throw new Error('工作区注册表结构异常(archivedSessionIds 缺失)')
-    if (list.indexOf(sessionId) < 0) throw new Error('该会话不在归档列表(可能已恢复或不存在)')
-    if (parsed.global !== undefined) parsed.global.archivedSessionIds = list.filter((id) => id !== sessionId)
-    const tmp = `${file}.${process.pid}.tmp`
-    writeFileSync(tmp, JSON.stringify(parsed, null, 2), 'utf8')
-    renameSync(tmp, file)
+    const home = dshHomeOf(this.config.get().harness.dshHome)
+    unarchiveInRegistry(home, sessionId)
     const status = this.harness.status()
     if (status.state === 'running' || status.state === 'starting') {
       // 本应用托管的实例:空闲(无运行中会话)时重启一次,让注册表内存态生效。

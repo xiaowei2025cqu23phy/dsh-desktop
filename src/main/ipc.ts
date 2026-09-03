@@ -155,6 +155,8 @@ export function registerIpc(deps: IpcDeps): void {
     ipcMain.handle('telegram:setConfig', (_event, patch: object) => telegramBot.setConfig(patch))
     ipcMain.handle('telegram:status', () => telegramBot.isStarted())
     ipcMain.handle('telegram:diag', () => telegramBot.diag())
+    ipcMain.handle('telegram:bindStart', () => telegramBot.bindStart())
+    ipcMain.handle('telegram:bindCancel', () => telegramBot.bindCancel())
   }
 
   // ---- 机器人提示词(工作=助手 / 对话=朋友,桌面端自定义) ----
