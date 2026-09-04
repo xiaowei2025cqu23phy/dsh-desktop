@@ -6,6 +6,7 @@ import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
 import { extname } from 'node:path'
 import type { AppearanceManager } from './appearance'
+import { probeCapabilities } from './capabilities'
 import type { ConfigStore, PreviewConfig } from './config'
 import { previewHarnessConfig } from './config'
 import type { RemoteGateway } from './gateway'
@@ -35,6 +36,7 @@ export interface IpcDeps {
 export function registerIpc(deps: IpcDeps): void {
   // ---- harness ----
   ipcMain.handle('harness:getStatus', () => deps.harness.status())
+  ipcMain.handle('harness:capabilities', () => probeCapabilities(deps.harness))
   ipcMain.handle('harness:getConfig', () => deps.config.get().harness)
   ipcMain.handle('harness:setConfig', (_event, patch: object) => {
     const next = deps.config.update('harness', patch)
@@ -50,6 +52,7 @@ export function registerIpc(deps: IpcDeps): void {
 
   // ---- 预览实例(实验版 harness,独立端口) ----
   ipcMain.handle('preview:getStatus', () => deps.preview?.status() ?? null)
+  ipcMain.handle('preview:capabilities', () => deps.preview === undefined ? null : probeCapabilities(deps.preview))
   ipcMain.handle('preview:getConfig', () => deps.config.get().preview)
   ipcMain.handle('preview:setConfig', (_event, patch: object) => {
     const next = deps.config.update('preview', patch) as PreviewConfig

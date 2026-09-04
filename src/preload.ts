@@ -8,6 +8,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 const api = {
   harness: {
     getStatus: () => ipcRenderer.invoke('harness:getStatus'),
+    capabilities: () => ipcRenderer.invoke('harness:capabilities'),
     getConfig: () => ipcRenderer.invoke('harness:getConfig'),
     setConfig: (patch: object) => ipcRenderer.invoke('harness:setConfig', patch),
     restart: () => ipcRenderer.invoke('harness:restart'),
@@ -17,6 +18,7 @@ const api = {
   },
   preview: {
     getStatus: () => ipcRenderer.invoke('preview:getStatus'),
+    capabilities: () => ipcRenderer.invoke('preview:capabilities'),
     getConfig: () => ipcRenderer.invoke('preview:getConfig'),
     setConfig: (patch: object) => ipcRenderer.invoke('preview:setConfig', patch),
     start: () => ipcRenderer.invoke('preview:start'),

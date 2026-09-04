@@ -10,6 +10,14 @@ interface HarnessStatus {
   pid: number | null
 }
 
+/** 实例能力探测结果:区分官方版与本地魔改版,列出可用 RPC 特性。 */
+interface InstanceCapabilitiesView {
+  reachable: boolean
+  source: 'official' | 'fork' | 'unknown'
+  probes: Array<{ method: string; label: string; ok: boolean | null; note?: string }>
+  checkedAt: number
+}
+
 interface ModelOptionView {
   id: string
   name?: string
@@ -188,6 +196,7 @@ interface DesktopApi {
   }
   harness: {
     getStatus(): Promise<HarnessStatus>
+    capabilities(): Promise<InstanceCapabilitiesView>
     getConfig(): Promise<unknown>
     setConfig(patch: object): Promise<HarnessStatus>
     restart(): Promise<void>
@@ -197,6 +206,7 @@ interface DesktopApi {
   }
   preview: {
     getStatus(): Promise<HarnessStatus | null>
+    capabilities(): Promise<InstanceCapabilitiesView | null>
     getConfig(): Promise<unknown>
     setConfig(patch: object): Promise<HarnessStatus | null>
     start(): Promise<void>

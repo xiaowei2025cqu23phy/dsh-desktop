@@ -46,6 +46,7 @@ let lastBaseUrl = ''
 /** 当前查看的实例:stable = 主实例(默认),preview = 实验预览实例。 */
 let viewSource: 'stable' | 'preview' = 'stable'
 let previewStatus: HarnessStatus | null = null
+let previewCaps: InstanceCapabilitiesView | null = null
   let drawerOpen = false
   let logsTimer: ReturnType<typeof setInterval> | null = null
   let webviewWallpaperKey: string | null = null
@@ -716,18 +717,52 @@ async function loadHarnessConfig(): Promise<void> {
   } catch (error) {
     S.toast(`读取服务配置失败:${String(error)}`, 'error')
   }
+  try {
+    renderInstanceCaps($id('cap-main'), await API.harness.capabilities())
+  } catch {
+    /* 能力探测失败不打扰 */
+  }
+}
+
+/** 渲染实例来源与能力清单(官方版兼容:魔改特性按探测结果显示,不假设存在)。 */
+function renderInstanceCaps(el: HTMLElement | null, caps: InstanceCapabilitiesView | null): void {
+  if (el === null) return
+  if (caps === null) {
+    el.textContent = '未启用(启用后显示实例来源与能力)'
+    return
+  }
+  if (!caps.reachable) {
+    el.textContent = '实例不可达:来源与能力未知'
+    return
+  }
+  const source = caps.source === 'fork'
+    ? '本地魔改版(自建 fork,带增强功能)'
+    : caps.source === 'official'
+      ? '官方版(npx 发布,下载即用)'
+      : '未知来源(旧版或第三方构建)'
+  const marks = caps.probes.map((probe) =>
+    `${probe.ok === true ? '✓' : probe.ok === false ? '—' : '·'} ${probe.label}`,
+  ).join('  ')
+  el.textContent = `来源:${source}\n能力:${marks}`
+  el.title = '官方版用户只下载官方 dsh 也能完整使用桌面端;“—”表示该增强需要本地魔改版,不会影响官方版任何功能'
 }
 
 /** 顶栏预览按钮角标 + 设置面板状态按钮。 */
 function refreshPreviewChip(): void {
   const btn = $id('btn-preview')
   const state = previewStatus?.state ?? 'idle'
+  const tag = previewCaps?.source === 'fork' ? '本地魔改' : previewCaps?.source === 'official' ? '官方版' : '预览'
   const label = state === 'running' || state === 'external'
-    ? '🧪 预览·运行中'
+    ? `🧪 ${tag}·运行中`
     : state === 'error'
-      ? '🧪 预览·错误'
-      : '🧪 预览'
+      ? `🧪 ${tag}·错误`
+      : `🧪 ${tag}`
   btn.textContent = viewSource === 'preview' ? `{ } ${label}` : label
+  btn.title = previewCaps?.source === 'fork'
+    ? '查看本地魔改版(fork)实例,改动 UI/引擎前先在这里验证'
+    : previewCaps?.source === 'official'
+      ? '查看官方版实例(独立端口/独立 DSH_HOME)'
+      : '查看实验预览实例(独立端口,改动 UI 前先在这里验证)'
   btn.classList.toggle('preview-active', viewSource === 'preview')
   btn.classList.toggle('stat-ok', state === 'running' || state === 'external')
   btn.classList.toggle('stat-err', state === 'error')
@@ -805,6 +840,15 @@ async function loadPreviewConfig(): Promise<void> {
   } catch (error) {
     S.toast(`读取预览配置失败:${String(error)}`, 'error')
   }
+  try {
+    const caps = await API.preview.capabilities()
+    previewCaps = caps
+    renderInstanceCaps($id('cap-preview'), caps)
+  } catch {
+    previewCaps = null
+    renderInstanceCaps($id('cap-preview'), null)
+  }
+  refreshPreviewChip()
 }
 
 async function savePreviewConfig(): Promise<void> {
