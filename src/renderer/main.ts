@@ -841,6 +841,12 @@ async function loadPreviewConfig(): Promise<void> {
     S.toast(`读取预览配置失败:${String(error)}`, 'error')
   }
   try {
+    const enabled = $id('pv-enabled') as HTMLInputElement
+    if (!enabled.checked) {
+      previewCaps = null
+      renderInstanceCaps($id('cap-preview'), null)
+      return
+    }
     const caps = await API.preview.capabilities()
     previewCaps = caps
     renderInstanceCaps($id('cap-preview'), caps)

@@ -57,6 +57,10 @@ export async function probeCapabilities(harness: HarnessManager, timeoutMs = 300
   } catch {
     /* 不可达:reachable 保持 false。 */
   }
+  // 实例不可达(未启动/停机中):直接返回,避免逐方法傻等超时。
+  if (!reachable) {
+    return { reachable: false, source: 'unknown', probes: [], checkedAt: Date.now() }
+  }
   const settled = await Promise.allSettled(
     PROBES.map(async (probe) => ({ ...probe, ok: await methodOk(client, probe.method, timeoutMs) })),
   )
