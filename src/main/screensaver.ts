@@ -37,6 +37,10 @@ export class ScreensaverController {
   private activatedAt = 0
   /** 最近一次退出时间:空闲自动激活的冷却(防止"点击关闭后立刻又弹出")。 */
   private lastDeactivatedAt = 0
+  /** 激活流程进行中(防并发:3 秒轮询会同时触发多次 activate)。 */
+  private activating = false
+  /** 最近一次空闲激活失败时间:失败后 5 分钟冷却,避免对不可用 harness 的激活风暴。 */
+  private lastActivateFailAt = 0
   /** 本次激活的来源(manual/idle),决定安全网是否生效。 */
   private activationOrigin: 'manual' | 'idle' | 'system' = 'manual'
 
@@ -122,75 +126,80 @@ export class ScreensaverController {
    *   manual 激活时机器往往并不空闲,安全网会误杀屏保,因此不启用。
    */
   async activate(origin: 'manual' | 'idle' | 'system' = 'manual'): Promise<void> {
-    if (this.active) return
+    if (this.active || this.activating) return
     if (origin !== 'manual' && Date.now() - this.lastDeactivatedAt < 300000) {
       console.log('[screensaver] 退出冷却中(5 分钟),跳过自动激活 origin=', origin)
       return
     }
     this.activationOrigin = origin
-    // 确保 harness 可用(托管模式自动拉起,并等待就绪)。
-    const status = this.harness.status()
-    if (status.state === 'idle' || status.state === 'stopped' || status.state === 'error') {
-      if (this.config.get().harness.mode !== 'external') {
-        await this.harness.restart()
-      }
-    }
-    const deadline = Date.now() + 120000
-    for (;;) {
-      const current = this.harness.status()
-      if (current.state === 'running' || current.state === 'external') break
-      if (current.state === 'error') {
-        throw new Error(`harness 不可用:${current.error ?? '未知错误'}`)
-      }
-      if (Date.now() > deadline) {
-        throw new Error('harness 启动超时,请查看服务日志')
-      }
-      await sleep(500)
-    }
-    this.active = true
-    this.sessionId = null
-    this.lastSeq = 0
-    this.activatedAt = Date.now()
-    const display = screen.getPrimaryDisplay()
-    const win = new BrowserWindow({
-      x: display.bounds.x,
-      y: display.bounds.y,
-      width: display.bounds.width,
-      height: display.bounds.height,
-      fullscreen: true,
-      frame: false,
-      autoHideMenuBar: true,
-      skipTaskbar: true,
-      backgroundColor: '#05070d',
-      alwaysOnTop: true,
-      webPreferences: {
-        preload: join(__dirname, '..', 'preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-    })
-    this.window = win
-    win.setAlwaysOnTop(true, 'screen-saver')
-    win.setMenu(null)
-    win.on('closed', () => {
-      if (this.window === win) this.window = null
-      this.active = false
-    })
-    win.on('leave-full-screen', () => this.deactivate('leave-fullscreen'))
-    // 主进程输入兜底:任何真实键盘/鼠标输入都退出 —— 不依赖渲染进程 JS 状态,
-    // 即使页面崩溃也能关闭。宽限 2 秒避免窗口打开瞬间的合成事件误触发。
-    // 排除 mouseMove:鼠标抖动/合成移动不应触发退出。
-    win.webContents.on('before-input-event', (_event, input) => {
-      if (input.type === 'keyDown' || input.type === 'mouseDown' || input.type === 'mouseWheel') {
-        if (Date.now() - this.activatedAt > 2000) {
-          this.deactivate('input')
+    this.activating = true
+    try {
+      // 确保 harness 可用(托管模式自动拉起,并等待就绪)。
+      const status = this.harness.status()
+      if (status.state === 'idle' || status.state === 'stopped' || status.state === 'error') {
+        if (this.config.get().harness.mode !== 'external') {
+          await this.harness.restart()
         }
       }
-    })
-    const debugKeep = process.argv.includes('--ss-debug')
-    await win.loadFile(join(__dirname, '..', 'renderer', 'screensaver.html'), debugKeep ? { query: { keep: '1' } } : undefined)
-    console.log('[screensaver] 窗口已加载,active=', this.active)
+      const deadline = Date.now() + 120000
+      for (;;) {
+        const current = this.harness.status()
+        if (current.state === 'running' || current.state === 'external') break
+        if (current.state === 'error') {
+          throw new Error(`harness 不可用:${current.error ?? '未知错误'}`)
+        }
+        if (Date.now() > deadline) {
+          throw new Error('harness 启动超时,请查看服务日志')
+        }
+        await sleep(500)
+      }
+      this.active = true
+      this.sessionId = null
+      this.lastSeq = 0
+      this.activatedAt = Date.now()
+      const display = screen.getPrimaryDisplay()
+      const win = new BrowserWindow({
+        x: display.bounds.x,
+        y: display.bounds.y,
+        width: display.bounds.width,
+        height: display.bounds.height,
+        fullscreen: true,
+        frame: false,
+        autoHideMenuBar: true,
+        skipTaskbar: true,
+        backgroundColor: '#05070d',
+        alwaysOnTop: true,
+        webPreferences: {
+          preload: join(__dirname, '..', 'preload.js'),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+        },
+      })
+      this.window = win
+      win.setAlwaysOnTop(true, 'screen-saver')
+      win.setMenu(null)
+      win.on('closed', () => {
+        if (this.window === win) this.window = null
+        this.active = false
+      })
+      win.on('leave-full-screen', () => this.deactivate('leave-fullscreen'))
+      // 主进程输入兜底:任何真实键盘/鼠标输入都退出 —— 不依赖渲染进程 JS 状态,
+      // 即使页面崩溃也能关闭。宽限 2 秒避免窗口打开瞬间的合成事件误触发。
+      // 排除 mouseMove:鼠标抖动/合成移动不应触发退出。
+      win.webContents.on('before-input-event', (_event, input) => {
+        if (input.type === 'keyDown' || input.type === 'mouseDown' || input.type === 'mouseWheel') {
+          if (Date.now() - this.activatedAt > 2000) {
+            this.deactivate('input')
+          }
+        }
+      })
+      const debugKeep = process.argv.includes('--ss-debug')
+      await win.loadFile(join(__dirname, '..', 'renderer', 'screensaver.html'), debugKeep ? { query: { keep: '1' } } : undefined)
+      console.log('[screensaver] 窗口已加载,active=', this.active)
+    } finally {
+      this.activating = false
+    }
   }
 
   /** 退出 AI 屏保(任务默认保留在后台继续运行)。 */
@@ -405,6 +414,8 @@ export class ScreensaverController {
     const cfg = this.config.get().screensaver
     if (!cfg.enabled || this.locked) return
     if (this.window !== null && !this.window.isDestroyed()) return
+    // 上一次激活失败后 5 分钟冷却:harness 不可用时不再每 3 秒发起一次激活(风暴)。
+    if (Date.now() - this.lastActivateFailAt < 300000) return
     // 退出冷却由 activate() 统一处理(system/idle 起源 5 分钟内拒绝)。
     const idleSeconds = powerMonitor.getSystemIdleTime()
     if (idleSeconds >= cfg.idleMinutes * 60) {
@@ -412,8 +423,7 @@ export class ScreensaverController {
         await this.activate('idle')
       } catch (error) {
         console.error('[screensaver] 激活失败:', error)
-        // 避免失败后立刻重试风暴:3 分钟后重试。
-        await sleep(180000)
+        this.lastActivateFailAt = Date.now()
       }
     }
   }

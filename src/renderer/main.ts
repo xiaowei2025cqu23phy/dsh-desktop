@@ -44,6 +44,8 @@ const STATE_LABEL: Record<string, string> = {
 }
 
 let lastBaseUrl = ''
+/** 最近一次成功读到的 launch token:IPC 偶发失败时沿用旧值,避免 URL 抖动导致内嵌页反复重载。 */
+let lastLaunchToken: string | null = null
 /** 当前查看的实例:stable = 主实例(默认),preview = 实验预览实例。 */
 let viewSource: 'stable' | 'preview' = 'stable'
 let previewStatus: HarnessStatus | null = null
@@ -174,7 +176,11 @@ async function refreshStatus(): Promise<void> {
     : status.baseUrl
   // 官方 0.1.2-rc.1+ 需要进程启动 token 才能换取访问 cookie;托管实例从日志捕获,
   // 这里把 token 附到根 URL 一次性完成鉴权(服务端随后重定向到干净地址)。
-  const launchToken = viewSource === 'preview' ? null : await API.harness.launchToken().catch(() => null)
+  // IPC 偶发失败时沿用上一次成功的 token,避免 URL 在「带 token/不带 token」间抖动
+  // 导致内嵌页反复重载。
+  let launchToken = viewSource === 'preview' ? null : await API.harness.launchToken().catch(() => null)
+  if (launchToken === null || launchToken === '') launchToken = lastLaunchToken
+  if (launchToken !== null && typeof launchToken === 'string') lastLaunchToken = launchToken
   let viewUrl = activeUrl
   if (launchToken !== null && typeof launchToken === 'string' && launchToken !== '') {
     const parsed = new URL(activeUrl)
@@ -1864,11 +1870,15 @@ async function loadUpdateInfo(): Promise<void> {
 function bind(): void {
   const view = harnessView()
   view.addEventListener('did-fail-load', (event) => {
-    webviewFailed = true
     const details = event as unknown as { errorCode?: number; errorDescription?: string }
-    $id('view-error-text').textContent = `加载失败(${String(details.errorCode)}):${details.errorDescription ?? '未知错误'}`
-    $id('view-error').classList.remove('hidden')
-    // 失败即排期重试(harness 启动期会先失败几次,服务起来后自动恢复)。
+    // ERR_ABORTED(-3) 是「新加载打断旧加载」的正常事件(重载/切源),不是失败:
+    // 当失败会亮出「harness 不可用」误报,并在每次重载间反复闪烁。
+    if (details.errorCode !== -3) {
+      webviewFailed = true
+      $id('view-error-text').textContent = `加载失败(${String(details.errorCode)}):${details.errorDescription ?? '未知错误'}`
+      $id('view-error').classList.remove('hidden')
+    }
+    // 失败或中止都排期重试(harness 启动期会先失败几次,服务起来后自动恢复)。
     scheduleWebviewRetry()
   })
   view.addEventListener('dom-ready', () => {
