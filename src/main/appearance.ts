@@ -13,6 +13,9 @@ import type { AppearanceConfig, ConfigStore, WallpaperSpec } from './config'
 
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']
 
+/** 单张壁纸 data URL 上限(约 30MB 成品):超出提示重新裁剪,避免大字符串压垮 IPC 与渲染进程。 */
+const MAX_WALLPAPER_DATA_URL = 30 * 1024 * 1024
+
 /** 参与哈希去重的图片扩展名(避免对目录里非图片文件反复读盘)。 */
 const HASHABLE_EXTENSIONS = new Set(IMAGE_EXTENSIONS)
 
@@ -89,6 +92,9 @@ export class AppearanceManager {
 
   /** 保存裁剪后的成品壁纸(data URL + cover 布设偏移)。 */
   async saveWallpaper(kind: WallpaperKind, dataUrl: string, position: { x: number; y: number }): Promise<WallpaperSpec> {
+    if (typeof dataUrl !== 'string' || dataUrl.length > MAX_WALLPAPER_DATA_URL) {
+      throw new Error('壁纸图片过大(超过 30MB),请缩小裁剪范围或换一张图片后重试')
+    }
     const mime = /^data:([a-z0-9/+-]+);base64,/i.exec(dataUrl)?.[1] ?? 'image/png'
     const extMap: Record<string, string> = {
       'image/jpeg': '.jpg',

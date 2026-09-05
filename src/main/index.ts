@@ -7,7 +7,8 @@
  */
 
 import { app, BrowserWindow, powerMonitor, shell } from 'electron'
-import { join } from 'node:path'
+import { createWriteStream, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { AppearanceManager } from './appearance'
 import { ConfigStore } from './config'
 import { EventHub } from './event-hub'
@@ -26,6 +27,34 @@ import { registerIpc } from './ipc'
 import { createMainWindow } from './windows'
 import { healProviderSettings, settingsPath } from './settings-heal'
 import { previewHarnessConfig } from './config'
+
+// 控制台镜像到 userData/desktop.log(打包版没有控制台,崩溃与诊断信息落盘可查)。
+function mirrorConsoleToFile(): void {
+  try {
+    const path = join(app.getPath('userData'), 'desktop.log')
+    mkdirSync(dirname(path), { recursive: true })
+    const stream = createWriteStream(path, { flags: 'a' })
+    const stamp = (): string => new Date().toISOString()
+    for (const level of ['log', 'info', 'warn', 'error'] as const) {
+      const original = console[level].bind(console)
+      console[level] = (...args: unknown[]) => {
+        original(...args)
+        stream.write(`[${stamp()}] [${level}] ${args.map((arg) => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')}\n`)
+      }
+    }
+  } catch {
+    // 日志不可用不影响应用运行。
+  }
+}
+mirrorConsoleToFile()
+
+// 渲染进程/子进程崩溃记录(无 crashpad 时也能定位「一点就断联」类问题)。
+app.on('render-process-gone', (_event, _webContents, details) => {
+  console.error(`[render-process-gone] reason=${details.reason} exitCode=${details.exitCode}`)
+})
+app.on('child-process-gone', (_event, details) => {
+  console.error(`[child-process-gone] type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`)
+})
 
 const SCREENSAVER_ARGS = ['/s', '-s', '--screensaver']
 const isScreensaverLaunch = (): boolean =>

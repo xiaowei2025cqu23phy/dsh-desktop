@@ -51,7 +51,23 @@ export class ScreensaverController {
 
   setConfig(patch: Partial<ScreensaverConfig>): ScreensaverConfig {
     const next = this.config.update('screensaver', patch)
+    // 已注册为系统屏保时,超时值必须与注册表同步(否则改了「空闲分钟」不生效)。
+    if (patch.idleMinutes !== undefined && typeof next.idleMinutes === 'number') {
+      void this.syncSystemTimeout(next.idleMinutes)
+    }
     return next
+  }
+
+  /** 已注册系统屏保时,把新的空闲分钟数写入注册表超时值(失败不影响本地配置)。 */
+  private async syncSystemTimeout(idleMinutes: number): Promise<void> {
+    if (process.platform !== 'win32') return
+    try {
+      if (!await this.systemScreensaverRegistered()) return
+      const timeout = String(Math.max(60, Math.round(idleMinutes * 60)))
+      await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'ScreenSaveTimeOut', '/t', 'REG_SZ', '/d', timeout, '/f'])
+    } catch {
+      // 注册表写入失败不影响配置保存;用户可在「注册为系统屏保」里重试。
+    }
   }
 
   /** 由应用入口调用:开始空闲轮询并注册 IPC。 */

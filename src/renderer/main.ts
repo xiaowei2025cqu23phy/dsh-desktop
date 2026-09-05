@@ -1429,12 +1429,26 @@ function bindWallpaperEditor(): void {
   })
 }
 
+/** 裁剪输出长边上限(2.5K):超大原图按此缩放,避免巨型 canvas/dataURL 压垮渲染进程。 */
+const WALLPAPER_OUTPUT_MAX = 2560
+
+/** 把输出尺寸限制在长边上限内(保持比例)。 */
+function boundedOutput(w: number, h: number): { w: number; h: number } {
+  if (w <= WALLPAPER_OUTPUT_MAX && h <= WALLPAPER_OUTPUT_MAX) return { w, h }
+  const scale = WALLPAPER_OUTPUT_MAX / Math.max(w, h)
+  return { w: Math.max(1, Math.round(w * scale)), h: Math.max(1, Math.round(h * scale)) }
+}
+
 async function applyWallpaperEditor(): Promise<void> {
   const e = editorState
   if (e === null) return
+  if (e.img.naturalWidth > 0 && (e.crop.w > WALLPAPER_OUTPUT_MAX || e.crop.h > WALLPAPER_OUTPUT_MAX)) {
+    S.toast(`原图较大,已按 ${WALLPAPER_OUTPUT_MAX}px 长边缩放后保存`, 'info')
+  }
   const out = document.createElement('canvas')
-  out.width = Math.max(1, Math.round(e.crop.w))
-  out.height = Math.max(1, Math.round(e.crop.h))
+  const size = boundedOutput(Math.max(1, Math.round(e.crop.w)), Math.max(1, Math.round(e.crop.h)))
+  out.width = size.w
+  out.height = size.h
   const ctx = out.getContext('2d')
   if (ctx === null) return
   ctx.drawImage(e.img, e.crop.x, e.crop.y, e.crop.w, e.crop.h, 0, 0, out.width, out.height)
