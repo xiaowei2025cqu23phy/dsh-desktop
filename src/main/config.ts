@@ -28,6 +28,11 @@ export interface HarnessConfig {
   dshHome: string | null
   /** 托管进程的工作目录(agent 无工作区任务的默认落点);空 = 主目录下的 dsh-workspace。 */
   cwd: string | null
+  /**
+   * 官方 0.1.2-rc.1+ 的 launch token:连接**外部已运行实例**时,该服务启动
+   * 输出里的 `?token=` 值(托管启动时桌面端自动捕获,留空即可)。
+   */
+  launchToken: string | null
 }
 
 /** 预览实例(实验版 harness):与主实例并存,独立端口/DSH_HOME,webview 可切换查看。 */
@@ -60,6 +65,7 @@ export function previewHarnessConfig(p: PreviewConfig): HarnessConfig {
     stopOnQuit: p.stopOnQuit,
     dshHome: p.dshHome,
     cwd: p.cwd,
+    launchToken: null,
   }
 }
 
@@ -313,6 +319,7 @@ const DEFAULTS: AppConfig = {
     dshHome: null,
     // 默认工作目录:独立目录,避免 agent 把产物写进应用安装目录或主目录。
     cwd: join(homedir(), 'dsh-workspace'),
+    launchToken: null,
   },
   preview: {
     enabled: false,

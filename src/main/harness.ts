@@ -47,7 +47,13 @@ export class HarnessManager extends EventEmitter {
   }
 
   client(): HarnessClient {
-    return new HarnessClient(this.baseUrl(), () => this.launchTokenValue)
+    return new HarnessClient(this.baseUrl(), () => this.config.launchToken ?? this.launchTokenValue)
+  }
+
+  /** 官方 0.1.2-rc.1+ 鉴权缺失时的错误文案(设置里的「连接令牌」引导)。 */
+  private authRequiredError(): string {
+    return `端口 ${this.config.port} 上的 dsh 服务需要访问令牌(官方 0.1.2-rc.1+ 浏览器鉴权)。` +
+      '请在该服务的启动输出中找到 `?token=` 值,粘贴到「设置 → Harness 服务 → 连接令牌」;或改用桌面端托管启动。'
   }
 
   /** 进程级访问 token(官方 0.1.2-rc.1+ 鉴权);旧版/外部模式返回 null。 */
@@ -73,7 +79,7 @@ export class HarnessManager extends EventEmitter {
   updateConfig(next: HarnessConfig): void {
     const restart = next.port !== this.config.port || next.url !== this.config.url ||
       next.command !== this.config.command || next.mode !== this.config.mode ||
-      next.dshHome !== this.config.dshHome
+      next.dshHome !== this.config.dshHome || next.launchToken !== this.config.launchToken
     this.config = next
     if (restart) void this.restart()
   }
@@ -125,11 +131,20 @@ export class HarnessManager extends EventEmitter {
       if (this.stopRequested || this.state === 'stopped' || this.state === 'starting' || this.state === 'probing') return
       if (this.child !== null) return // 托管进程还活着,mux 重连即可。
       void (async () => {
-        const ok = await this.client().probe(5000)
+        const client = this.client()
+        const ok = await client.probe(5000)
         if (this.stopRequested) return
         if (ok) {
           this.dshWaitCount = 0
           return // 外部实例仍在(短暂断线),mux 会自动重连。
+        }
+        // 401 = 服务在线但需要 launch token:停止重试,直接给出引导。
+        if (client.lastProbeFailure()?.code === 'http-401') {
+          this.dshWaitCount = 0
+          this.state = 'error'
+          this.error = this.authRequiredError()
+          this.emit('status', this.status())
+          return
         }
         // 端口上还有 dsh 页面 = 外部实例正在重启(RPC 未就绪),等它自己恢复,不要抢占端口。
         const occupied = await this.portProbe()
@@ -180,6 +195,14 @@ export class HarnessManager extends EventEmitter {
       if (ok) {
         this.state = 'external'
         this.error = null
+        this.emit('status', this.status())
+        return
+      }
+      // 401 = 服务在线但需要 launch token:等多久都不会好,直接给出引导,
+      // 而不是让用户对「30 秒未就绪」的笼统错误摸不着头脑。
+      if (client.lastProbeFailure()?.code === 'http-401') {
+        this.state = 'error'
+        this.error = this.authRequiredError()
         this.emit('status', this.status())
         return
       }

@@ -28,6 +28,7 @@ interface HarnessConfigView {
   stopOnQuit: boolean
   dshHome: string | null
   cwd: string | null
+  launchToken: string | null
 }
 
 const GATEWAY_PRESETS: Array<{ label: string; baseURL: string; api: string }> = [
@@ -726,6 +727,7 @@ async function loadHarnessConfig(): Promise<void> {
     input('cfg-command').value = config.command
     input('cfg-dshhome').value = config.dshHome ?? ''
     input('cfg-cwd').value = config.cwd ?? ''
+    input('cfg-launchtoken').value = config.launchToken ?? ''
   } catch (error) {
     S.toast(`读取服务配置失败:${String(error)}`, 'error')
   }
@@ -896,6 +898,7 @@ async function saveHarnessConfig(): Promise<void> {
       command: input('cfg-command').value.trim(),
       dshHome: input('cfg-dshhome').value.trim() || null,
       cwd: input('cfg-cwd').value.trim() || null,
+      launchToken: input('cfg-launchtoken').value.trim() || null,
     }
     await API.harness.setConfig(patch)
     S.toast('服务配置已保存', 'ok')

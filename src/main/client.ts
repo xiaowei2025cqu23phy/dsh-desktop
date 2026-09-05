@@ -57,6 +57,8 @@ export class HarnessClient {
   private cookie: string | null = null
   /** 单飞登录互斥。 */
   private loginFlight: Promise<string | null> | null = null
+  /** 最近一次 probe 的失败信息(null = 成功或从未探测)。 */
+  private probeFailure: { code: string; message: string } | null = null
 
   constructor(
     readonly baseUrl: string,
@@ -130,9 +132,17 @@ export class HarnessClient {
     try {
       const result = await this.rpc<{ version?: string }>('host.describe', {}, timeoutMs)
       return result !== null
-    } catch {
+    } catch (error) {
+      this.probeFailure = error instanceof HarnessError
+        ? { code: error.code, message: error.message }
+        : { code: 'unknown', message: String(error) }
       return false
     }
+  }
+
+  /** 最近一次 probe 的失败详情(null = 成功或从未探测);401 表示需要 launch token。 */
+  lastProbeFailure(): { code: string; message: string } | null {
+    return this.probeFailure
   }
 
   /** 一元 RPC 调用,返回业务值;失败抛 HarnessError。 */
