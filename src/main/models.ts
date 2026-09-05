@@ -100,11 +100,25 @@ export class ModelManager {
     return { groups: result.groups ?? [], failures: result.failures ?? [] }
   }
 
-  /** 当前默认模型(host.describe 的 provider/model 字段;未配置时为 null)。 */
+  /** 当前默认模型:官方 0.1.2-rc.1+ 走 session/modelCatalog,旧版走 host.describe;未配置时返回 null。 */
   async defaultSelection(): Promise<DefaultSelection | null> {
-    const result = await this.get().rpc<{ provider?: string; model?: string }>('host.describe')
-    if (typeof result.provider !== 'string' || typeof result.model !== 'string') return null
-    return { provider: result.provider, model: result.model }
+    const client = this.get()
+    try {
+      const catalog = await client.rpc<{ default?: { provider?: string; model?: string } }>('session.modelCatalog')
+      const def = catalog.default
+      if (typeof def?.provider === 'string' && typeof def.model === 'string') {
+        return { provider: def.provider, model: def.model }
+      }
+    } catch {
+      /* 旧版没有 modelCatalog:退回 host.describe。 */
+    }
+    try {
+      const result = await client.rpc<{ provider?: string; model?: string }>('host.describe')
+      if (typeof result.provider !== 'string' || typeof result.model !== 'string') return null
+      return { provider: result.provider, model: result.model }
+    } catch {
+      return null
+    }
   }
 
   /**

@@ -61,13 +61,9 @@ async function methodOk(client: HarnessClient, method: string, timeoutMs: number
 
 export async function probeCapabilities(harness: HarnessManager, timeoutMs = 3000): Promise<InstanceCapabilities> {
   const client = harness.client()
-  let reachable = false
-  try {
-    await client.rpc('host.describe', {}, Math.min(timeoutMs, 5000))
-    reachable = true
-  } catch {
-    /* 不可达:reachable 保持 false。 */
-  }
+  // 可达性判定复用主探测的协议协商(官方 0.1.2-rc.1+ 无 host/describe,'session/list'
+  // 是双方都有的最小只读端点)。
+  const reachable = await client.probe(Math.min(timeoutMs, 5000))
   // 实例不可达(未启动/停机中):直接返回,避免逐方法傻等超时。
   if (!reachable) {
     return { reachable: false, source: 'unknown', probes: [], checkedAt: Date.now() }

@@ -8,6 +8,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { HarnessClient } from './client'
+import type { RpcProtocolBox } from './client'
 import type { HarnessConfig } from './config'
 
 export type HarnessState =
@@ -41,13 +42,15 @@ export class HarnessManager extends EventEmitter {
   private restartTimer: ReturnType<typeof setTimeout> | null = null
   private restartAttempts = 0
   readonly logs: string[] = []
+  /** RPC 端点协议共享盒:一次协商,所有 client 实例(探测/网关/mux)共用。 */
+  private readonly protocolBox: RpcProtocolBox = { value: null }
 
   constructor(private config: HarnessConfig) {
     super()
   }
 
   client(): HarnessClient {
-    return new HarnessClient(this.baseUrl(), () => this.config.launchToken ?? this.launchTokenValue)
+    return new HarnessClient(this.baseUrl(), () => this.config.launchToken ?? this.launchTokenValue, this.protocolBox)
   }
 
   /** 官方 0.1.2-rc.1+ 鉴权缺失时的错误文案(设置里的「连接令牌」引导)。 */

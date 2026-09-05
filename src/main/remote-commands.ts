@@ -1023,7 +1023,9 @@ export class RemoteCommandProcessor {
   private async cmdStatus(): Promise<string> {
     const client = this.harness.client()
     try {
+      // 官方 0.1.2-rc.1+ 没有 host.describe:拿不到时降级为 '?'。
       const host = await client.rpc<{ version?: string; cwd?: string; attachedSessions?: number }>('host.describe')
+        .catch(() => ({}) as { version?: string; cwd?: string; attachedSessions?: number })
       const list = await client.rpc<{ items: Array<{ running?: boolean; blank?: boolean; sessionId: string; title?: string | null; projections?: { values?: { title?: unknown } } | null }> }>('session.list', {}, 20000)
       const total = (list.items ?? []).length
       const running = (list.items ?? []).filter((s) => s.running === true)

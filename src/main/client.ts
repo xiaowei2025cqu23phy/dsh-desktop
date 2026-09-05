@@ -52,6 +52,14 @@ export interface RpcReceipt {
   reason?: string
 }
 
+/** 端点协议协商状态(HarnessManager 共享:多个 client 实例必须同一协议)。 */
+export type RpcProtocol = 'slash' | 'dot' | null
+
+/** 可变的协议盒:多个 HarnessClient 实例共享一次协商结果。 */
+export interface RpcProtocolBox {
+  value: RpcProtocol
+}
+
 export class HarnessClient {
   /** 每次登录(`?token=` 换 cookie)后的会话 cookie(不含属性部分)。 */
   private cookie: string | null = null
@@ -63,7 +71,28 @@ export class HarnessClient {
   constructor(
     readonly baseUrl: string,
     private readonly launchToken: () => string | null = () => null,
+    /** 端点命名协议共享盒(官方 0.1.2-rc.1+ 斜杠 / 旧版点)。 */
+    private readonly protocolBox: RpcProtocolBox = { value: null },
   ) {}
+
+  /**
+   * 端点命名协议:官方 0.1.2-rc.1+ 用 `namespace/method`(斜杠,如
+   * `session/list`);旧版与自建 fork 用 `namespace.method`(点,如
+   * `session.list`)。probe 时对两个候选依次协商。
+   */
+  get protocol(): RpcProtocol {
+    return this.protocolBox.value
+  }
+
+  /** 把调用端点名映射到当前协议的 wire 形式(路径与 body.method 都用它)。 */
+  private wire(method: string): string {
+    return this.protocolBox.value === 'dot' ? method : method.replace('.', '/')
+  }
+
+  /** 按协议包装调用 payload:官方斜杠协议要求 `{args:{_request:…}}`(typert 签名). */
+  private wirePayload(payload: unknown): unknown {
+    return this.protocolBox.value === 'slash' ? { args: { _request: payload } } : payload
+  }
 
   /**
    * 官方 0.1.2-rc.1+ 鉴权:GET `/ ?token=`(redirect manual)换取持久签名 cookie,
@@ -127,17 +156,32 @@ export class HarnessClient {
     return await response.json() as RpcReceipt
   }
 
-  /** 探测目标地址是否为可用的 dsh harness(用轻量的 host.describe,避免会话列表冷启动慢)。 */
+  /**
+   * 探测目标地址是否为可用的 dsh harness,并协商端点命名协议与 payload
+   * 形状。先试官方 0.1.2-rc.1+ 的斜杠端点(`session/list` + `{args}` 包装),
+   * 再试旧版/自建 fork 的点端点(`session.list` + 裸 payload);第一个成功者
+   * 被固定为后续所有调用的协议。官方网关对"端点存在但参数形状不符"返回
+   * 业务错误码而非 404——这种响应同样确认协议(参数形状不影响探测)。
+   */
   async probe(timeoutMs = 8000): Promise<boolean> {
-    try {
-      const result = await this.rpc<{ version?: string }>('host.describe', {}, timeoutMs)
-      return result !== null
-    } catch (error) {
-      this.probeFailure = error instanceof HarnessError
-        ? { code: error.code, message: error.message }
-        : { code: 'unknown', message: String(error) }
-      return false
+    for (const [candidate, isSlash] of [['session/list', true], ['session.list', false]] as const) {
+      try {
+        await this.rpcRaw(candidate, isSlash ? { args: { _request: {} } } : {}, timeoutMs)
+        this.protocolBox.value = isSlash ? 'slash' : 'dot'
+        return true
+      } catch (error) {
+        if (isSlash && error instanceof HarnessError &&
+          (error.code === 'gateway/arguments-invalid' || error.code === 'gateway/internal')) {
+          // 端点存在(参数形状无关紧要):官方协议确认。
+          this.protocolBox.value = 'slash'
+          return true
+        }
+        this.probeFailure = error instanceof HarnessError
+          ? { code: error.code, message: error.message }
+          : { code: 'unknown', message: String(error) }
+      }
     }
+    return false
   }
 
   /** 最近一次 probe 的失败详情(null = 成功或从未探测);401 表示需要 launch token。 */
@@ -147,22 +191,27 @@ export class HarnessClient {
 
   /** 一元 RPC 调用,返回业务值;失败抛 HarnessError。 */
   async rpc<T>(method: string, payload: unknown = {}, timeoutMs = 30000): Promise<T> {
-    const response = await fetch(`${this.baseUrl}/api/${method}`, {
+    return this.rpcRaw<T>(this.wire(method), this.wirePayload(payload), timeoutMs)
+  }
+
+  /** 一元 RPC wire 传输:按已给定(协商好的)端点名发请求并解析响应。 */
+  private async rpcRaw<T>(wireMethod: string, payload: unknown = {}, timeoutMs = 30000): Promise<T> {
+    const response = await fetch(`${this.baseUrl}/api/${wireMethod}`, {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({
         type: 'client-request',
         rpcId: randomUUID(),
-        method,
+        method: wireMethod,
         payload,
       }),
       signal: AbortSignal.timeout(timeoutMs),
     })
     if (response.status === 401 && await this.reauthOnUnauthorized()) {
-      return await this.rpc<T>(method, payload, timeoutMs)
+      return await this.rpcRaw<T>(wireMethod, payload, timeoutMs)
     }
     if (!response.ok) {
-      throw new HarnessError('http-' + String(response.status), `HTTP ${response.status} on /api/${method}`)
+      throw new HarnessError('http-' + String(response.status), `HTTP ${response.status} on /api/${wireMethod}`)
     }
     const message = await response.json() as ServerResponse
     if (message.type !== 'server-response' || message.rpcId === undefined) {

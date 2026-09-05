@@ -2147,7 +2147,11 @@
     applyWallpaper(server)
     $('conn-status').textContent = '连接中…'
     $('conn-status').className = 'conn-status'
-    apiRpc('host.describe', {}).then(function (host) {
+    // 连通判定用双方都有的 session.list;host.describe 仅用于取展示信息,
+    // 官方 0.1.2-rc.1+ 没有该端点,拿不到就按空对象降级。
+    apiRpc('session.list', {}).then(function () {
+      return apiRpc('host.describe', {}).catch(function () { return {} })
+    }).then(function (host) {
       localStorage.setItem('dsh-server', server)
       localStorage.setItem('dsh-token', token)
       $('conn-status').textContent = '已连接 ✓'
