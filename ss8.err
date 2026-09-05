@@ -1,4 +1,0 @@
-
-DevTools listening on ws://127.0.0.1:9345/devtools/browser/b75391c1-0160-424d-a80b-d44c6f3f98be
-[qqbot:api] <<< Network error: fetch failed | Connect Timeout Error (attempted address: api.sgroup.qq.com:443, timeout: 10000ms)
-[1905441684] Connection failed: Network error [/gateway]: fetch failed | Connect Timeout Error (attempted address: api.sgroup.qq.com:443, timeout: 10000ms)
