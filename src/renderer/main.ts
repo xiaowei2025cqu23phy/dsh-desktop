@@ -101,10 +101,13 @@ async function syncWebviewWallpaper(): Promise<void> {
       return
     }
     await remove()
+    // fork 构建的 CSS Modules 类名带 hash 后缀,必须用子串选择器;暗化蒙版
+    // 保证壁纸全亮时正文仍可读(与主窗口 mask 同值)。
     const css = `html { background-image: url("${compressed}") !important; background-size: cover !important; ` +
       `background-position: ${position.x * 100}% ${position.y * 100}% !important; ` +
       `background-repeat: no-repeat !important; } ` +
-      `html, body, [class$="_frame"], [class$="_root"], [class$="_sidebarCol"] { background-color: transparent !important; }`
+      `html::before { content: ''; position: fixed; inset: 0; background: rgba(4, 6, 11, 0.55); z-index: 0; pointer-events: none; } ` +
+      `#root, html, body, [class*="_frame"], [class*="_root"], [class*="_sidebarCol"], [class*="_panel"], [class*="_area"], [class*="_body"] { background-color: transparent !important; }`
     webviewWallpaperKey = await view.insertCSS(css)
   } catch (error) {
     console.error('[wallpaper] 内嵌页面注入失败:', error)
@@ -1032,12 +1035,23 @@ function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
 }
 
-function applyWindowWallpaper(config: AppearanceConfigView): void {
+async function applyWindowWallpaper(config: AppearanceConfigView): Promise<void> {
   const body = document.body
   const windowSpec = config.window
   if (windowSpec.path !== null) {
-    body.style.setProperty('--wallpaper-image', `url("file:///${windowSpec.path.replace(/\\/g, '/')}")`)
-    body.style.setProperty('--wallpaper-position', `${windowSpec.position.x * 100}% ${windowSpec.position.y * 100}%`)
+    // data URL 通道:与 webview 注入同源,sandbox 渲染进程不依赖 file:// 解析。
+    try {
+      const { dataUrl, position } = await API.appearance.wallpaperData('window')
+      body.style.setProperty('--wallpaper-image', dataUrl === null ? `url("file:///${windowSpec.path.replace(/\\/g, '/')}")` : `url("${dataUrl}")`)
+      if (dataUrl !== null) {
+        body.style.setProperty('--wallpaper-position', `${position.x * 100}% ${position.y * 100}%`)
+      } else {
+        body.style.setProperty('--wallpaper-position', `${windowSpec.position.x * 100}% ${windowSpec.position.y * 100}%`)
+      }
+    } catch {
+      body.style.setProperty('--wallpaper-image', `url("file:///${windowSpec.path.replace(/\\/g, '/')}")`)
+      body.style.setProperty('--wallpaper-position', `${windowSpec.position.x * 100}% ${windowSpec.position.y * 100}%`)
+    }
     body.style.setProperty('--wallpaper-mask', String(config.mask))
     body.classList.add('has-wallpaper')
     $id('wall-window-name').textContent = windowSpec.path.split(/[\\/]/).pop() ?? ''
@@ -1056,7 +1070,7 @@ function applyWindowWallpaper(config: AppearanceConfigView): void {
 
 async function loadAppearance(): Promise<void> {
   try {
-    applyWindowWallpaper(await API.appearance.getConfig())
+    await applyWindowWallpaper(await API.appearance.getConfig())
   } catch (error) {
     S.toast(`读取外观配置失败:${String(error)}`, 'error')
   }

@@ -387,19 +387,18 @@ async function boot(): Promise<void> {
       `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
   }, 1000)
 
-  // 屏保壁纸:图片铺满 + 遮罩。
+  // 屏保壁纸:图片铺满 + 遮罩。走 wallpaperData(data URL)——sandbox 渲染进程对
+  // file:// 本地图常因路径编码/资源访问失败而不显示,data URL 无此问题。
   try {
-    const appearance = await API.appearance.getConfig()
-    if (appearance.screensaver.path !== null) {
-      document.body.style.setProperty(
-        '--wallpaper-image',
-        `url("file:///${appearance.screensaver.path.replace(/\\/g, '/')}")`,
-      )
+    const wallpaper = await API.appearance.wallpaperData('screensaver')
+    if (wallpaper?.dataUrl) {
+      document.body.style.setProperty('--wallpaper-image', `url("${wallpaper.dataUrl}")`)
       document.body.style.setProperty(
         '--wallpaper-position',
-        `${appearance.screensaver.position.x * 100}% ${appearance.screensaver.position.y * 100}%`,
+        `${wallpaper.position.x * 100}% ${wallpaper.position.y * 100}%`,
       )
-      document.body.style.setProperty('--wallpaper-mask', String(appearance.mask))
+      const mask = await API.appearance.getConfig().then(cfg => cfg.mask).catch(() => 0.55)
+      document.body.style.setProperty('--wallpaper-mask', String(mask))
       document.body.classList.add('has-wallpaper')
     }
   } catch {
