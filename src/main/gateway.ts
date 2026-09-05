@@ -26,7 +26,9 @@ import { dshHomeOf, unarchiveInRegistry } from './workspace-registry'
 /** 远程访问配置:直接复用 ConfigStore 的完整结构(监听地址/暂停/黑名单等)。 */
 export type RemoteConfig = ReturnType<ConfigStore['get']>['remote']
 
-/** 手机端允许调用的 RPC 白名单(纵深防御:token 之外的访问边界)。 */
+/** 手机端允许调用的 RPC 白名单(纵深防御:token 之外的访问边界)。
+ *  文件侧仅放行只读浏览预览(工作区门禁在 web/host 已设);写入类
+ *  (编辑/上传/重命名/解压)不在远程白名单,保持手机端只读。 */
 const ALLOWED_METHODS = new Set([
   'session.list',
   'session.history',
@@ -47,6 +49,13 @@ const ALLOWED_METHODS = new Set([
   'host.describe',
   'host.listEntries',
   'host.readTextFile',
+  'host.readPdfFile',
+  'host.readMediaFile',
+  'host.readFileRange',
+  'host.listZipEntries',
+  'host.readZipEntry',
+  'host.listTarEntries',
+  'host.readTarEntry',
 ])
 
 /** 容易超时的操作放宽超时。 */

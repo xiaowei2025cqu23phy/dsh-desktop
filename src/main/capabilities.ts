@@ -26,6 +26,17 @@ const PROBES = [
   { method: 'llm.models', label: '模型目录' },
   { method: 'host.listEntries', label: '侧边栏文件浏览(魔改)' },
   { method: 'host.readTextFile', label: '文本/图片预览(魔改)' },
+  { method: 'host.writeTextFile', label: '文件编辑(魔改)' },
+  { method: 'host.writeFileBytes', label: '文件上传(魔改)' },
+  { method: 'host.readFileRange', label: '文件下载(魔改)' },
+  { method: 'host.readPdfFile', label: 'PDF 预览(魔改)' },
+  { method: 'host.readMediaFile', label: '音视频预览(魔改)' },
+  { method: 'host.renameEntry', label: '重命名/移动(魔改)' },
+  { method: 'host.listZipEntries', label: 'zip/tar 归档浏览(魔改)' },
+  { method: 'host.readZipEntry', label: '归档条目预览(魔改)' },
+  { method: 'host.listTarEntries', label: 'tar.gz 浏览(魔改)' },
+  { method: 'host.readTarEntry', label: 'tar 条目预览(魔改)' },
+  { method: 'host.extractZipArchive', label: '归档解压(魔改)' },
 ]
 
 /**
