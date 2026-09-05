@@ -56,9 +56,9 @@ export class HarnessManager extends EventEmitter {
       '请在该服务的启动输出中找到 `?token=` 值,粘贴到「设置 → Harness 服务 → 连接令牌」;或改用桌面端托管启动。'
   }
 
-  /** 进程级访问 token(官方 0.1.2-rc.1+ 鉴权);旧版/外部模式返回 null。 */
+  /** 进程级访问 token(官方 0.1.2-rc.1+ 鉴权):配置的连接令牌优先,其次托管启动捕获值。 */
   getLaunchToken(): string | null {
-    return this.launchTokenValue
+    return this.config.launchToken ?? this.launchTokenValue
   }
 
   baseUrl(): string {
