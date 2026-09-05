@@ -1628,8 +1628,6 @@ async function loadQQConfig(): Promise<void> {
     input('qq-autochat').checked = config.autoChat === true
     input('qq-report').checked = config.report === true
     const botConfig = await API.bot.getConfig()
-    const taskPromptEl = $id('bot-task-prompt') as HTMLTextAreaElement
-    taskPromptEl.value = botConfig.taskPrompt
     const chatPromptEl = $id('bot-chat-prompt') as HTMLTextAreaElement
     chatPromptEl.value = botConfig.chatPrompt
     const diag = await API.qq.diag()
@@ -2027,10 +2025,6 @@ function bind(): void {
   input('qq-report').addEventListener('change', async () => {
     await API.qq.setConfig({ report: input('qq-report').checked })
     S.toast(input('qq-report').checked ? '已开启主动汇报(完成/失败/审批/提问)' : '已关闭主动汇报', 'ok')
-  })
-  $id('bot-task-prompt').addEventListener('change', async () => {
-    await API.bot.setConfig({ taskPrompt: ($id('bot-task-prompt') as HTMLTextAreaElement).value.trim() })
-    S.toast('工作模式提示词已保存', 'ok')
   })
   $id('usage-multiplier').addEventListener('change', async () => {
     const value = Number(($id('usage-multiplier') as HTMLInputElement).value)

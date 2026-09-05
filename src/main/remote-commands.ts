@@ -670,14 +670,17 @@ export class RemoteCommandProcessor {
   }
 
   /**
-   * 注入模式提示词:工作=助手,对话=朋友(桌面端可自定义;空则不注入);角色设定叠加。
-   * 附带的「系统注记」用于压制模型对运行时上下文注入文本(Current runtime context /
-   * DSH file policy 等系统说明)的复述与评论——GLM 类模型常因此跑偏/断档。
+   * 注入模式提示词:纯对话(闲聊)= 朋友模式(桌面端可自定义;空则不注入);工作模式
+   * 直接透传原文——harness 自身是成熟框架、自带完整系统提示词,QQ 不再叠加
+   * "任务/工作区助手"角色壳。附带的「系统注记」仅用于纯对话(压制模型对运行时
+   * 上下文注入文本(Current runtime context / DSH file policy 等系统说明)的复述
+   * 与评论——GLM 类模型常因此跑偏/断档)。
    */
   private withModePrompt(mode: 'task' | 'chat', text: string): string {
+    if (mode === 'task') return text
     const bot = this.config?.get().bot
-    const prompt = bot?.[mode === 'task' ? 'taskPrompt' : 'chatPrompt']?.trim() ?? ''
-    const character = mode === 'chat' ? bot?.character?.trim() ?? '' : ''
+    const prompt = bot?.chatPrompt?.trim() ?? ''
+    const character = bot?.character?.trim() ?? ''
     const sections: string[] = []
     if (character !== '') sections.push(`[角色设定]\n${character}`)
     if (prompt !== '') sections.push(`[模式设定]\n${prompt}`)

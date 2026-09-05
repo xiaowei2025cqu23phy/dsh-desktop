@@ -70,7 +70,7 @@ export interface ScreensaverConfig {
   idleMinutes: number
   /** 进入屏保时自动启动一个 agent 任务(默认关闭:空闲只显示环境画面,不烧资源)。 */
   autoTask: boolean
-  /** 自动任务提示词。 */
+  /** 自动任务提示词(屏保自动任务使用;QQ/Telegram 工作模式不再读取——harness 自带系统提示词)。 */
   taskPrompt: string
   /** 任务工作目录(空则使用 harness 默认)。 */
   taskCwd: string | null
@@ -378,7 +378,7 @@ const DEFAULTS: AppConfig = {
   namedChatSessions: [],
   scheduledTasks: [],
   bot: {
-    taskPrompt: '你是一个专业、高效的 AI 助手。执行任务时请条理清晰、直接给出可用的结果,必要时说明关键步骤。',
+    taskPrompt: '',
     chatPrompt: '你现在是用户的朋友。请用轻松、亲切、口语化的语气聊天,像朋友一样自然,不要过于正式。',
     character: '',
   },
