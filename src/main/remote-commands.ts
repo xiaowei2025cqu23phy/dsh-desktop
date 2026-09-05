@@ -152,6 +152,14 @@ interface LiveView {
   timer: ReturnType<typeof setInterval> | null
 }
 
+/** 会话跟随:进入(私聊)后该会话的回合输出主动推送;「不跟随」/退出对话关闭。 */
+interface ChatFollow {
+  channel: string
+  userId: string
+  pushTarget?: { scope: string; targetId: string }
+  ts: number
+}
+
 /** 待审批项。 */
 interface PendingApproval {
   rpcId: string
@@ -235,6 +243,8 @@ export class RemoteCommandProcessor {
   private chatReplyBuffer = new Map<string, string>()
   /** 会话的现场播报状态(QQ/Telegram 可见 agent 过程)。 */
   private liveViews = new Map<string, LiveView>()
+  /** 会话跟随(私聊进入后自动登记;该会话的任何回合输出都主动推送)。 */
+  private chatFollows = new Map<string, ChatFollow>()
   /** 无工作区任务的"默认任务会话"(按 channel:userId 复用;「任务 新:」另起;重启后沿用配置持久化)。 */
   private defaultTaskSessions = new Map<string, string>()
   /** 已自动命名过的对话会话(进程内去重;标题让列表可读,不再满屏"新会话";重启后沿用配置持久化)。 */
@@ -883,6 +893,10 @@ export class RemoteCommandProcessor {
       '播报 / 静音 — 任务过程现场播报开关(默认静默,需要时开启)',
       '  例:播报',
       '  例:静音',
+      '跟随 [会话id] — 会话输出主动推送(私聊进入会话后默认自动跟随;「不跟随」停止)',
+      '  例:跟随(当前会话)',
+      '  例:跟随 session-xxxxxxxx',
+      '  例:不跟随',
       '',
       '✅ 审批与提问(agent 需要你决定时)',
       '允许 — 允许当前待审批操作',
@@ -964,6 +978,10 @@ export class RemoteCommandProcessor {
         const owner = this.ownerFromKey(key)
         return this.cmdBroadcast(owner.channel, owner.userId, command.sessionId, command.on)
       }
+      case 'follow':
+        return this.cmdFollow(key, command.sessionId, pushTarget)
+      case 'nofollow':
+        return this.cmdNofollow(key, command.sessionId)
       case 'run': {
         const denied = this.taskScopeGuard(pushTarget)
         if (denied !== null) return denied
@@ -1898,6 +1916,55 @@ export class RemoteCommandProcessor {
       : `🔇 已静音(${count} 个运行中的会话),恢复默认静默`
   }
 
+  /** 登记会话跟随(仅私聊;群聊只聊天不推送)。 */
+  private followSession(
+    sessionId: string,
+    channel: string,
+    userId: string,
+    pushTarget?: { scope: string; targetId: string },
+  ): void {
+    if (pushTarget?.scope !== 'c2c') return
+    this.chatFollows.set(sessionId, { channel, userId, pushTarget, ts: Date.now() })
+  }
+
+  /** 跟随 <会话id|空=当前对话>:该会话所有回合输出主动推送(自动跟随的同款入口)。 */
+  private cmdFollow(key: string, sessionId: string, pushTarget?: { scope: string; targetId: string }): string {
+    const owner = this.ownerFromKey(key)
+    const target = sessionId === '' ? this.chatContexts.get(key)?.sessionId ?? '' : sessionId
+    if (target === '') return '当前不在对话模式;发送「跟随 <会话id>」可跟随指定会话(列表见「会话」)'
+    const existing = this.sessionOwners.get(target)
+    if (existing !== undefined
+      && (existing.channel !== owner.channel || normUserId(existing.userId) !== normUserId(owner.userId))) {
+      return `会话 ${target.slice(0, 20)}… 不是由你发起,无法跟随`
+    }
+    this.chatFollows.set(target, {
+      channel: owner.channel, userId: owner.userId,
+      pushTarget: pushTarget ?? existing?.pushTarget, ts: Date.now(),
+    })
+    return `📌 已跟随会话 ${target.slice(0, 20)}…:该会话的输出(含你不在时产生的回复)都会主动推送给你;「不跟随」停止`
+  }
+
+  /** 不跟随 <会话id|空=全部>:停止该会话的主动推送。 */
+  private cmdNofollow(key: string, sessionId: string): string {
+    const owner = this.ownerFromKey(key)
+    const target = sessionId === '' ? this.chatContexts.get(key)?.sessionId ?? '' : sessionId
+    if (target !== '' && this.chatFollows.delete(target)) {
+      return `已取消跟随会话 ${target.slice(0, 20)}…`
+    }
+    let count = 0
+    for (const [sid, follow] of this.chatFollows) {
+      if (follow.channel !== owner.channel || normUserId(follow.userId) !== normUserId(owner.userId)) continue
+      if (sessionId !== '' && sid !== sessionId) continue
+      this.chatFollows.delete(sid)
+      count += 1
+    }
+    return count > 0
+      ? `已取消跟随 ${count} 个会话`
+      : sessionId !== ''
+        ? '该会话未在跟随中(私聊进入会话后默认自动跟随;「跟随」手动开启)'
+        : '当前没有跟随的会话(私聊进入会话后默认自动跟随)'
+  }
+
   /** 任务/定时等「工作指令」仅限私聊:群聊拒绝,防刷屏与身份混淆。 */
   private taskScopeGuard(pushTarget?: { scope: string; targetId: string }): string | null {
     return pushTarget !== undefined && pushTarget.scope === 'group'
@@ -2122,6 +2189,7 @@ export class RemoteCommandProcessor {
         // 默认线程:内存中已激活 → 复用;配置里有 → 恢复;否则新建。
         const existing = this.chatContexts.get(ctxKey)
         if (existing !== undefined) {
+          this.followSession(existing.sessionId, this.ownerFromKey(key).channel, this.ownerFromKey(key).userId, pushTarget)
           return [
             `已在对话模式 ✓(会话 ${existing.sessionId},继续原对话)`,
             '现在直接发消息即可对话,发送「退出」结束对话模式。',
@@ -2137,6 +2205,7 @@ export class RemoteCommandProcessor {
           } catch { /* 查询失败按可用处理 */ }
           if (usable) {
             this.chatContexts.set(ctxKey, { sessionId: saved, label, workspace: null })
+            this.followSession(saved, this.ownerFromKey(key).channel, this.ownerFromKey(key).userId, pushTarget)
             return [
               `已在对话模式 ✓(会话 ${saved},继续原对话)`,
               '现在直接发消息即可对话;发「新对话」可另开一段。',
@@ -2170,6 +2239,7 @@ export class RemoteCommandProcessor {
           // 同一上下文已在该工作区:直接复用,不新建。
           const existing = this.chatContexts.get(ctxKey)
           if (!forceNew && existing !== undefined && sessionIndex < 0 && existing.workspace === (cwd ?? workspaceId)) {
+            this.followSession(existing.sessionId, this.ownerFromKey(key).channel, this.ownerFromKey(key).userId, pushTarget)
             return `已在该工作区「${target}」对话中 ✓(会话 ${existing.sessionId})\n直接发消息即可;「会话」切换,「退出」结束。`
           }
           // 归属判定:workspace.list 的 sessionIds ∪ cwd 落在工作区路径下的会话(排除空会话/已归档)。
@@ -2182,6 +2252,7 @@ export class RemoteCommandProcessor {
             const chosen = sessions[sessionIndex]
             this.sessionOwners.set(chosen.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
             this.chatContexts.set(ctxKey, { sessionId: chosen.sessionId, label: target, workspace: cwd ?? workspaceId })
+            this.followSession(chosen.sessionId, this.ownerFromKey(key).channel, this.ownerFromKey(key).userId, pushTarget)
             return [
               `已进入工作区「${target}」会话 ${sessionIndex + 1} ✓`,
               `会话: ${chosen.sessionId}`,
@@ -2204,6 +2275,7 @@ export class RemoteCommandProcessor {
       this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind })
       this.chatContexts.set(ctxKey, { sessionId: created.sessionId, label, workspace: cwd ?? workspaceId })
       this.persistChat(ctxKey)
+      this.followSession(created.sessionId, this.ownerFromKey(key).channel, this.ownerFromKey(key).userId, pushTarget)
       const lines = target === ''
         ? [
             '已进入对话模式 ✓(纯对话,不绑定工作区)',
@@ -2303,11 +2375,13 @@ export class RemoteCommandProcessor {
     if (ctx === undefined) return '当前不在对话模式。'
     const isPureChat = ctx.label.startsWith('(纯对话')
     this.chatContexts.delete(ctxKey)
+    const unfollowed = this.chatFollows.delete(ctx.sessionId)
+    const note = unfollowed ? '\n已停止跟随:该会话后续输出不再主动推送(「跟随」可重新开启)。' : ''
     if (isPureChat) {
       // 默认线程持久化在配置里:退出只离开"激活态",下次消息自动回到同一会话。
-      return `已退出对话模式。默认对话 ${ctx.sessionId.slice(0, 20)}… 保留;下次发消息自动回到本对话(发「新对话」另开一段)。`
+      return `已退出对话模式。默认对话 ${ctx.sessionId.slice(0, 20)}… 保留;下次发消息自动回到本对话(发「新对话」另开一段)。${note}`
     }
-    return `已退出工作区「${ctx.label}」对话模式。会话 ${ctx.sessionId.slice(0, 20)}… 保留;普通消息会回到你的默认对话(发「进入 <工作区名>」再次进入)。`
+    return `已退出工作区「${ctx.label}」对话模式。会话 ${ctx.sessionId.slice(0, 20)}… 保留;普通消息会回到你的默认对话(发「进入 <工作区名>」再次进入)。${note}`
   }
 
   private async cmdChatMessage(
@@ -2357,6 +2431,8 @@ export class RemoteCommandProcessor {
           pushTarget: owner.pushTarget,
           ts: Date.now(),
         })
+        // 每次都刷新跟随:进入会话(私聊)即自动关注,回合推送目标保持最新(msg_id 会过期)。
+        this.followSession(ctx.sessionId, owner.channel, owner.userId, owner.pushTarget)
       }
       // 首次文本消息给会话命名(首句前 24 字),列表不再满屏"新会话"。
       // 标记持久化:重启后不重复命名,避免旧会话标题被新消息首句覆盖。
@@ -2565,8 +2641,14 @@ export class RemoteCommandProcessor {
 
   /** 对话回合事件:chunk 增量实时流出(QQ 私聊流式)或缓冲;turn/end 收尾。 */
   private handleChatEvent(sessionId: string, owner: SessionOwner, ev: Record<string, unknown>): void {
-    const pending = this.chatReplies.get(sessionId)
-    if (pending === undefined) return
+    let pending = this.chatReplies.get(sessionId)
+    if (pending === undefined) {
+      // 会话跟随:用户没发消息但会话在输出(桌面/网页/定时触发的回合)也要推给关注者。
+      const follow = this.chatFollows.get(sessionId)
+      if (follow === undefined || this.push === null) return
+      pending = { channel: follow.channel, userId: follow.userId, pushTarget: follow.pushTarget, ts: Date.now() }
+      this.chatReplies.set(sessionId, pending)
+    }
     const streamable = this.chatStream !== null && owner.channel === 'qq' && owner.pushTarget?.scope === 'c2c'
     if (ev.type === 'assistant/chunk') {
       const chunk = isRecord(ev.data) && isRecord(ev.data.chunk) ? ev.data.chunk : null
@@ -2627,7 +2709,8 @@ export class RemoteCommandProcessor {
     const pending = this.chatReplies.get(sessionId)
     if (pending === undefined || this.push === null) return
     this.chatReplies.delete(sessionId)
-    if (Date.now() - pending.ts > 20 * 60 * 1000) return
+    // 跟随中的会话不设时效窗口(用户明确要跟到底);普通回复 20 分钟内有效。
+    if (!this.chatFollows.has(sessionId) && Date.now() - pending.ts > 20 * 60 * 1000) return
     const buffered = this.chatReplyBuffer.get(sessionId) ?? ''
     this.chatReplyBuffer.delete(sessionId)
     if (buffered.trim() !== '') {

@@ -29,6 +29,8 @@ export type QQCommand =
   | { kind: 'usage' }
   | { kind: 'character'; text: string }
   | { kind: 'broadcast'; sessionId: string; on: boolean }
+  | { kind: 'follow'; sessionId: string }
+  | { kind: 'nofollow'; sessionId: string }
   | { kind: 'newchat' }
   | { kind: 'unknown'; text: string }
 
@@ -98,6 +100,13 @@ export function parseCommand(content: string): QQCommand {
   }
   if (parts[0] === '静音' || parts[0] === '关闭播报' || parts[0] === 'mute') {
     return { kind: 'broadcast', sessionId: parts[1] ?? '', on: false }
+  }
+  // 会话跟随开关:跟随 [会话id] / 不跟随 [会话id](省略 id=当前对话会话)
+  if (parts[0] === '跟随' || parts[0] === 'follow' || parts[0] === '跟进') {
+    return { kind: 'follow', sessionId: parts[1] ?? '' }
+  }
+  if (parts[0] === '不跟随' || parts[0] === '取消跟随' || parts[0] === 'nofollow' || parts[0] === 'unfollow') {
+    return { kind: 'nofollow', sessionId: parts[1] ?? '' }
   }
   if (parts[0] === '停止' || parts[0] === 'cancel') {
     return { kind: 'cancel', sessionId: parts[1] ?? '' }
