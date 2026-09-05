@@ -53,16 +53,69 @@ export interface RpcReceipt {
 }
 
 export class HarnessClient {
-  constructor(readonly baseUrl: string) {}
+  /** 每次登录(`?token=` 换 cookie)后的会话 cookie(不含属性部分)。 */
+  private cookie: string | null = null
+  /** 单飞登录互斥。 */
+  private loginFlight: Promise<string | null> | null = null
+
+  constructor(
+    readonly baseUrl: string,
+    private readonly launchToken: () => string | null = () => null,
+  ) {}
 
   /**
-   * 应答服务端请求(审批 / 提问等 server-request 帧)。
+   * 官方 0.1.2-rc.1+ 鉴权:GET `/ ?token=`(redirect manual)换取持久签名 cookie,
+   * 后续请求凭 cookie 放行。旧版服务(无鉴权,GET / 直接 200)同样安全:无
+   * Set-Cookie 即视为无需登录,空 cookie 无害。
+   * @returns 会话 cookie(无鉴权服务返回 null)。
+   */
+  async login(): Promise<string | null> {
+    if (this.cookie !== null) return this.cookie
+    const token = this.launchToken()
+    if (token === null) return null
+    if (this.loginFlight !== null) return this.loginFlight
+    this.loginFlight = (async () => {
+      try {
+        const response = await fetch(`${this.baseUrl}/?token=${encodeURIComponent(token)}`, {
+          redirect: 'manual',
+          signal: AbortSignal.timeout(8000),
+        })
+        const setCookie = response.headers.get('set-cookie')
+        if (setCookie !== null) {
+          this.cookie = setCookie.split(';')[0] ?? null
+        }
+        return this.cookie
+      } catch {
+        return null
+      } finally {
+        this.loginFlight = null
+      }
+    })()
+    return this.loginFlight
+  }
+
+  /** 统一请求头:JSON 内容 + 已登录 cookie。 */
+  private headers(): Record<string, string> {
+    const result: Record<string, string> = { 'content-type': 'application/json' }
+    if (this.cookie !== null) result.cookie = this.cookie
+    return result
+  }
+
+  /** 401 时尝试一次重新鉴权(服务重启换 token 后 cookie 过期);成功则回 true。 */
+  private async reauthOnUnauthorized(): Promise<boolean> {
+    if (this.cookie === null && this.launchToken() === null) return false
+    this.cookie = null
+    await this.login()
+    return this.cookie !== null
+  }
+
+  /** 应答服务端请求(审批 / 提问等 server-request 帧)。
    * result 需携带原帧的 rpcId 对应的 value,原样透传给 harness 的 /api/respond。
    */
   async respond(rpcId: string, result: { ok: true; value: unknown }, timeoutMs = 15000): Promise<RpcReceipt> {
     const response = await fetch(`${this.baseUrl}/api/respond`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: this.headers(),
       body: JSON.stringify({ type: 'client-response', rpcId, result }),
       signal: AbortSignal.timeout(timeoutMs),
     })
@@ -86,7 +139,7 @@ export class HarnessClient {
   async rpc<T>(method: string, payload: unknown = {}, timeoutMs = 30000): Promise<T> {
     const response = await fetch(`${this.baseUrl}/api/${method}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: this.headers(),
       body: JSON.stringify({
         type: 'client-request',
         rpcId: randomUUID(),
@@ -95,6 +148,9 @@ export class HarnessClient {
       }),
       signal: AbortSignal.timeout(timeoutMs),
     })
+    if (response.status === 401 && await this.reauthOnUnauthorized()) {
+      return await this.rpc<T>(method, payload, timeoutMs)
+    }
     if (!response.ok) {
       throw new HarnessError('http-' + String(response.status), `HTTP ${response.status} on /api/${method}`)
     }
@@ -217,7 +273,7 @@ export class HarnessClient {
   ): Promise<void> {
     const response = await fetch(url, {
       signal,
-      headers: { accept: 'text/event-stream' },
+      headers: { accept: 'text/event-stream', ...this.headers() },
     })
     if (!response.ok || !response.body) {
       throw new Error(`mux 流 HTTP ${response.status}`)
@@ -260,6 +316,7 @@ async function wsSupported(url: string, signal: AbortSignal): Promise<boolean> {
     const response = await fetch(url, { signal, headers: { accept: 'text/event-stream' } })
     if (response.status === 426) return true
     void response.body?.cancel()
+    if (response.status === 401) return false
     return !response.ok
   } catch {
     return false

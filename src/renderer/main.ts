@@ -171,9 +171,18 @@ async function refreshStatus(): Promise<void> {
   const activeUrl = viewSource === 'preview' && previewStatus !== null && previewStatus.baseUrl !== ''
     ? previewStatus.baseUrl
     : status.baseUrl
-  if (activeUrl !== lastBaseUrl) {
-    lastBaseUrl = activeUrl
-    view.src = activeUrl
+  // 官方 0.1.2-rc.1+ 需要进程启动 token 才能换取访问 cookie;托管实例从日志捕获,
+  // 这里把 token 附到根 URL 一次性完成鉴权(服务端随后重定向到干净地址)。
+  const launchToken = viewSource === 'preview' ? null : await API.harness.launchToken().catch(() => null)
+  let viewUrl = activeUrl
+  if (launchToken !== null && typeof launchToken === 'string' && launchToken !== '') {
+    const parsed = new URL(activeUrl)
+    parsed.searchParams.set('token', launchToken)
+    viewUrl = parsed.href
+  }
+  if (viewUrl !== lastBaseUrl) {
+    lastBaseUrl = viewUrl
+    view.src = viewUrl
   }
   const modelSelect = select('model-select')
   if ((status.state === 'running' || status.state === 'external') && modelSelect.disabled) {

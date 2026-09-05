@@ -196,6 +196,7 @@ interface DesktopApi {
   }
   harness: {
     getStatus(): Promise<HarnessStatus>
+    launchToken(): Promise<string | null>
     capabilities(): Promise<InstanceCapabilitiesView>
     getConfig(): Promise<unknown>
     setConfig(patch: object): Promise<HarnessStatus>

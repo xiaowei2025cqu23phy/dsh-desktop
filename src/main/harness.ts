@@ -34,6 +34,8 @@ export class HarnessManager extends EventEmitter {
   managedPid: number | null = null
 
   private child: ReturnType<typeof spawn> | null = null
+  /** 官方 0.1.2-rc.1+ 的进程级 launch token:启动输出 `?token=` URL 时提取,供 webview/RPC 鉴权。 */
+  private launchTokenValue: string | null = null
   private stopRequested = false
   private probeTimer: ReturnType<typeof setTimeout> | null = null
   private restartTimer: ReturnType<typeof setTimeout> | null = null
@@ -45,7 +47,12 @@ export class HarnessManager extends EventEmitter {
   }
 
   client(): HarnessClient {
-    return new HarnessClient(this.baseUrl())
+    return new HarnessClient(this.baseUrl(), () => this.launchTokenValue)
+  }
+
+  /** 进程级访问 token(官方 0.1.2-rc.1+ 鉴权);旧版/外部模式返回 null。 */
+  getLaunchToken(): string | null {
+    return this.launchTokenValue
   }
 
   baseUrl(): string {
@@ -233,6 +240,7 @@ export class HarnessManager extends EventEmitter {
     if (this.child !== null || this.stopRequested) return
     this.state = 'starting'
     this.error = null
+    this.launchTokenValue = null
     this.log(`启动托管服务:${this.config.command.replace('{port}', String(this.config.port))}`)
     const { command, args } = splitCommand(this.config.command.replace('{port}', String(this.config.port)))
     const env: NodeJS.ProcessEnv = { ...process.env }
@@ -339,6 +347,13 @@ export class HarnessManager extends EventEmitter {
     for (const raw of line.split(/\r?\n/)) {
       const text = raw.trim()
       if (text === '') continue
+      // 新版官方 harness 启动打印带进程级 token 的 URL(`/?token=…`);提取后供
+      // webview 与 RPC 客户端完成一次性鉴权(换取持久 cookie)。
+      const tokenMatch = /token=([A-Za-z0-9_-]{32,})/.exec(text)
+      if (tokenMatch !== null && this.launchTokenValue === null) {
+        this.launchTokenValue = tokenMatch[1] ?? null
+        this.emit('log', `[auth] 已捕获进程访问 token(长度 ${tokenMatch[1]?.length ?? 0})`)
+      }
       this.log(`${isError ? '[err] ' : ''}${text}`)
     }
   }

@@ -36,6 +36,7 @@ export interface IpcDeps {
 export function registerIpc(deps: IpcDeps): void {
   // ---- harness ----
   ipcMain.handle('harness:getStatus', () => deps.harness.status())
+  ipcMain.handle('harness:launchToken', () => deps.harness.getLaunchToken())
   ipcMain.handle('harness:capabilities', () => probeCapabilities(deps.harness))
   ipcMain.handle('harness:getConfig', () => deps.config.get().harness)
   ipcMain.handle('harness:setConfig', (_event, patch: object) => {
