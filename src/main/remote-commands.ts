@@ -13,9 +13,9 @@
 import type { HarnessManager } from './harness'
 import type { ServerRequest } from './client'
 import type { ConfigStore } from './config'
-import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { join, resolve } from 'node:path'
 import { parseCommand, parseTaskOptions, type QQCommand } from './qq-commands'
 import { dshHomeOf, unarchiveInRegistry } from './workspace-registry'
 
@@ -1221,10 +1221,17 @@ export class RemoteCommandProcessor {
 
   // ---- 目录浏览(安全:仅限已注册工作区与预设根目录内) ----
 
-  /** 路径白名单校验:目标必须在某个已注册工作区或预设根目录之下。 */
+  /** 路径白名单校验:目标必须在某个已注册工作区或预设根目录之下(符号链接解析后)。 */
   private async allowPath(target: string): Promise<{ ok: boolean; message: string }> {
     if (target === '') return { ok: false, message: '用法:目录 <路径> 或 文件 <路径>' }
-    const normalized = resolve(target)
+    // Windows 路径大小写不敏感;先统一比较,再按平台语义解析真实路径。
+    const norm = (p: string): string => process.platform === 'win32' ? p.replace(/\\/g, '/').toLowerCase() : p.replace(/\\/g, '/')
+    let normalized: string
+    try {
+      normalized = norm(realpathSync(resolve(target)))
+    } catch {
+      return { ok: false, message: '路径不存在或无法解析(仅限工作区内文件)' }
+    }
     const client = this.harness.client()
     try {
       const ws = await client.rpc<{ items: Array<{ path?: string }> }>('workspace.list', {}, 20000)
@@ -1233,10 +1240,17 @@ export class RemoteCommandProcessor {
         roots.push(...(this.config.get().remote.presetWorkspaceRoots ?? []))
       }
       for (const root of roots) {
-        const r = resolve(root)
-        if (normalized === r || normalized.startsWith(r + sep)) return { ok: true, message: '' }
+        if (root === '' || root === null || root === undefined) continue
+        let realRoot: string
+        try {
+          realRoot = norm(realpathSync(resolve(root)))
+        } catch {
+          // 工作区根暂不可达(如网络盘):按字面比较兜底,仍要求前缀一致。
+          realRoot = norm(resolve(root))
+        }
+        if (normalized === realRoot || normalized.startsWith(realRoot + '/')) return { ok: true, message: '' }
       }
-      return { ok: false, message: '路径不在任何工作区或预设根目录内,已拒绝访问' }
+      return { ok: false, message: '路径不在任何工作区或预设根目录内,已拒绝访问(工作区之外的文件不提供浏览)' }
     } catch (error) {
       return { ok: false, message: `校验失败:${error instanceof Error ? error.message : String(error)}` }
     }
