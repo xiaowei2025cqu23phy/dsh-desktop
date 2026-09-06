@@ -135,7 +135,7 @@ export class HarnessManager extends EventEmitter {
       if (this.child !== null) return // 托管进程还活着,mux 重连即可。
       void (async () => {
         const client = this.client()
-        const ok = await client.probe(5000)
+        const ok = await client.probe(12000)
         if (this.stopRequested) return
         if (ok) {
           this.dshWaitCount = 0
@@ -336,7 +336,7 @@ export class HarnessManager extends EventEmitter {
     const deadline = Date.now() + 90000
     for (;;) {
       if (this.stopRequested || this.child === null) return
-      const ok = await client.probe(2000)
+      const ok = await client.probe(12000)
       if (this.stopRequested || this.child === null) return
       if (ok) {
         this.state = 'running'

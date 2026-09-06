@@ -53,9 +53,8 @@ let previewCaps: InstanceCapabilitiesView | null = null
   let drawerOpen = false
   let logsTimer: ReturnType<typeof setInterval> | null = null
   let webviewWallpaperKey: string | null = null
-  let webviewFailed = false
-  /** 内嵌页加载失败后的自动重试(重启后 harness 启动期会先失败几次)。 */
-  let webviewReloadTimer: ReturnType<typeof setTimeout> | null = null
+    /** 内嵌页加载失败后的自动重试(重启后 harness 启动期会先失败几次)。 */
+    let webviewReloadTimer: ReturnType<typeof setTimeout> | null = null
   /** 连续失败次数:成功(did-finish-load)清零;超过上限停止自动重试,避免死循环。 */
   let webviewFailStreak = 0
 
@@ -63,12 +62,14 @@ let previewCaps: InstanceCapabilitiesView | null = null
 function scheduleWebviewRetry(): void {
   const view = harnessView()
   if (webviewReloadTimer !== null || webviewFailStreak >= 12) return
-  webviewReloadTimer = setTimeout(() => {
-    webviewReloadTimer = null
-    webviewFailStreak += 1
-    if (webviewFailed) view.reload()
-  }, 2000)
-}
+    webviewReloadTimer = setTimeout(() => {
+      webviewReloadTimer = null
+      webviewFailStreak += 1
+      // 进入运行态后的重试由 refreshStatus 的 URL 校验驱动,不能只看 webviewFailed
+      // (错误页也会触发 did-finish-load,把该标志清掉)。
+      view.reload()
+    }, 2000)
+  }
 
 function harnessView(): WebviewElement {
   return document.getElementById('harness-view') as unknown as WebviewElement
@@ -188,7 +189,9 @@ async function refreshStatus(): Promise<void> {
     parsed.searchParams.set('token', launchToken)
     viewUrl = parsed.href
   }
-  if (viewUrl !== lastBaseUrl) {
+  // 仅当 harness 已就绪(running/external)才设置内嵌页源:启动期过早加载会
+  // 命中「HTTP 已监听、SPA 依赖的服务未就绪」的窗口,首次渲染空白页且不自动恢复。
+  if ((status.state === 'running' || status.state === 'external') && viewUrl !== lastBaseUrl) {
     lastBaseUrl = viewUrl
     view.src = viewUrl
   }
@@ -197,10 +200,22 @@ async function refreshStatus(): Promise<void> {
     modelSelect.disabled = false
     void loadModels()
   }
-  // harness 就绪后,若内嵌页面之前加载失败(启动期连接被拒),自动重载并重试到成功。
-  if ((status.state === 'running' || status.state === 'external') && webviewFailed) {
-    scheduleWebviewRetry()
-  }
+    // harness 就绪后,若内嵌页面仍不在 harness 源上(启动期连接被拒后的错误页,
+    // 错误页也会触发 did-finish-load,不能依赖 webviewFailed 标志),清零重试计数
+    // 并自动重载,直到成功进入 harness 页面。
+    if ((status.state === 'running' || status.state === 'external')) {
+      let current = ''
+      try {
+        current = view.getURL()
+      } catch {
+        current = ''
+      }
+      const origin = new URL(activeUrl).origin
+      if (current !== '' && !current.startsWith(origin)) {
+        webviewFailStreak = 0
+        scheduleWebviewRetry()
+      }
+    }
   if (status.state === 'error') {
     const text = $id('view-error-text')
     text.textContent = status.error ?? '未知错误'
@@ -1875,13 +1890,12 @@ function bind(): void {
   const view = harnessView()
   view.addEventListener('did-fail-load', (event) => {
     const details = event as unknown as { errorCode?: number; errorDescription?: string }
-    // ERR_ABORTED(-3) 是「新加载打断旧加载」的正常事件(重载/切源),不是失败:
-    // 当失败会亮出「harness 不可用」误报,并在每次重载间反复闪烁。
-    if (details.errorCode !== -3) {
-      webviewFailed = true
-      $id('view-error-text').textContent = `加载失败(${String(details.errorCode)}):${details.errorDescription ?? '未知错误'}`
-      $id('view-error').classList.remove('hidden')
-    }
+      // ERR_ABORTED(-3) 是「新加载打断旧加载」的正常事件(重载/切源),不是失败:
+      // 当失败会亮出「harness 不可用」误报,并在每次重载间反复闪烁。
+      if (details.errorCode !== -3) {
+        $id('view-error-text').textContent = `加载失败(${String(details.errorCode)}):${details.errorDescription ?? '未知错误'}`
+        $id('view-error').classList.remove('hidden')
+      }
     // 失败或中止都排期重试(harness 启动期会先失败几次,服务起来后自动恢复)。
     scheduleWebviewRetry()
   })
@@ -1890,11 +1904,10 @@ function bind(): void {
     $id('view-error').classList.add('hidden')
     void syncWebviewWallpaper()
   })
-  view.addEventListener('did-finish-load', () => {
-    webviewFailed = false
-    webviewFailStreak = 0
-    $id('view-error').classList.add('hidden')
-  })
+    view.addEventListener('did-finish-load', () => {
+      webviewFailStreak = 0
+      $id('view-error').classList.add('hidden')
+    })
 
   select('model-select').addEventListener('change', () => void applyModelSelection())
 

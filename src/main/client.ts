@@ -163,7 +163,7 @@ export class HarnessClient {
    * 被固定为后续所有调用的协议。官方网关对"端点存在但参数形状不符"返回
    * 业务错误码而非 404——这种响应同样确认协议(参数形状不影响探测)。
    */
-  async probe(timeoutMs = 8000): Promise<boolean> {
+  async probe(timeoutMs = 12000): Promise<boolean> {
     for (const [candidate, isSlash] of [['session/list', true], ['session.list', false]] as const) {
       try {
         await this.rpcRaw(candidate, isSlash ? { args: { _request: {} } } : {}, timeoutMs)

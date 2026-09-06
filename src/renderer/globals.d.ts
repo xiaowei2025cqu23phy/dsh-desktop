@@ -323,6 +323,7 @@ interface SharedHelpers {
 interface WebviewElement extends HTMLElement {
   src: string
   reload(): void
+  getURL(): string
   insertCSS(css: string): Promise<string>
   removeInsertedCSS(key: string): Promise<void>
   addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void
