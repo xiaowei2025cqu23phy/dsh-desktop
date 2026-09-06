@@ -97,8 +97,9 @@ async function syncWebviewWallpaper(): Promise<void> {
       await remove()
       return
     }
-    // 注入前用 canvas 压缩到最长边 2560 的 JPEG,避免超大 data URL 拖慢内嵌页面。
-    const compressed = await compressImageDataUrl(dataUrl, 2560, 0.82)
+    // 注入前用 canvas 压缩到最长边 1600 的 JPEG:插页样式表里的 data URL 过大
+    // 会被 Chromium 丢弃(仅 CSS 变量/样式存在该限制,img.src 没有)。
+    const compressed = await compressImageDataUrl(dataUrl, 1600, 0.82)
     if (compressed === null) {
       await remove()
       return
@@ -1055,19 +1056,22 @@ function clamp(v: number, min: number, max: number): number {
 
 async function applyWindowWallpaper(config: AppearanceConfigView): Promise<void> {
   const body = document.body
+  const bg = document.getElementById('wallpaper-bg') as HTMLImageElement | null
   const windowSpec = config.window
   if (windowSpec.path !== null) {
-    // data URL 通道:与 webview 注入同源,sandbox 渲染进程不依赖 file:// 解析。
+    // data URL 通道:大图经 img.src 承载(chromium 会丢弃 CSS 变量/内联样式中
+    // 超过 ~800KB 的 data URL,这里是此前主窗口壁纸黑底的原因)。
     try {
       const { dataUrl, position } = await API.appearance.wallpaperData('window')
-      body.style.setProperty('--wallpaper-image', dataUrl === null ? `url("file:///${windowSpec.path.replace(/\\/g, '/')}")` : `url("${dataUrl}")`)
-      if (dataUrl !== null) {
-        body.style.setProperty('--wallpaper-position', `${position.x * 100}% ${position.y * 100}%`)
-      } else {
-        body.style.setProperty('--wallpaper-position', `${windowSpec.position.x * 100}% ${windowSpec.position.y * 100}%`)
+      if (bg !== null && dataUrl !== null) {
+        bg.src = dataUrl
+        bg.style.objectPosition = `${position.x * 100}% ${position.y * 100}%`
+        bg.hidden = false
+      } else if (bg !== null) {
+        bg.hidden = true
       }
+      body.style.setProperty('--wallpaper-position', `${position.x * 100}% ${position.y * 100}%`)
     } catch {
-      body.style.setProperty('--wallpaper-image', `url("file:///${windowSpec.path.replace(/\\/g, '/')}")`)
       body.style.setProperty('--wallpaper-position', `${windowSpec.position.x * 100}% ${windowSpec.position.y * 100}%`)
     }
     body.style.setProperty('--wallpaper-mask', String(config.mask))
@@ -1075,7 +1079,7 @@ async function applyWindowWallpaper(config: AppearanceConfigView): Promise<void>
     $id('wall-window-name').textContent = windowSpec.path.split(/[\\/]/).pop() ?? ''
   } else {
     body.classList.remove('has-wallpaper')
-    body.style.removeProperty('--wallpaper-image')
+    if (bg !== null) bg.hidden = true
     body.style.removeProperty('--wallpaper-position')
     $id('wall-window-name').textContent = '默认深色'
   }

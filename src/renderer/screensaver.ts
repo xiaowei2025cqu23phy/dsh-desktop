@@ -387,12 +387,18 @@ async function boot(): Promise<void> {
       `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
   }, 1000)
 
-  // 屏保壁纸:图片铺满 + 遮罩。走 wallpaperData(data URL)——sandbox 渲染进程对
-  // file:// 本地图常因路径编码/资源访问失败而不显示,data URL 无此问题。
+  // 屏保壁纸:img 元素铺满 + 遮罩。走 wallpaperData(data URL)——chromium 对
+  // CSS 变量/内联样式中的大 data URL(>~800KB)会直接丢弃导致黑底,img 的
+  // src 没有该限制;sandbox 渲染进程对 file:// 本地图也不可靠。
   try {
     const wallpaper = await API.appearance.wallpaperData('screensaver')
     if (wallpaper?.dataUrl) {
-      document.body.style.setProperty('--wallpaper-image', `url("${wallpaper.dataUrl}")`)
+      const img = document.getElementById('ss-wallpaper') as HTMLImageElement | null
+      if (img !== null) {
+        img.src = wallpaper.dataUrl
+        img.style.objectPosition = `${wallpaper.position.x * 100}% ${wallpaper.position.y * 100}%`
+        img.hidden = false
+      }
       document.body.style.setProperty(
         '--wallpaper-position',
         `${wallpaper.position.x * 100}% ${wallpaper.position.y * 100}%`,

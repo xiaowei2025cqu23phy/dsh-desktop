@@ -26,12 +26,20 @@ body {
   overflow: hidden;
 }
 
-/* 壁纸层:图片铺满 + 遮罩,顶栏/抽屉毛玻璃透出。 */
-body.has-wallpaper {
-  background: var(--bg);
-  background-image: var(--wallpaper-image);
-  background-size: cover;
-  background-position: var(--wallpaper-position, center);
+/* 壁纸层:img 元素铺满(大 data URL 不能走 CSS 变量/内联样式)+ 遮罩,
+   顶栏/抽屉毛玻璃透出。 */
+#wallpaper-bg {
+  display: none;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: var(--wallpaper-position, center);
+  z-index: -2;
+}
+body.has-wallpaper #wallpaper-bg {
+  display: block;
 }
 body.has-wallpaper::before {
   content: "";
