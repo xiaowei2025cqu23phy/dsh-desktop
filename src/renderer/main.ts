@@ -2432,8 +2432,22 @@ function bind(): void {
   $id('btn-gw-save').addEventListener('click', () => void saveGatewayProvider())
 }
 
+/** 在设置面板显示当前构建版本与 commit,便于发现「跑的是旧包」的情况。 */
+async function showBuildInfo(): Promise<void> {
+  try {
+    const info = await API.app.info()
+    const el = $id('update-info')
+    if (el === null) return
+    const suffix = info.commit !== '' && info.commit !== undefined ? ` · ${info.commit}` : ''
+    el.textContent = `当前版本 v${info.version}${suffix}`
+  } catch {
+    // 版本信息获取失败不影响其它功能。
+  }
+}
+
 function init(): void {
   bind()
+  void showBuildInfo()
   void refreshStatus()
   setInterval(() => void refreshStatus(), 2000)
   void loadModels()

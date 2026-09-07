@@ -164,6 +164,22 @@ export class HarnessClient {
    * 业务错误码而非 404——这种响应同样确认协议(参数形状不影响探测)。
    */
   async probe(timeoutMs = 12000): Promise<boolean> {
+    // 协议已协商过:只探测当前协议对应的端点,避免每次重启探测都重试
+    // 两个候选(会话多时 session.list 较重,反复探测会拖慢 waitReady)。
+    if (this.protocolBox.value !== null) {
+      const [wireName, payload] = this.protocolBox.value === 'slash'
+        ? ['session/list', { args: { _request: {} } } as unknown]
+        : ['session.list', {}]
+      try {
+        await this.rpcRaw(wireName, payload, timeoutMs)
+        return true
+      } catch (error) {
+        this.probeFailure = error instanceof HarnessError
+          ? { code: error.code, message: error.message }
+          : { code: 'unknown', message: String(error) }
+        return false
+      }
+    }
     for (const [candidate, isSlash] of [['session/list', true], ['session.list', false]] as const) {
       try {
         await this.rpcRaw(candidate, isSlash ? { args: { _request: {} } } : {}, timeoutMs)

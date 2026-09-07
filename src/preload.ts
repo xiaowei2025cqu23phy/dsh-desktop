@@ -171,6 +171,7 @@ const api = {
     applyPack: (id: string) => ipcRenderer.invoke('appearance:applyPack', id),
   },
   app: {
+    info: () => ipcRenderer.invoke('app:info'),
     openSettingsFolder: () => ipcRenderer.invoke('app:openSettingsFolder'),
     quit: () => ipcRenderer.invoke('app:quit'),
   },

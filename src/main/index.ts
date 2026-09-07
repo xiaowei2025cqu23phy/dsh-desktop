@@ -7,7 +7,7 @@
  */
 
 import { app, BrowserWindow, powerMonitor, shell } from 'electron'
-import { createWriteStream, mkdirSync } from 'node:fs'
+import { createWriteStream, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { AppearanceManager } from './appearance'
 import { ConfigStore } from './config'
@@ -28,18 +28,51 @@ import { createMainWindow } from './windows'
 import { healProviderSettings, settingsPath } from './settings-heal'
 import { previewHarnessConfig } from './config'
 
+// 开发模式(未打包,electron .)使用独立 userData:避免与打包版共享 config.json、
+// 单实例锁与日志,防止「开发实例把正式版顶掉 / 正式版被开发实例占锁」这类互踢。
+if (!app.isPackaged) {
+  try {
+    app.setPath('userData', join(app.getPath('appData'), 'DeepSeek Harness Desktop-dev'))
+  } catch {
+    // 设置失败则沿用默认,不影响启动。
+  }
+}
+
 // 控制台镜像到 userData/desktop.log(打包版没有控制台,崩溃与诊断信息落盘可查)。
 function mirrorConsoleToFile(): void {
   try {
     const path = join(app.getPath('userData'), 'desktop.log')
+    const maxBytes = 2 * 1024 * 1024
     mkdirSync(dirname(path), { recursive: true })
-    const stream = createWriteStream(path, { flags: 'a' })
+    const rotate = (): void => {
+      try {
+        rmSync(`${path}.1`, { force: true })
+        renameSync(path, `${path}.1`)
+      } catch {
+        // 旋转失败(占用等)则忽略,日志继续追加。
+      }
+    }
+    try {
+      if (statSync(path).size > maxBytes) rotate()
+    } catch {
+      // 文件尚不存在,无需旋转。
+    }
+    let stream = createWriteStream(path, { flags: 'a' })
+    let writtenBytes = 0
     const stamp = (): string => new Date().toISOString()
     for (const level of ['log', 'info', 'warn', 'error'] as const) {
       const original = console[level].bind(console)
       console[level] = (...args: unknown[]) => {
         original(...args)
-        stream.write(`[${stamp()}] [${level}] ${args.map((arg) => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')}\n`)
+        const line = `[${stamp()}] [${level}] ${args.map((arg) => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')}\n`
+        writtenBytes += line.length
+        if (writtenBytes > maxBytes) {
+          writtenBytes = 0
+          try { stream.end() } catch { /* 忽略 */ }
+          rotate()
+          stream = createWriteStream(path, { flags: 'a' })
+        }
+        stream.write(line)
       }
     }
   } catch {

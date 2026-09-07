@@ -3,7 +3,8 @@
  * 把远程 PWA(html/css/js/manifest)复制到 dist/remote,并把应用图标复制到两处。
  */
 
-import { copyFileSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { execSync } from 'node:child_process'
+import { copyFileSync, mkdirSync, readdirSync, statSync, writeFileSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -15,6 +16,26 @@ const remoteTargetDir = join(root, 'dist', 'remote')
 
 mkdirSync(targetDir, { recursive: true })
 mkdirSync(remoteTargetDir, { recursive: true })
+mkdirSync(join(root, 'dist', 'main'), { recursive: true })
+
+// 构建信息(版本 + commit + 时间):随 dist/main 打进 asar,界面可显示当前构建,
+// 避免「源码改了但 exe 是旧包」这类版本漂移问题难以发现。
+try {
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  let commit = ''
+  try {
+    commit = execSync('git rev-parse --short HEAD', { cwd: root, encoding: 'utf8', timeout: 3000 }).trim()
+  } catch {
+    commit = ''
+  }
+  writeFileSync(
+    join(root, 'dist', 'main', 'build-info.json'),
+    JSON.stringify({ version: pkg.version ?? '0.0.0', commit, builtAt: Date.now() }),
+    'utf8',
+  )
+} catch {
+  // 构建信息写入失败不影响资源复制。
+}
 
 let copied = 0
 for (const name of readdirSync(sourceDir)) {

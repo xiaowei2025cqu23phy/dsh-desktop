@@ -298,6 +298,7 @@ interface DesktopApi {
     applyPack(id: string): Promise<AppearanceConfigView>
   }
   app: {
+    info(): Promise<{ version: string; commit: string; builtAt: number }>
     openSettingsFolder(): Promise<{ opened: true }>
     quit(): Promise<void>
   }

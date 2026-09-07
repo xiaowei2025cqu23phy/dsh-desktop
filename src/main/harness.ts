@@ -3,9 +3,9 @@
  */
 
 import { spawn, execFile } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { HarnessClient } from './client'
 import type { RpcProtocolBox } from './client'
@@ -267,8 +267,17 @@ export class HarnessManager extends EventEmitter {
     this.state = 'starting'
     this.error = null
     this.launchTokenValue = null
-    this.log(`启动托管服务:${this.config.command.replace('{port}', String(this.config.port))}`)
-    const { command, args } = splitCommand(this.config.command.replace('{port}', String(this.config.port)))
+    // npx 兜底:如果命令是默认的 `npx @deepseek-ai/dsh` 形态,且本机已有可用的
+    // dsh(本地运行时/缓存),则直接 `node <bin>` 启动——这台机器上 npx 会在
+    // 解析依赖树时永久卡住,绕开它能显著提升启动可靠性(其它机器不受影响)。
+    let template = this.config.command.replace('{port}', String(this.config.port))
+    const resolved = rewriteNpxToLocal(template)
+    if (resolved !== null) {
+      this.log(`检测到本地 dsh,改用直连启动:${resolved}`)
+      template = resolved
+    }
+    this.log(`启动托管服务:${template}`)
+    const { command, args } = splitCommand(template)
     const env: NodeJS.ProcessEnv = { ...process.env }
     if (this.config.dshHome) env.DSH_HOME = this.config.dshHome
     // 工作目录:配置了用配置值,否则用主目录下的 dsh-workspace —— 避免 agent
@@ -277,16 +286,14 @@ export class HarnessManager extends EventEmitter {
     // 目录缺失会让 spawn 立刻 ENOENT(Node 不会替我们补建);先补建,
     // 否则预览/主实例一旦被清过用户目录就永远启动失败。
     if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true })
-    // Windows 上 npx/pnpm/yarn 等是 .cmd/.bat 批处理,直接 spawn 会抛 ENOENT/EINVAL,
-    // 导致托管服务永远起不来。Windows 下经 shell(cmd.exe)启动,由 cmd 负责批处理解析。
+    // Windows 上 npx/pnpm/yarn 等是 .cmd/.bat 批处理,直接 spawn 会抛 ENOENT/EINVAL。
+    // 用 shell 启动但传入「已安全转义的完整命令行」而不是 args 数组——既避免
+    // Node 的 DEP0190 弃用告警(参数拼接),也保留对含空格路径/引号参数的正确处理。
     const isWindows = process.platform === 'win32'
-    const child = spawn(command, args, {
-      env,
-      cwd,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: isWindows,
-    })
+    const cmdLine = [command, ...args].map((token) => quoteForShell(token)).join(' ')
+    const child = isWindows
+      ? spawn(cmdLine, [], { env, cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: true })
+      : spawn(command, args, { env, cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     this.child = child
     this.managedPid = child.pid ?? null
     this.emit('status', this.status())
@@ -412,6 +419,68 @@ function splitCommand(template: string): { command: string; args: string[] } {
   if (current !== '') tokens.push(current)
   if (tokens.length === 0) throw new Error('空的启动命令')
   return { command: tokens[0], args: tokens.slice(1) }
+}
+
+/**
+ * 默认 npx 启动形态 → 本地 dsh 直连:
+ * 仅当命令形如 `npx … @deepseek-ai/dsh …`(用户没有特意自定义)且能定位到本地
+ * 已安装的 dsh bin 时改写为 `node <bin> …`。定位不到就原样返回 null(走 npx)。
+ */
+function rewriteNpxToLocal(template: string): string | null {
+  const parsed = splitCommand(template)
+  const base = parsed.command.toLowerCase().replace(/\.cmd$/, '').replace(/\.exe$/, '')
+  if (!base.endsWith('npx')) return null
+  if (!parsed.args.some((token) => token.startsWith('@deepseek-ai/dsh'))) return null
+  const bin = findLocalDshBin()
+  if (bin === null) return null
+  // 去掉 npx 专属开关与包名,保留业务参数。
+  const args = parsed.args.filter((arg) =>
+    arg !== '--yes' && arg !== '--offline' && arg !== '--prefer-offline' && !arg.startsWith('@deepseek-ai/'))
+  return ['node', quoteForShell(bin), ...args.map((arg) => quoteForShell(arg))].join(' ')
+}
+
+/** 定位本机可用的 dsh CLI(env 显式指定 > ~/dsh-runtime > npm npx 缓存)。 */
+function findLocalDshBin(): string | null {
+  const explicit = process.env.DSH_DESKTOP_DSH_BIN
+  if (explicit !== undefined && explicit.trim() !== '' && existsSync(explicit)) return explicit
+  const homeRuntime = join(homedir(), 'dsh-runtime', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+  const candidates: string[] = [homeRuntime]
+  const localAppData = process.env.LOCALAPPDATA
+  if (localAppData !== undefined && localAppData !== '') {
+    const npxRoot = join(localAppData, 'npm-cache', '_npx')
+    try {
+      for (const hash of readdirSync(npxRoot)) {
+        candidates.push(join(npxRoot, hash, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'))
+      }
+    } catch {
+      // _npx 目录不存在或不可读,忽略。
+    }
+  }
+  let best: string | null = null
+  let bestVersion = ''
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue
+    let version = ''
+    try {
+      const pkg = join(dirname(candidate), '..', 'package.json')
+      if (existsSync(pkg)) {
+        version = (JSON.parse(readFileSync(pkg, 'utf8')) as { version?: string }).version ?? ''
+      }
+    } catch {
+      version = ''
+    }
+    if (version >= bestVersion) {
+      bestVersion = version
+      best = candidate
+    }
+  }
+  return best
+}
+
+/** cmd/shell 令牌安全转义:含空白或元字符时加引号并加倍内部引号。 */
+function quoteForShell(token: string): string {
+  if (/^[A-Za-z0-9_./:=@%+\-]+$/.test(token)) return token
+  return `"${token.replace(/"/g, '""')}"`
 }
 
 function sleep(ms: number): Promise<void> {

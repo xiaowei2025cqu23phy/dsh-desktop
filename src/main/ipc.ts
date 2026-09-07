@@ -4,7 +4,7 @@
 
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
-import { extname } from 'node:path'
+import { extname, join } from 'node:path'
 import type { AppearanceManager } from './appearance'
 import { probeCapabilities } from './capabilities'
 import type { ConfigStore, PreviewConfig } from './config'
@@ -34,6 +34,10 @@ export interface IpcDeps {
 }
 
 export function registerIpc(deps: IpcDeps): void {
+  const harnessReady = (): boolean => {
+    const state = deps.harness.status().state
+    return state === 'running' || state === 'external'
+  }
   // ---- harness ----
   ipcMain.handle('harness:getStatus', () => deps.harness.status())
   ipcMain.handle('harness:launchToken', () => deps.harness.getLaunchToken())
@@ -75,6 +79,10 @@ export function registerIpc(deps: IpcDeps): void {
 
   // ---- models ----
   ipcMain.handle('models:list', async () => {
+    if (!harnessReady()) {
+      // harness 未就绪(启动期)返回空壳,避免渲染进程轮询抛错刷日志。
+      return { providers: [], groups: [], failures: [], selected: null }
+    }
     const [providers, models, selected] = await Promise.all([
       deps.models.providers(),
       deps.models.models(),
@@ -184,7 +192,10 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('notifications:getConfig', () => deps.config.get().notifications)
   ipcMain.handle('notifications:setConfig', (_event, patch: object) => deps.config.update('notifications', patch))
   // ---- 用量报告(QQ/PWA/桌面端共用同一统计) ----
-  ipcMain.handle('usage:report', () => deps.commands?.usageReport() ?? null)
+  ipcMain.handle('usage:report', () => {
+    if (!harnessReady()) return null
+    return deps.commands?.usageReport() ?? null
+  })
   ipcMain.handle('interactions:list', () => deps.commands?.pendingInteractions() ?? [])
   ipcMain.handle('interactions:respondApproval', (_event, sessionId: string, approvalId: string, outcome: 'allowed-once' | 'rejected') => deps.commands?.respondApprovalDesktop(sessionId, approvalId, outcome) ?? '不可用')
   ipcMain.handle('interactions:respondQuestion', (_event, sessionId: string, questionId: string, optionIndex: number) => deps.commands?.respondQuestionDesktop(sessionId, questionId, optionIndex) ?? '不可用')
@@ -193,7 +204,10 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('queue:cancel', (_event, id: string) => deps.commands?.cancelQueueEntry(id) ?? '队列不可用')
   ipcMain.handle('queue:retry', (_event, id: string) => deps.commands?.retryQueueEntry(id) ?? '队列不可用')
   ipcMain.handle('activity:list', () => deps.config.activities())
-  ipcMain.handle('workspace:health', () => deps.gateway?.healthReport() ?? Promise.resolve([]))
+  ipcMain.handle('workspace:health', () => {
+    if (!harnessReady()) return Promise.resolve([])
+    return deps.gateway?.healthReport() ?? Promise.resolve([])
+  })
   ipcMain.handle('workspace:changes', (_event, path: string, diff = false) => deps.gateway?.changesReport(path, diff) ?? { path, status: '', unavailable: true })
   ipcMain.handle('workspace:openFolder', async (_event, path: string) => {
     const { shell } = await import('electron')
@@ -342,6 +356,22 @@ export function registerIpc(deps: IpcDeps): void {
   }
 
   // ---- 应用 ----
+  ipcMain.handle('app:info', () => {
+    try {
+      const stamp = join(__dirname, 'build-info.json')
+      if (existsSync(stamp)) {
+        return JSON.parse(readFileSync(stamp, 'utf8')) as { version: string; commit: string; builtAt: number }
+      }
+    } catch {
+      // 回退到 package.json。
+    }
+    try {
+      const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8')) as { version?: string }
+      return { version: pkg.version ?? '', commit: '', builtAt: 0 }
+    } catch {
+      return { version: '', commit: '', builtAt: 0 }
+    }
+  })
   ipcMain.handle('app:openSettingsFolder', async () => {
     const result = await deps.harness.client().rpc<{ opened: true }>('settings.openDocument')
     return result
