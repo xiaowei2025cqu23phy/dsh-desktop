@@ -67,6 +67,31 @@ export class HarnessClient {
   private loginFlight: Promise<string | null> | null = null
   /** 最近一次 probe 的失败信息(null = 成功或从未探测)。 */
   private probeFailure: { code: string; message: string } | null = null
+  /** 官方 0.1.2-rc.1+ 各方法的 typert 参数壳(按 wire 方法名;缺省 _request)。 */
+  private static readonly SLASH_ENVELOPE: Record<string, '_request' | 'request' | 'spread'> = {
+    'session/modelCatalog': 'spread',
+    'llm/listProviders': 'spread',
+    'llm/listConfigurableProviders': 'spread',
+    'llm/discoverModels': 'spread',
+    'session/create': 'request',
+    'session/rename': 'request',
+    'session/selectModel': 'request',
+    'session/page': 'request',
+    'session/prompt': 'request',
+    'session/updateQueue': 'request',
+    'session/cancel': 'request',
+    'workspace/create': 'request',
+    'workspace/rename': 'request',
+    'workspace/delete': 'request',
+    'workspace/archiveSession': 'request',
+    'settings/describe': 'request',
+    'settings/update': 'request',
+    'settings/mutate': 'request',
+    'settings/replace': 'request',
+    'credentials/set': 'request',
+    'credentials/describe': 'request',
+    'credentials/unset': 'request',
+  }
 
   constructor(
     readonly baseUrl: string,
@@ -89,10 +114,20 @@ export class HarnessClient {
     return this.protocolBox.value === 'dot' ? method : method.replace('.', '/')
   }
 
-  /** 按协议包装调用 payload:官方斜杠协议要求 `{args:{_request:…}}`(typert 签名). */
+  /**
+   * 按协议与目标方法包装调用 payload。官方 0.1.2-rc.1+ 的 typert 签名因方法而异:
+   * 会话/设置类多为 `request`,列表类为 `_request`,llm/模型目录类直接展开参数。
+   */
   private wirePayload(payload: unknown): unknown {
-    return this.protocolBox.value === 'slash' ? { args: { _request: payload } } : payload
+    if (this.protocolBox.value !== 'slash') return payload
+    const envelope = HarnessClient.SLASH_ENVELOPE[this.lastWireMethod] ?? '_request'
+    if (envelope === 'spread') return { args: (payload ?? {}) as object }
+    if (envelope === 'request') return { args: { request: payload } }
+    return { args: { _request: payload } }
   }
+
+  /** 最近一次 wire 方法名(rpcRaw 里设置,供 wirePayload 选择参数壳)。 */
+  private lastWireMethod = ''
 
   /**
    * 官方 0.1.2-rc.1+ 鉴权:GET `/ ?token=`(redirect manual)换取持久签名 cookie,
@@ -207,7 +242,40 @@ export class HarnessClient {
 
   /** 一元 RPC 调用,返回业务值;失败抛 HarnessError。 */
   async rpc<T>(method: string, payload: unknown = {}, timeoutMs = 30000): Promise<T> {
-    return this.rpcRaw<T>(this.wire(method), this.wirePayload(payload), timeoutMs)
+    const wireMethod = this.wire(method)
+    // 官方 0.1.2-rc.1+ 没有旧版的一些方法:提供别名/降级,避免整条链路抛 404。
+    if (this.protocolBox.value === 'slash') {
+      if (method === 'host.describe') {
+        try {
+          this.lastWireMethod = 'host/describe'
+          return await this.rpcRaw<T>('host/describe', this.wirePayload(payload), timeoutMs)
+        } catch (error) {
+          if (error instanceof HarnessError && error.code === 'http-404') {
+            return { version: '', cwd: '', canOpenPath: false } as T
+          }
+          throw error
+        }
+      }
+      if (method === 'session.history') {
+        // 官方没有等价分页语义:先降级为空历史,渲染端不崩溃。
+        return { events: [] } as T
+      }
+      if (method === 'workspace.list') {
+        // 官方没有 workspace/list:由会话的 cwd 合成工作区列表。
+        this.lastWireMethod = 'session/list'
+        const raw = await this.rpcRaw<{ items?: Array<{ cwd?: string }> }>('session/list', this.wirePayload({}), timeoutMs)
+        const byPath = new Map<string, string>()
+        for (const item of raw.items ?? []) {
+          if (typeof item.cwd === 'string' && item.cwd !== '' && !byPath.has(item.cwd)) {
+            byPath.set(item.cwd, item.cwd.split(/[\\/]/).filter(Boolean).pop() ?? item.cwd)
+          }
+        }
+        const items = [...byPath.entries()].map(([path, title]) => ({ workspaceId: path, title, path }))
+        return { items } as T
+      }
+    }
+    this.lastWireMethod = wireMethod
+    return this.rpcRaw<T>(wireMethod, this.wirePayload(payload), timeoutMs)
   }
 
   /** 一元 RPC wire 传输:按已给定(协商好的)端点名发请求并解析响应。 */

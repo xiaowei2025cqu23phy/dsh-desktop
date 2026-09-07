@@ -87,12 +87,34 @@ export class ModelManager {
 
   /** Provider 目录(llm.providers)。 */
   async providers(): Promise<ProviderView[]> {
+    if (this.get().protocol === 'slash') {
+      // 官方 0.1.2-rc.1+:llm/listConfigurableProviders 返回 Provider 配置目录。
+      const list = await this.get().rpc<Array<{
+        provider: string
+        displayName: string
+        settingsNs: string
+        settingsPath: string[]
+        declared?: boolean
+      }>>('llm.listConfigurableProviders')
+      return (list ?? []).map((item) => ({
+        provider: item.provider,
+        displayName: item.displayName,
+        settingsNs: item.settingsNs,
+        settingsPath: item.settingsPath ?? [],
+        active: item.declared !== false,
+      }))
+    }
     const result = await this.get().rpc<{ providers: ProviderView[] }>('llm.providers')
     return result.providers
   }
 
   /** 模型目录(llm.models)。 */
   async models(): Promise<{ groups: ModelGroup[]; failures: Array<{ id: string; name: string; message: string }> }> {
+    if (this.get().protocol === 'slash') {
+      // 官方 0.1.2-rc.1+:session/modelCatalog 的结构与桌面端模型目录一致。
+      const catalog = await this.get().rpc<{ groups?: ModelGroup[] }>('session.modelCatalog')
+      return { groups: catalog.groups ?? [], failures: [] }
+    }
     const result = await this.get().rpc<{
       groups: ModelGroup[]
       failures: Array<{ id: string; name: string; message: string }>
@@ -104,10 +126,10 @@ export class ModelManager {
   async defaultSelection(): Promise<DefaultSelection | null> {
     const client = this.get()
     try {
-      const catalog = await client.rpc<{ default?: { provider?: string; model?: string } }>('session.modelCatalog')
+      const catalog = await client.rpc<{ default?: { provider?: string; model?: string; reasoningEffort?: string } }>('session.modelCatalog')
       const def = catalog.default
       if (typeof def?.provider === 'string' && typeof def.model === 'string') {
-        return { provider: def.provider, model: def.model }
+        return { provider: def.provider, model: def.model, reasoningEffort: def.reasoningEffort }
       }
     } catch {
       /* 旧版没有 modelCatalog:退回 host.describe。 */
