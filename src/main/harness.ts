@@ -2,7 +2,7 @@
  * Harness 进程托管:探测已运行实例 → 必要时托管启动 `dsh web` → 健康轮询 → 崩溃重启。
  */
 
-import { spawn, execFile } from 'node:child_process'
+import { spawn, execFile, exec } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -262,19 +262,24 @@ export class HarnessManager extends EventEmitter {
   }
 
   /** 托管启动 dsh web。 */
-  private spawnManaged(): void {
+  private async spawnManaged(): Promise<void> {
     if (this.child !== null || this.stopRequested) return
     this.state = 'starting'
     this.error = null
     this.launchTokenValue = null
-    // npx 兜底:如果命令是默认的 `npx @deepseek-ai/dsh` 形态,且本机已有可用的
-    // dsh(本地运行时/缓存),则直接 `node <bin>` 启动——这台机器上 npx 会在
-    // 解析依赖树时永久卡住,绕开它能显著提升启动可靠性(其它机器不受影响)。
+    // npx 兜底:命令为默认 `npx @deepseek-ai/dsh` 形态时,先探测 npx 本身是否可用
+    // (部分机器 npx 会在解析依赖树时永久卡住)。npx 健康就按原命令走(自动跟随官方
+    // 最新版);npx 不可用且本机存在 dsh(本地运行时/缓存)时,直接 `node <bin>` 启动。
     let template = this.config.command.replace('{port}', String(this.config.port))
-    const resolved = rewriteNpxToLocal(template)
-    if (resolved !== null) {
-      this.log(`检测到本地 dsh,改用直连启动:${resolved}`)
-      template = resolved
+    if (looksLikeNpxCommand(template)) {
+      const npxOk = await npxAvailable()
+      if (!npxOk) {
+        const resolved = rewriteNpxToLocal(template)
+        if (resolved !== null) {
+          this.log(`npx 不可用,检测到本地 dsh,改用直连启动:${resolved}`)
+          template = resolved
+        }
+      }
     }
     this.log(`启动托管服务:${template}`)
     const { command, args } = splitCommand(template)
@@ -419,6 +424,22 @@ function splitCommand(template: string): { command: string; args: string[] } {
   if (current !== '') tokens.push(current)
   if (tokens.length === 0) throw new Error('空的启动命令')
   return { command: tokens[0], args: tokens.slice(1) }
+}
+
+/** 是否为默认的 `npx … @deepseek-ai/dsh …` 启动形态。 */
+function looksLikeNpxCommand(template: string): boolean {
+  const parsed = splitCommand(template)
+  const base = parsed.command.toLowerCase().replace(/\.cmd$/, '').replace(/\.exe$/, '')
+  return base.endsWith('npx') && parsed.args.some((token) => token.startsWith('@deepseek-ai/dsh'))
+}
+
+/** 探测 npx 本体是否可用(4 秒超时;Windows 上走 shell 以解析 npx.cmd)。 */
+function npxAvailable(): Promise<boolean> {
+  return new Promise((resolve) => {
+    exec('npx --version', { timeout: 4000 }, (error, stdout) => {
+      resolve(error === null && stdout.trim() !== '')
+    })
+  })
 }
 
 /**
