@@ -68,11 +68,11 @@ export class HarnessClient {
   /** 最近一次 probe 的失败信息(null = 成功或从未探测)。 */
   private probeFailure: { code: string; message: string } | null = null
   /** 官方 0.1.2-rc.1+ 各方法的 typert 参数壳(按 wire 方法名;缺省 _request)。 */
-  private static readonly SLASH_ENVELOPE: Record<string, '_request' | 'request' | 'spread'> = {
+  private static readonly SLASH_ENVELOPE: Record<string, '_request' | 'request' | 'spread' | 'nsRequest'> = {
     'session/modelCatalog': 'spread',
     'llm/listProviders': 'spread',
     'llm/listConfigurableProviders': 'spread',
-    'llm/discoverModels': 'spread',
+    'llm/discoverModels': 'nsRequest',
     'session/create': 'request',
     'session/rename': 'request',
     'session/selectModel': 'request',
@@ -84,13 +84,13 @@ export class HarnessClient {
     'workspace/rename': 'request',
     'workspace/delete': 'request',
     'workspace/archiveSession': 'request',
-    'settings/describe': 'request',
-    'settings/update': 'request',
-    'settings/mutate': 'request',
-    'settings/replace': 'request',
-    'credentials/set': 'request',
-    'credentials/describe': 'request',
-    'credentials/unset': 'request',
+    'settings/describe': 'spread',
+    'settings/update': 'spread',
+    'settings/mutate': 'spread',
+    'settings/replace': 'spread',
+    'credentials/set': 'spread',
+    'credentials/describe': 'spread',
+    'credentials/unset': 'spread',
   }
 
   constructor(
@@ -121,6 +121,11 @@ export class HarnessClient {
   private wirePayload(payload: unknown): unknown {
     if (this.protocolBox.value !== 'slash') return payload
     const envelope = HarnessClient.SLASH_ENVELOPE[this.lastWireMethod] ?? '_request'
+    if (envelope === 'nsRequest') {
+      const record = (payload ?? {}) as Record<string, unknown>
+      const { settingsNs, ...rest } = record
+      return { args: { settingsNs: settingsNs ?? 'llm-pi-ai', request: rest } }
+    }
     if (envelope === 'spread') return { args: (payload ?? {}) as object }
     if (envelope === 'request') return { args: { request: payload } }
     return { args: { _request: payload } }
@@ -245,6 +250,13 @@ export class HarnessClient {
     const wireMethod = this.wire(method)
     // 官方 0.1.2-rc.1+ 没有旧版的一些方法:提供别名/降级,避免整条链路抛 404。
     if (this.protocolBox.value === 'slash') {
+      if (method === 'session.prompt') {
+        // 官方 schema 要求 requestId(桌面端旧调用不带),统一补一个。
+        const params = (payload ?? {}) as Record<string, unknown>
+        if (typeof params.requestId !== 'string' || params.requestId === '') {
+          payload = { ...params, requestId: randomUUID() }
+        }
+      }
       if (method === 'host.describe') {
         try {
           this.lastWireMethod = 'host/describe'
@@ -257,8 +269,55 @@ export class HarnessClient {
         }
       }
       if (method === 'session.history') {
-        // 官方没有等价分页语义:先降级为空历史,渲染端不崩溃。
-        return { events: [] } as T
+        // 官方历史桥:session/list 取会话 asOfSeq → session/page 拉记录,
+        // 过滤出 message 级 event 记录(chunkrow 流式碎片对历史回放无意义)。
+        const params = (payload ?? {}) as { sessionId?: string; maxMessages?: number }
+        const sessionId = params.sessionId
+        if (typeof sessionId !== 'string' || sessionId === '') return { events: [] } as T
+        let seq = 0
+        try {
+          const raw = await this.rpcRaw<{ items?: Array<{ sessionId?: string; asOfSeq?: number; projections?: { asOfSeq?: number } }> }>(
+            'session/list',
+            { args: { _request: { sessionId } } },
+            timeoutMs,
+          )
+          const found = (raw.items ?? []).find((item) => item.sessionId === sessionId)
+          seq = found?.projections?.asOfSeq ?? found?.asOfSeq ?? 0
+        } catch {
+          seq = 0
+        }
+        if (seq <= 0) {
+          // 单会话过滤不可用:全量拉取后再找(会话多时较慢,仅在首次回放历史时发生)。
+          try {
+            const raw = await this.rpcRaw<{ items?: Array<{ sessionId?: string; asOfSeq?: number; projections?: { asOfSeq?: number } }> }>(
+              'session/list',
+              { args: { _request: {} } },
+              Math.max(timeoutMs, 30000),
+            )
+            const found = (raw.items ?? []).find((item) => item.sessionId === sessionId)
+            seq = found?.projections?.asOfSeq ?? found?.asOfSeq ?? 0
+          } catch {
+            seq = 0
+          }
+        }
+        if (seq <= 0) return { events: [] } as T
+        const page = await this.rpcRaw<{ records?: Array<{ type?: string; event?: unknown }>; hasMore?: boolean }>(
+          'session/page',
+          {
+            args: {
+              request: {
+                address: { kind: 'session', sessionId },
+                throughSeq: seq,
+                maxMessages: typeof params.maxMessages === 'number' ? params.maxMessages : 40,
+              },
+            },
+          },
+          timeoutMs,
+        )
+        const events = (page.records ?? [])
+          .filter((record) => record.type === 'event' && record.event !== undefined)
+          .map((record) => record.event)
+        return { events } as T
       }
       if (method === 'workspace.list') {
         // 官方没有 workspace/list:由会话的 cwd 合成工作区列表。

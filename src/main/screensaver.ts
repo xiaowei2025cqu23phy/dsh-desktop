@@ -422,7 +422,7 @@ export class ScreensaverController {
       try {
         await this.activate('idle')
       } catch (error) {
-        console.error('[screensaver] 激活失败:', error)
+        console.error('[screensaver] 激活失败:', error instanceof Error ? error.message : String(error))
         this.lastActivateFailAt = Date.now()
       }
     }

@@ -202,6 +202,16 @@ export class ModelManager {
 
   /** 从网关拉取模型清单(llm.discoverModels)。 */
   async discoverModels(baseURL: string, api: string, apiKey: string): Promise<ModelEntry[]> {
+    if (this.get().protocol === 'slash') {
+      // 官方 0.1.2-rc.1+:llm/discoverModels 直接返回数组(settingsNs + request 双参数)。
+      const list = await this.get().rpc<ModelEntry[]>('llm.discoverModels', {
+        settingsNs: 'llm-pi-ai',
+        baseURL: baseURL.trim(),
+        api: api.trim() || 'openai-completions',
+        ...(apiKey.trim() !== '' ? { apiKey: apiKey.trim() } : {}),
+      })
+      return list ?? []
+    }
     const result = await this.get().rpc<{ models: ModelEntry[] }>('llm.discoverModels', {
       settingsNs: 'llm-pi-ai',
       baseURL: baseURL.trim(),

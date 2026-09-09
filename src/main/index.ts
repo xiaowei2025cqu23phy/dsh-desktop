@@ -148,7 +148,9 @@ if (!gotLock) {
     console.log('[main] wantsScreensaver:', wantsScreensaver)
     if (wantsScreensaver) {
       // Windows 系统屏保拉起:受退出冷却约束,防止"退出后又立刻被拉起"循环。
-      void screensaver.activate('system').catch((error) => console.error('[screensaver] 激活失败:', error))
+      void screensaver.activate('system').catch((error) => {
+        console.error('[screensaver] 激活失败:', error instanceof Error ? error.message : String(error))
+      })
     } else if (mainWindow !== null && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.show()
