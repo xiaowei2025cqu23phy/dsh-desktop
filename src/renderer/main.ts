@@ -830,7 +830,7 @@ function togglePreviewView(): void {
 
 let lastStableBaseUrl = ''
 
-const OFFICIAL_HARNESS_CMD = 'npx --yes @deepseek-ai/dsh web --port {port}'
+const OFFICIAL_HARNESS_CMD = 'npx --yes @deepseek-ai/dsh web --port {port} --no-open'
 
 /** 命令模板选择:官方最新 / 官方指定版本 / 本机仓库,选中即填入命令框;手动输入时回到「自定义」。 */
 function initCommandTemplate(selectId: string, inputId: string): void {
@@ -846,7 +846,7 @@ function initCommandTemplate(selectId: string, inputId: string): void {
       if (version === null) { templateSelect.value = ''; return }
       const trimmed = version.trim()
       if (trimmed === '') { templateSelect.value = ''; return }
-      commandInput.value = `npx --yes @deepseek-ai/dsh@${trimmed} web --port {port}`
+      commandInput.value = `npx --yes @deepseek-ai/dsh@${trimmed} web --port {port} --no-open`
     } else if (value === 'local') {
       void API.dialog.pickFile().then((file) => {
         if (file === null) { templateSelect.value = ''; return }

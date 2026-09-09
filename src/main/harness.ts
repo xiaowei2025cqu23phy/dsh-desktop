@@ -307,6 +307,7 @@ export class HarnessManager extends EventEmitter {
     child.stderr?.on('data', (chunk: Buffer) => this.pushLog(chunk.toString(), true))
     child.on('error', (error) => {
       this.pushLog(`进程错误:${error.message}`, true)
+      console.error('[harness] 托管进程启动失败:', error.message)
       // spawn 失败(不存在、无权限等)不会触发 exit;立刻转为错误并上报,
       // 而不是让 waitReady 空转 90 秒后才报「未就绪」。
       if (!this.stopRequested && this.child === child) {
@@ -319,6 +320,7 @@ export class HarnessManager extends EventEmitter {
     })
     child.on('exit', (code, signal) => {
       this.log(`托管进程退出(code=${String(code)}, signal=${String(signal)})`)
+      console.error('[harness] 托管进程退出:', code, signal)
       const crashed = !this.stopRequested && this.state !== 'stopping'
       this.child = null
       this.managedPid = null
@@ -345,7 +347,9 @@ export class HarnessManager extends EventEmitter {
   /** 轮询探测直到就绪或超时。 */
   private async waitReady(): Promise<void> {
     const client = this.client()
-    const deadline = Date.now() + 90000
+    // 冷启动实测可达 92 秒(npx 解析 + 官方 0.1.2 首启),90 秒超时太紧;
+    // 放宽到 180 秒并记录失败时的 token 捕获状态,便于诊断。
+    const deadline = Date.now() + 180000
     for (;;) {
       if (this.stopRequested || this.child === null) return
       const ok = await client.probe(12000)
@@ -359,7 +363,8 @@ export class HarnessManager extends EventEmitter {
       }
       if (Date.now() > deadline) {
         this.state = 'error'
-        this.error = '托管服务在 90 秒内未就绪,请查看日志'
+        this.error = '托管服务在 180 秒内未就绪,请查看日志'
+        console.error('[harness] 托管服务 180 秒未就绪;launchToken=' + String(this.launchTokenValue !== null))
         this.emit('status', this.status())
         return
       }

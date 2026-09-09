@@ -378,7 +378,14 @@ export class ScreensaverController {
   private registerIpc(): void {
     ipcMain.handle('screensaver:getConfig', () => this.getConfig())
     ipcMain.handle('screensaver:setConfig', (_event, patch: Partial<ScreensaverConfig>) => this.setConfig(patch))
-    ipcMain.handle('screensaver:activate', () => this.activate())
+    ipcMain.handle('screensaver:activate', async () => {
+      try {
+        return await this.activate()
+      } catch (error) {
+        console.error('[screensaver] ipc activate failed:', error instanceof Error ? error.message : String(error))
+        throw error
+      }
+    })
     ipcMain.handle('screensaver:deactivate', () => { this.deactivate() })
     ipcMain.handle('screensaver:isActive', () => this.isActive())
     ipcMain.handle('screensaver:startTask', () => this.startTask())
