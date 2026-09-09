@@ -91,6 +91,13 @@ export class HarnessClient {
     'credentials/set': 'spread',
     'credentials/describe': 'spread',
     'credentials/unset': 'spread',
+    // 目录类方法:官方 UI 实测均为展开参数(spread),旧版点端点默认 _request 不适用。
+    'agentPresets/list': 'spread',
+    'dynamicCordisRunner/inventory': 'spread',
+    'dynamicCordisRunner/syncInspectManifest': 'spread',
+    'commands/list': 'spread',
+    'subagents/list': 'spread',
+    'skills/list': 'request',
   }
 
   constructor(
@@ -257,6 +264,11 @@ export class HarnessClient {
           payload = { ...params, requestId: randomUUID() }
         }
       }
+      if (method === 'credentials.describe') {
+        // 官方签名要求 refs 列表(凭据名数组);调用方未指定时查空集(返回 {})。
+        const params = (payload ?? {}) as Record<string, unknown>
+        if (!Array.isArray(params.refs)) payload = { ...params, refs: [] }
+      }
       if (method === 'host.describe') {
         try {
           this.lastWireMethod = 'host/describe'
@@ -331,6 +343,28 @@ export class HarnessClient {
         }
         const items = [...byPath.entries()].map(([path, title]) => ({ workspaceId: path, title, path }))
         return { items } as T
+      }
+      if (method === 'workspace.create') {
+        // 官方返回 { workspace: {...} }:展平为旧调用方期望的 { workspaceId } 形状。
+        this.lastWireMethod = 'workspace/create'
+        const value = await this.rpcRaw<{ workspace?: { workspaceId?: string } }>('workspace/create', this.wirePayload(payload), timeoutMs)
+        const id = value?.workspace?.workspaceId
+        return (id === undefined ? value : { workspaceId: id, ...value.workspace }) as T
+      }
+      if (method === 'workspace.rename' || method === 'workspace.delete') {
+        // 合成列表给出的 workspaceId 是路径;官方端点需要注册表 id:先用
+        // workspace/create 换取(同一路径返回既有工作区),再执行操作。
+        this.lastWireMethod = wireMethod
+        const params = { ...((payload ?? {}) as Record<string, unknown>) }
+        const id = params.workspaceId
+        if (typeof id === 'string' && /[\\/]/.test(id)) {
+          this.lastWireMethod = 'workspace/create'
+          const created = await this.rpcRaw<{ workspace?: { workspaceId?: string } }>('workspace/create', this.wirePayload({ path: id }), timeoutMs)
+          const realId = created?.workspace?.workspaceId
+          if (typeof realId === 'string' && realId !== '') params.workspaceId = realId
+          this.lastWireMethod = wireMethod
+        }
+        return await this.rpcRaw<T>(wireMethod, this.wirePayload(params), timeoutMs)
       }
     }
     this.lastWireMethod = wireMethod
