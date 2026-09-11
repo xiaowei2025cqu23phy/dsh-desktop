@@ -264,6 +264,10 @@ export class HarnessManager extends EventEmitter {
   /** 托管启动 dsh web。 */
   private async spawnManaged(): Promise<void> {
     if (this.child !== null || this.stopRequested) return
+    // 启动前先看端口是否已有可用实例:避免在已被占用的端口上反复拉起(EADDRINUSE 风暴)。
+    const pre = await this.resolveOccupiedInstance()
+    if (this.stopRequested || this.child !== null) return
+    if (pre !== null) return
     this.state = 'starting'
     this.error = null
     this.launchTokenValue = null
@@ -332,7 +336,27 @@ export class HarnessManager extends EventEmitter {
         const delay = Math.min(1000 * 2 ** Math.min(this.restartAttempts, 5), 30000)
         this.restartTimer = setTimeout(() => {
           this.restartTimer = null
-          void this.restart()
+          void (async () => {
+            // 退出前先看端口:常见情况是 npx/cmd 包装进程退出、真正的 dsh 仍在
+            // 监听(或用户自己拉起了实例)。此时重启只会抢端口 → EADDRINUSE 风暴,
+            // 正确做法是接管已就绪的实例。
+            const occupied = await this.resolveOccupiedInstance()
+            if (this.stopRequested) return
+            if (occupied === 'adopt') return
+            if (occupied === 'auth') {
+              this.state = 'error'
+              this.error = this.authRequiredError()
+              this.emit('status', this.status())
+              return
+            }
+            if (occupied === 'occupied') {
+              this.state = 'error'
+              this.error = `端口 ${this.config.port} 上已有 dsh 实例(RPC 未就绪或需要令牌),已停止自动重启;请检查该实例或在设置中更换端口。`
+              this.emit('status', this.status())
+              return
+            }
+            void this.restart()
+          })()
         }, delay)
       } else {
         this.state = this.stopRequested ? 'stopped' : 'error'
@@ -342,6 +366,34 @@ export class HarnessManager extends EventEmitter {
     })
 
     void this.waitReady()
+  }
+
+  /**
+   * 判断端口上是否已有实例可复用:
+   * - 'adopt':RPC 探测通过,直接接管(不再拉起/重启);
+   * - 'auth':服务在但需要访问令牌(给出设置引导);
+   * - 'occupied':检测到 dsh 页面但 RPC 未就绪(停止自动重启,避免抢端口风暴);
+   * - null:端口空闲或非 dsh,可正常托管启动。
+   */
+  private async resolveOccupiedInstance(): Promise<'adopt' | 'auth' | 'occupied' | null> {
+    const client = this.client()
+    const ok = await client.probe(8000)
+    if (this.stopRequested) return null
+    if (ok) {
+      this.state = this.config.mode === 'external' ? 'external' : 'running'
+      this.error = null
+      this.restartAttempts = 0
+      this.log('检测到已就绪的 harness 实例,接管并停止自动重启')
+      this.emit('status', this.status())
+      return 'adopt'
+    }
+    if (client.lastProbeFailure()?.code === 'http-401') {
+      return 'auth'
+    }
+    const occupied = await this.portProbe()
+    if (this.stopRequested) return null
+    if (occupied === 'dsh') return 'occupied'
+    return null
   }
 
   /** 轮询探测直到就绪或超时。 */
