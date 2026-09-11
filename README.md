@@ -250,13 +250,16 @@ scripts/           冒烟与端到端测试脚本
 
 ### 与 harness 的通信协议
 
-桌面端直接实现 deepseek-harness 的 HTTP RPC 协议(`dsh-host-apiproxy`):
+桌面端直接实现 deepseek-harness 的 HTTP RPC 协议,并兼容两代 harness:
 
+- **官方 `@deepseek-ai/dsh` 0.1.2-rc.1+**(typert 斜杠协议):探测时自动协商协议与参数壳,支持浏览器 token 鉴权(`?token=` 换持久 cookie);模型目录走 `session/modelCatalog`、Provider 目录走 `llm/listProviders` / `llm/listConfigurableProviders`,自定义 Provider 写入走 `settings/update` + `settings/mutate` + `credentials/set`。
+- **旧版 / 自建 fork**(点协议):`llm.models`、`llm.providers`、`workspace.*`、`host.describe` 等方法自动回退兼容。
 - 一元调用:`POST /api/<method>`,body 为 `{type:'client-request', rpcId, method, payload}`,响应 `{type:'server-response', rpcId, result}`;回环地址免令牌。
-- 事件流:`GET /api/events.mux`(SSE),推送 `session/event` 等帧,屏保页面据此实时渲染。
-- 关键方法:`session.list/create/prompt/cancel/selectModel`、`host.describe`、`host.listEntries/readTextFile`(文件浏览器)、`llm.providers/models/discoverModels`、`settings.update/mutate`、`credentials.set`。
+- 事件流:`GET /api/events.mux`(SSE / WebSocket 自动协商),推送 `session/event` 等帧,屏保、手机 PWA 与机器人通道据此实时渲染。
+- 会话历史回放(官方版无 `session.history`):先取 `session/list` 的 `projections.asOfSeq`,再调 `session/page` 拉取记录,过滤出 message 级事件回放给手机 / QQ / 屏保。
+- 关键方法:`session.list/create/prompt/cancel/rename/selectModel`、`session.modelCatalog`、`session.page`、`llm.listProviders/listConfigurableProviders/discoverModels`、`settings.update/mutate`、`credentials.set`、`workspace.create/rename/delete`。
 
-协议细节随 harness 演进可能变化;桌面端使用的方法均来自当前 `0.1.0-rc.x` 的 `packages/host/apiproxy`。
+协议细节随 harness 演进可能变化;桌面端对参数壳(typert:`_request` / `request` / 平铺)按方法自适应,并在官方版缺失旧方法时提供降级或桥接(如 `workspace.list` 由会话 cwd 合成)。
 
 ## 已知限制
 

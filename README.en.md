@@ -183,11 +183,14 @@ scripts/           smoke / e2e / unit-test scripts
 
 ### Harness wire protocol
 
-The desktop app implements deepseek-harness's HTTP RPC protocol (`dsh-host-apiproxy`) directly:
+The desktop app implements deepseek-harness's HTTP RPC protocol directly and speaks **two harness generations**:
 
+- **Official `@deepseek-ai/dsh` 0.1.2-rc.1+** (typert slash protocol): protocol and per-method argument envelopes are negotiated at probe time; browser token auth (`?token=` exchanged for a persistent cookie); model catalog via `session/modelCatalog`; providers via `llm/listProviders` / `llm/listConfigurableProviders`; custom providers written through `settings/update` + `settings/mutate` + `credentials/set`.
+- **Legacy / self-built forks** (dot protocol): automatic fallback for `llm.models`, `llm.providers`, `workspace.*`, `host.describe`, and friends.
 - Unary calls: `POST /api/<method>` with `{type:'client-request', rpcId, method, payload}`; responses are `{type:'server-response', rpcId, result}`; loopback needs no token.
-- Event stream: `GET /api/events.mux` (SSE on newer versions, WebSocket fallback on older ones); `session/event` frames drive the screensaver and remote clients.
-- Key methods: `session.list/create/prompt/cancel/selectModel`, `host.describe`, `host.listEntries/readTextFile` (file explorer), `llm.providers/models/discoverModels`, `settings.update/mutate`, `credentials.set`.
+- Event stream: `GET /api/events.mux` (SSE / WebSocket auto-negotiated); `session/event` frames drive the screensaver, phone PWA and bot channels.
+- Session history replay (the official build has no `session.history`): read `projections.asOfSeq` from `session/list`, then pull records via `session/page` and replay message-level events to the phone, QQ and screensaver clients.
+- Key methods: `session.list/create/prompt/cancel/rename/selectModel`, `session.modelCatalog`, `session.page`, `llm.listProviders/listConfigurableProviders/discoverModels`, `settings.update/mutate`, `credentials.set`, `workspace.create/rename/delete`.
 
 Protocol details may evolve with the harness; the methods used come from the current `0.1.0-rc.x` `packages/host/apiproxy`.
 

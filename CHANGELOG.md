@@ -1,5 +1,28 @@
 # Changelog
 
+## 🚀 v0.6.1 · 官方 harness 0.1.2 适配与稳定性 (2026-09-11)
+
+### 官方 harness 适配
+- 主实例默认运行官方 npm `@deepseek-ai/dsh`(0.1.2-rc.1):typert 斜杠协议自动协商、浏览器 token 鉴权(launch token → 持久 cookie)、按方法自适应参数壳(`_request` / `request` / 平铺)
+- 模型目录走 `session/modelCatalog`、Provider 目录走 `llm/listProviders` 与 `llm/listConfigurableProviders`;自定义 Provider 写入适配 `settings/update` / `settings/mutate` / `credentials/set`
+- 会话历史回放桥:官方版无 `session.history`,改由 `session/list`(取 `projections.asOfSeq`)+ `session/page` 拉取,过滤 message 级事件;手机 PWA、QQ 与屏保历史恢复
+- `session/prompt` 自动补官方要求的 `requestId`;官方缺失的 `workspace.list` 由会话 cwd 合成,`host.describe` 优雅降级
+- 旧版 / 自建 fork(点协议)继续兼容,新旧实例自动探测
+
+### 稳定性
+- 托管 harness 冷启动实测约 92 秒,就绪超时由 90 秒放宽到 180 秒,消除"90 秒未就绪"误报
+- npx 健康探测:可用时跟随官方最新版,不可用时自动回退本地 dsh 直连;默认启动命令附加 `--no-open`
+- 开发模式(未打包)使用独立 userData,不再与正式版抢单实例锁与配置;`desktop.log` 超过 2MB 自动轮转
+- 屏保激活与托管进程的错误日志输出真实原因(此前 JSON 序列化显示为 `{}`)
+
+### 界面
+- 对话页壁纸遮罩跟随「设置 → 外观 → 壁纸遮罩」(修复此前固定 0.55 导致偏暗);主窗口壁纸改用 `img` 通道,支持大图与布设位置
+- 设置面板显示版本号 + commit,便于识别本地跑的是哪个构建
+
+### 数据修复
+- 修复旧 fork 会话被官方引擎拒绝的问题:用官方扫描器定位「seq 重复段」并精确删行,保留全部有效事件(案例:53MB 会话 4,080,257 事件无损保留)
+- 重建预设壁纸包(此前 PNG 文件损坏)
+
 ## 🚀 v0.4.0 · 会话体验与交付质量
 
 ### 手机 PWA 完整会话体验
