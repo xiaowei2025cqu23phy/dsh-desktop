@@ -230,7 +230,7 @@ Found it useful? Join the beta group for feedback and feature requests, or buy t
 
 | Beta group (QQ) | WeChat reward |
 |---|---|
-| ![QQ group](assets/support/qq-group.jpg) | ![WeChat reward](assets/support/wechat-reward.png) |
+| ![QQ group](assets/support/qq-group.jpg) | ![WeChat reward](assets/support/wechat-reward.jpg) |
 
 Inside the group you can try the [QQ bot](docs/USAGE.md) directly — remote control, approvals and proactive reports.
 

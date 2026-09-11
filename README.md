@@ -292,4 +292,4 @@ QQ 机器人通道的协议细节参考了 [QQ 开放平台 API v2 文档](https
 
 | 内测交流群(QQ)                        | 微信赞赏                                        |
 | ------------------------------------- | ----------------------------------------------- |
-| ![QQ 群](assets/support/qq-group.jpg) | ![微信赞赏码](assets/support/wechat-reward.png) |
+| ![QQ 群](assets/support/qq-group.jpg) | ![微信赞赏码](assets/support/wechat-reward.jpg) |
