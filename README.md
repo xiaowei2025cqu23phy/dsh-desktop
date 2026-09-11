@@ -23,11 +23,12 @@
 ## 下载与安装
 
 从 [GitHub Releases](https://github.com/xiaowei2025cqu23phy/dsh-desktop/releases) 下载,三种形态任选:
-| 形态 | 文件 | 说明 |
-|---|---|---|
+
+| 形态                   | 文件                                     | 说明                                                               |
+| ---------------------- | ---------------------------------------- | ------------------------------------------------------------------ |
 | **安装版(推荐)** | `DeepSeek-Harness-Desktop-Setup-*.exe` | NSIS 安装程序,双击安装,自动创建开始菜单与桌面快捷方式,可选安装目录 |
-| 便携版 | `DeepSeek.Harness.Desktop-*.win.zip` | 解压即用,免安装,适合 U 盘携带 |
-| 源码版 | 克隆仓库 `npm install && npm start` | 自行构建 |
+| 便携版                 | `DeepSeek.Harness.Desktop-*.win.zip`   | 解压即用,免安装,适合 U 盘携带                                      |
+| 源码版                 | 克隆仓库`npm install && npm start`     | 自行构建                                                           |
 
 安装版卸载时保留用户配置与壁纸(不会删除 `%APPDATA%` 数据);如需彻底清理请手动删除 `%APPDATA%/DeepSeek Harness Desktop`。
 
@@ -56,14 +57,14 @@
 
 本项目在设计与实现中参考、依赖并致谢以下开源项目的贡献:
 
-| 项目 | 贡献 | 许可 |
-|---|---|---|
-| [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) | 核心智能体运行时与 Web UI;桌面端直接实现其 HTTP RPC 协议(`dsh-host-apiproxy`:一元 RPC、mux 事件流、settings/credentials/llm 域) | MIT |
-| [tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs) | QQ 开放平台机器人 SDK:WebSocket 网关、消息事件、文本/媒体/流式消息发送,用于 QQ 远程控制通道 | MIT |
-| [tencent-connect](https://github.com/tencent-connect) 组织相关仓库(bot-docs、botpy 等) | QQ 开放平台 API 与交互文档,QQ 适配器实现的协议参考 | 各自许可 |
-| [node-qrcode](https://github.com/soldair/node-qrcode) | 二维码生成,用于手机扫码配对 | MIT |
-| [Electron](https://github.com/electron/electron) | 桌面应用框架 | MIT |
-| [electron-builder](https://github.com/electron-userland/electron-builder) | 应用打包 | MIT |
+| 项目                                                                                  | 贡献                                                                                                                              | 许可     |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)        | 核心智能体运行时与 Web UI;桌面端直接实现其 HTTP RPC 协议(`dsh-host-apiproxy`:一元 RPC、mux 事件流、settings/credentials/llm 域) | MIT      |
+| [tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs)        | QQ 开放平台机器人 SDK:WebSocket 网关、消息事件、文本/媒体/流式消息发送,用于 QQ 远程控制通道                                       | MIT      |
+| [tencent-connect](https://github.com/tencent-connect) 组织相关仓库(bot-docs、botpy 等) | QQ 开放平台 API 与交互文档,QQ 适配器实现的协议参考                                                                                | 各自许可 |
+| [node-qrcode](https://github.com/soldair/node-qrcode)                                  | 二维码生成,用于手机扫码配对                                                                                                       | MIT      |
+| [Electron](https://github.com/electron/electron)                                       | 桌面应用框架                                                                                                                      | MIT      |
+| [electron-builder](https://github.com/electron-userland/electron-builder)              | 应用打包                                                                                                                          | MIT      |
 
 同时感谢 DeepSeek Harness 社区与本项目测试过程中提供反馈的各位使用者。
 
@@ -127,14 +128,14 @@ npm start        # 构建并启动桌面端
 
 「设置 → AI 屏保」:
 
-| 配置 | 说明 |
-|---|---|
-| 启用空闲检测 | 空闲达到阈值后自动进入全屏屏保 |
-| 空闲几分钟后触发 | 默认 5 分钟 |
+| 配置                | 说明                                                                                                |
+| ------------------- | --------------------------------------------------------------------------------------------------- |
+| 启用空闲检测        | 空闲达到阈值后自动进入全屏屏保                                                                      |
+| 空闲几分钟后触发    | 默认 5 分钟                                                                                         |
 | 自动启动 agent 任务 | **默认关闭**。进入屏保只显示环境画面(时钟/状态),不消耗任何资源;勾选后才会自动创建会话执行任务 |
-| 任务提示词 | 自定义屏保任务(默认:浏览科技新闻并整理要点) |
-| 任务工作目录 | 可选,指定 agent 的工作目录 |
-| 任务超时(分钟) | 默认 10 分钟。任务超时自动停止——防止 agent 失控循环烧 CPU(这是重要护栏) |
+| 任务提示词          | 自定义屏保任务(默认:浏览科技新闻并整理要点)                                                         |
+| 任务工作目录        | 可选,指定 agent 的工作目录                                                                          |
+| 任务超时(分钟)      | 默认 10 分钟。任务超时自动停止——防止 agent 失控循环烧 CPU(这是重要护栏)                           |
 
 屏保画面实时渲染 agent 的思考、输出文本与工具调用卡片(流式渲染为增量追加,不因长输出卡顿)。**退出方式:点击、按键、滚轮、触摸均可立即退出**;鼠标移动不触发退出(避免鼠标抖动导致屏保闪退)。退出后任务默认**保留在后台继续运行**,下次进入屏保会「继续上次任务」;关闭「保留任务」则在每次进入时重启新任务。任务会话自动命名「AI 屏保任务 HH:MM」,便于在 Web UI 中识别。
 
@@ -183,26 +184,26 @@ npm start        # 构建并启动桌面端
 
 「设置 → QQ 机器人」填入在 [QQ 开放平台](https://q.qq.com) 注册机器人得到的 AppID/AppSecret 即启用(留空自动禁用),也可设置**默认工作区/目录**(任务命令未指定时自动使用)。在 QQ 私聊机器人发送指令(发送任意无法识别的消息,机器人会自动回复完整指令集与示例):
 
-| 指令 | 说明 | 示例 |
-|---|---|---|
-| `状态` / `会话` / `工作区` / `模型` | 查询类 | `状态`、`工作区` |
-| `任务 <描述>` | 默认工作区执行任务 | `任务 分析这个仓库的架构` |
-| `任务 @<工作区名> <描述>` | 指定工作区执行 | `任务 @qqbot 修复登录 bug` |
-| `任务 目录:<路径> <描述>` | 指定目录执行 | `任务 目录:D:/work 写一个脚本` |
-| `进入` | **纯对话**:不绑定工作区/目录,朋友模式 | `进入` |
-| `进入 <工作区名/目录>` | 在该工作区对话(助手模式) | `进入 qqbot`、`进入 D:/work` |
-| *(对话模式)* | 直接发消息即可,无需前缀;agent 回复**自动推送**给你,全程无"已发送"噪音;`退出` 结束 | `帮我看看项目里的 TODO` → 💬 回复 → `退出` |
-| `进展 <会话id>` | 任务实时进展(状态/工具统计/最新输出) | `进展 session-xxxxxxxx` |
-| `停止 <会话id>` / `打开 <会话id>` | 停止任务 / 查看会话内容 | `停止 session-xxxxxxxx` |
-| `允许` / `拒绝` | **审批应答**:agent 请求权限时允许/拒绝(多个待审批时带会话 id) | `允许`、`拒绝 session-xxxxxxxx` |
-| `选 <编号>` | **选择题应答**:回答 agent 提问(多选 `选 1 3`,自定义 `选 自定义:…`,多题批次 `#2 选 1`) | `选 2` |
-| `定时 <时长> <任务>` | **定时任务**:`定时 10分钟 检查更新`(10 分钟/5m/2小时/1天 一次性;`定时 每天9:00 写日报` 每天) | `定时 10分钟 检查更新` |
-| `定时列表` / `取消定时 <编号>` | 查看/取消已排定时任务 | `取消定时 2` |
-| `目录 <路径>` / `文件 <路径>` | 浏览工作区目录 / 查看文本文件(白名单内) | `目录 D:/work`、`文件 D:/work/README.md` |
-| `导出 <会话id>` | 将会话导出为 Markdown(保存在桌面端 `exports/` 目录) | `导出 session-xxxxxxxx` |
-| `用量` | 今日用量统计(会话数/回合数/Token) | `用量` |
-| `角色 <设定>` | **角色扮演**:设置对话模式角色(仅纯对话生效,与朋友提示词叠加);`角色 无` 清除 | `角色 你是温柔的英语老师` |
-| *(私聊发图片)* | **图片理解**:对话模式下直接发图片,agent 看图分析 | 发一张截图 → `看看这张图有什么问题` |
+| 指令                                        | 说明                                                                                                   | 示例                                             |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| `状态` / `会话` / `工作区` / `模型` | 查询类                                                                                                 | `状态`、`工作区`                             |
+| `任务 <描述>`                             | 默认工作区执行任务                                                                                     | `任务 分析这个仓库的架构`                      |
+| `任务 @<工作区名> <描述>`                 | 指定工作区执行                                                                                         | `任务 @qqbot 修复登录 bug`                     |
+| `任务 目录:<路径> <描述>`                 | 指定目录执行                                                                                           | `任务 目录:D:/work 写一个脚本`                 |
+| `进入`                                    | **纯对话**:不绑定工作区/目录,朋友模式                                                            | `进入`                                         |
+| `进入 <工作区名/目录>`                    | 在该工作区对话(助手模式)                                                                               | `进入 qqbot`、`进入 D:/work`                 |
+| *(对话模式)*                              | 直接发消息即可,无需前缀;agent 回复**自动推送**给你,全程无"已发送"噪音;`退出` 结束              | `帮我看看项目里的 TODO` → 💬 回复 → `退出` |
+| `进展 <会话id>`                           | 任务实时进展(状态/工具统计/最新输出)                                                                   | `进展 session-xxxxxxxx`                        |
+| `停止 <会话id>` / `打开 <会话id>`       | 停止任务 / 查看会话内容                                                                                | `停止 session-xxxxxxxx`                        |
+| `允许` / `拒绝`                         | **审批应答**:agent 请求权限时允许/拒绝(多个待审批时带会话 id)                                    | `允许`、`拒绝 session-xxxxxxxx`              |
+| `选 <编号>`                               | **选择题应答**:回答 agent 提问(多选 `选 1 3`,自定义 `选 自定义:…`,多题批次 `#2 选 1`)     | `选 2`                                         |
+| `定时 <时长> <任务>`                      | **定时任务**:`定时 10分钟 检查更新`(10 分钟/5m/2小时/1天 一次性;`定时 每天9:00 写日报` 每天) | `定时 10分钟 检查更新`                         |
+| `定时列表` / `取消定时 <编号>`          | 查看/取消已排定时任务                                                                                  | `取消定时 2`                                   |
+| `目录 <路径>` / `文件 <路径>`           | 浏览工作区目录 / 查看文本文件(白名单内)                                                                | `目录 D:/work`、`文件 D:/work/README.md`     |
+| `导出 <会话id>`                           | 将会话导出为 Markdown(保存在桌面端`exports/` 目录)                                                   | `导出 session-xxxxxxxx`                        |
+| `用量`                                    | 今日用量统计(会话数/回合数/Token)                                                                      | `用量`                                         |
+| `角色 <设定>`                             | **角色扮演**:设置对话模式角色(仅纯对话生效,与朋友提示词叠加);`角色 无` 清除                    | `角色 你是温柔的英语老师`                      |
+| *(私聊发图片)*                            | **图片理解**:对话模式下直接发图片,agent 看图分析                                                 | 发一张截图 →`看看这张图有什么问题`            |
 
 **按钮操作**:任务启动后自动附带「⏹ 停止 / 📋 进展 / 📖 打开」按钮;审批推送带「✅ 允许 / ❌ 拒绝」;单选提问带选项按钮——点一下即操作/应答,基本不用打字。
 
@@ -269,14 +270,14 @@ scripts/           冒烟与端到端测试脚本
 
 本项目站在众多优秀开源项目的肩膀上,衷心感谢以下项目及其维护者:
 
-| 项目 | 贡献 |
-|---|---|
-| [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) | 核心 Agent 引擎与 HTTP RPC / 事件流协议,桌面端、手机 PWA 与机器人通道都建立在它之上 |
-| [tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs) | QQ 开放平台机器人 Node SDK:WebSocket 网关、消息收发、主动推送(48h 窗口)与内联键盘审批按钮 |
-| [tencent-connect/qqbot-agent-sdk](https://github.com/tencent-connect/qqbot-agent-sdk) | 扫码登录(onboard:create_bind_task / AES-GCM 凭据解密)与审批内联键盘的协议参考实现 |
-| [tencent-connect/dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot) | 官方 QQ×DSH 插件:指令集、会话映射与事件展示的设计参考 |
-| [electron](https://github.com/electron/electron) 与 [electron-builder](https://github.com/electron-userland/electron-builder) | 桌面壳与打包分发 |
-| [node-qrcode](https://github.com/soldair/node-qrcode) | 手机扫码配对与 QQ 扫码登录的二维码生成 |
+| 项目                                                                                                                        | 贡献                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)                                              | 核心 Agent 引擎与 HTTP RPC / 事件流协议,桌面端、手机 PWA 与机器人通道都建立在它之上       |
+| [tencent-connect/qqbot-nodejs](https://github.com/tencent-connect/qqbot-nodejs)                                              | QQ 开放平台机器人 Node SDK:WebSocket 网关、消息收发、主动推送(48h 窗口)与内联键盘审批按钮 |
+| [tencent-connect/qqbot-agent-sdk](https://github.com/tencent-connect/qqbot-agent-sdk)                                        | 扫码登录(onboard:create_bind_task / AES-GCM 凭据解密)与审批内联键盘的协议参考实现         |
+| [tencent-connect/dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot)                                                    | 官方 QQ×DSH 插件:指令集、会话映射与事件展示的设计参考                                    |
+| [electron](https://github.com/electron/electron) 与 [electron-builder](https://github.com/electron-userland/electron-builder) | 桌面壳与打包分发                                                                          |
+| [node-qrcode](https://github.com/soldair/node-qrcode)                                                                        | 手机扫码配对与 QQ 扫码登录的二维码生成                                                    |
 
 QQ 机器人通道的协议细节参考了 [QQ 开放平台 API v2 文档](https://bot.q.qq.com/wiki/develop/api-v2/) 与 [Agent QQBot 接入指南](https://bot.q.qq.com/wiki/agent-qqbot/)。
 
@@ -286,8 +287,6 @@ QQ 机器人通道的协议细节参考了 [QQ 开放平台 API v2 文档](https
 
 觉得有用?欢迎加入内测交流群反馈问题、提出建议;也可以请作者喝杯咖啡 ☕
 
-| 内测交流群(QQ) | 微信赞赏 |
-|---|---|
+| 内测交流群(QQ)                        | 微信赞赏                                        |
+| ------------------------------------- | ----------------------------------------------- |
 | ![QQ 群](assets/support/qq-group.jpg) | ![微信赞赏码](assets/support/wechat-reward.png) |
-
-群内可直连 [@QQ 机器人](docs/USAGE.md#7-qq-机器人远程控制--qq-bot-remote-control) 试玩远程控制、审批与主动汇报能力。

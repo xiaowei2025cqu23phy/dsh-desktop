@@ -76,7 +76,7 @@ function harnessView(): WebviewElement {
 }
 
 /** 把主窗口壁纸注入内嵌 harness Web UI 背景,让对话页也透出壁纸。 */
-async function syncWebviewWallpaper(): Promise<void> {
+async function syncWebviewWallpaper(maskOverride?: number): Promise<void> {
   const view = harnessView()
   const remove = async (): Promise<void> => {
     if (webviewWallpaperKey !== null) {
@@ -98,6 +98,15 @@ async function syncWebviewWallpaper(): Promise<void> {
       await remove()
       return
     }
+    // 遮罩强度跟随设置(此前硬编码 0.55,导致对话页壁纸明显比顶栏暗)。
+    let mask = maskOverride
+    if (mask === undefined) {
+      try {
+        mask = (await API.appearance.getConfig()).mask
+      } catch {
+        mask = 0.3
+      }
+    }
     // 注入前用 canvas 压缩到最长边 1600 的 JPEG:插页样式表里的 data URL 过大
     // 会被 Chromium 丢弃(仅 CSS 变量/样式存在该限制,img.src 没有)。
     const compressed = await compressImageDataUrl(dataUrl, 1600, 0.82)
@@ -111,7 +120,7 @@ async function syncWebviewWallpaper(): Promise<void> {
     const css = `html { background-image: url("${compressed}") !important; background-size: cover !important; ` +
       `background-position: ${position.x * 100}% ${position.y * 100}% !important; ` +
       `background-repeat: no-repeat !important; } ` +
-      `html::before { content: ''; position: fixed; inset: 0; background: rgba(4, 6, 11, 0.55); z-index: 0; pointer-events: none; } ` +
+      `html::before { content: ''; position: fixed; inset: 0; background: rgba(4, 6, 11, ${mask}); z-index: 0; pointer-events: none; } ` +
       `#root, html, body, [class*="_frame"], [class*="_root"], [class*="_sidebarCol"], [class*="_panel"], [class*="_area"], [class*="_body"] { background-color: transparent !important; }`
     webviewWallpaperKey = await view.insertCSS(css)
   } catch (error) {
@@ -1102,7 +1111,7 @@ async function applyWindowWallpaper(config: AppearanceConfigView): Promise<void>
   $id('wall-screensaver-name').textContent =
     config.screensaver.path === null ? '默认深色' : (config.screensaver.path.split(/[\\/]/).pop() ?? '')
   input('wall-mask').value = String(config.mask)
-  void syncWebviewWallpaper()
+  void syncWebviewWallpaper(config.mask)
 }
 
 async function loadAppearance(): Promise<void> {
