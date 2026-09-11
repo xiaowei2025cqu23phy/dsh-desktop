@@ -41,6 +41,8 @@ export class ScreensaverController {
   private activating = false
   /** 最近一次空闲激活失败时间:失败后 5 分钟冷却,避免对不可用 harness 的激活风暴。 */
   private lastActivateFailAt = 0
+  /** 冷却期内跳过激活的日志节流时间(避免每 3 秒刷一行)。 */
+  private lastCooldownLogAt = 0
   /** 本次激活的来源(manual/idle),决定安全网是否生效。 */
   private activationOrigin: 'manual' | 'idle' | 'system' = 'manual'
 
@@ -128,7 +130,11 @@ export class ScreensaverController {
   async activate(origin: 'manual' | 'idle' | 'system' = 'manual'): Promise<void> {
     if (this.active || this.activating) return
     if (origin !== 'manual' && Date.now() - this.lastDeactivatedAt < 300000) {
-      console.log('[screensaver] 退出冷却中(5 分钟),跳过自动激活 origin=', origin)
+      // 冷却期内每 3 秒的 tick 都会走到这里:日志节流到每分钟最多一条。
+      if (Date.now() - this.lastCooldownLogAt > 60000) {
+        this.lastCooldownLogAt = Date.now()
+        console.log('[screensaver] 退出冷却中(5 分钟),跳过自动激活 origin=', origin)
+      }
       return
     }
     this.activationOrigin = origin
