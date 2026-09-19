@@ -168,6 +168,29 @@ select:disabled { opacity: 0.55; }
   display: flex; flex-direction: column; gap: 14px;
 }
 .workbench.hidden { display: none; }
+
+/* ---- 首启引导面板 ---- */
+.onboarding {
+  background: var(--bg-panel-2); border: 1px solid rgba(77, 124, 254, 0.3);
+  border-radius: 12px; padding: 16px 18px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.onboarding.hidden { display: none; }
+.ob-head { display: flex; align-items: center; justify-content: space-between; }
+.ob-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.ob-steps { display: flex; flex-direction: column; gap: 10px; }
+.ob-step { display: flex; align-items: flex-start; gap: 12px; }
+.ob-step-num {
+  flex: 0 0 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(139, 148, 167, 0.15); color: var(--text-dim); font-size: 13px; font-weight: 600;
+}
+.ob-step-num.ob-ok { background: rgba(52, 201, 143, 0.16); color: var(--ok); }
+.ob-step-title { font-size: 14px; color: var(--text); font-weight: 500; }
+.ob-step-status { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.ob-step-status.ob-warn { color: var(--warn); }
+.ob-actions { display: flex; gap: 10px; }
+
 .wb-overview {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
 }

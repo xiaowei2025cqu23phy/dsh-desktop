@@ -310,6 +310,8 @@ export interface AppConfig {
   workspaceMemories: Record<string, WorkspaceMemory>
   /** 本地审计时间线,不含模型请求正文。 */
   auditLog: AuditEntry[]
+  /** 首启引导状态(完成后再启动不再显示欢迎引导)。 */
+  onboarding: { done: boolean }
 }
 
 const DEFAULTS: AppConfig = {
@@ -407,6 +409,7 @@ const DEFAULTS: AppConfig = {
   activities: [],
   workspaceMemories: {},
   auditLog: [],
+  onboarding: { done: false },
 }
 
 export class ConfigStore {

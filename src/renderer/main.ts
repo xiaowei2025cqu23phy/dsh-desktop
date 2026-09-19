@@ -2549,6 +2549,7 @@ function bind(): void {
   bindAppearance()
   bindScreensaver()
   bindHarnessConfig()
+  bindOnboarding()
 }
 
 /** 在设置面板显示当前构建版本与 commit,便于发现「跑的是旧包」的情况。 */
@@ -2588,6 +2589,58 @@ async function refreshStatusBar(): Promise<void> {
   } catch { /* 加载失败保留占位 */ }
 }
 
+/** 首启引导:检测 harness 就绪 + 模型已配,更新三步清单状态;已完成则隐藏。 */
+async function refreshOnboarding(): Promise<void> {
+  const panel = $id('onboarding')
+  try {
+    const done = await API.onboarding.get()
+    if (done) { panel.classList.add('hidden'); return }
+  } catch { return }
+  panel.classList.remove('hidden')
+  try {
+    const status = await API.harness.getStatus()
+    const ready = status.state === 'running' || status.state === 'external'
+    const statusEl = $id('ob-harness-status')
+    const numEl = $id('ob-num-harness')
+    if (ready) {
+      statusEl.textContent = '已就绪 ✓(harness 由桌面端自动托管启动)'
+      statusEl.classList.remove('ob-warn')
+      numEl.classList.add('ob-ok')
+    } else {
+      statusEl.textContent = status.state === 'error'
+        ? `需处理:${status.error ?? '未知错误'}`
+        : '启动中…(桌面端自动拉起 harness,若长时间未就绪请确认已安装 Node.js)'
+      statusEl.classList.add('ob-warn')
+    }
+  } catch { /* 忽略 */ }
+  try {
+    const models = await API.models.list()
+    const hasModel = models.groups.length > 0
+    const statusEl = $id('ob-model-status')
+    const numEl = $id('ob-num-model')
+    if (hasModel) {
+      statusEl.textContent = `已配置 ${models.groups.length} 组模型 ✓`
+      statusEl.classList.remove('ob-warn')
+      numEl.classList.add('ob-ok')
+    } else {
+      statusEl.textContent = '尚未配置模型:点「去配置模型」,或打开 harness Web UI 添加 Provider 与 API Key'
+      statusEl.classList.add('ob-warn')
+    }
+  } catch { /* 忽略 */ }
+}
+
+function bindOnboarding(): void {
+  $id('btn-onboarding-close').addEventListener('click', () => $id('onboarding').classList.add('hidden'))
+  $id('btn-ob-done').addEventListener('click', async () => {
+    await API.onboarding.complete()
+    $id('onboarding').classList.add('hidden')
+  })
+  $id('btn-ob-goto-model').addEventListener('click', () => {
+    void openDrawer()
+    applyDrawerGroup('maintenance')
+  })
+}
+
 function init(): void {
   bind()
   void showBuildInfo()
@@ -2595,6 +2648,8 @@ function init(): void {
   setInterval(() => void refreshStatus(), 2000)
   void refreshStatusBar()
   setInterval(() => void refreshStatusBar(), 10_000)
+  void refreshOnboarding()
+  setInterval(() => void refreshOnboarding(), 10_000)
   void loadModels()
   void loadAppearance()
   initPet()

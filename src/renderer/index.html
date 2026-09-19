@@ -40,6 +40,39 @@
     <main id="content">
       <webview id="harness-view" class="harness-view"></webview>
       <div id="view-workbench" class="workbench hidden">
+        <div id="onboarding" class="onboarding hidden">
+          <div class="ob-head">
+            <span class="ob-title">👋 欢迎使用 DeepSeek Harness Desktop</span>
+            <button id="btn-onboarding-close" class="btn btn-ghost btn-sm">稍后再说</button>
+          </div>
+          <div class="ob-steps">
+            <div class="ob-step">
+              <span class="ob-step-num" id="ob-num-harness">1</span>
+              <div class="ob-step-body">
+                <div class="ob-step-title">启动 harness 服务</div>
+                <div class="ob-step-status" id="ob-harness-status">检测中…</div>
+              </div>
+            </div>
+            <div class="ob-step">
+              <span class="ob-step-num" id="ob-num-model">2</span>
+              <div class="ob-step-body">
+                <div class="ob-step-title">配置模型(添加 Provider + API Key)</div>
+                <div class="ob-step-status" id="ob-model-status">检测中…</div>
+              </div>
+            </div>
+            <div class="ob-step">
+              <span class="ob-step-num" id="ob-num-done">3</span>
+              <div class="ob-step-body">
+                <div class="ob-step-title">开始使用</div>
+                <div class="ob-step-status">harness 就绪、模型已配后即可对话 / 任务 / 远程控制</div>
+              </div>
+            </div>
+          </div>
+          <div class="ob-actions">
+            <button id="btn-ob-goto-model" class="btn btn-primary">去配置模型</button>
+            <button id="btn-ob-done" class="btn">完成引导</button>
+          </div>
+        </div>
         <div class="wb-overview">
           <div class="wb-stat"><span class="wb-stat-label">Harness</span><span id="stat-harness" class="wb-stat-value wb-stat-value-sm">未启动</span></div>
           <div class="wb-stat"><span class="wb-stat-label">待处理</span><span id="stat-interactions" class="wb-stat-value">–</span></div>

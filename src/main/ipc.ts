@@ -349,6 +349,13 @@ export function registerIpc(deps: IpcDeps): void {
   // ---- 机器人指令集(桌面端可查看) ----
   ipcMain.handle('bot:help', () => deps.commands?.fullHelp() ?? '(指令集不可用)')
 
+  // ---- 首启引导 ----
+  ipcMain.handle('onboarding:get', () => deps.config.get().onboarding?.done === true)
+  ipcMain.handle('onboarding:complete', () => {
+    deps.config.update('onboarding', { done: true })
+    return true
+  })
+
   // ---- 外观 ----
   ipcMain.handle('appearance:getConfig', () => deps.appearance.getConfig())
   ipcMain.handle('appearance:pickSource', async (_event, kind: string) => {

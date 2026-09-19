@@ -175,6 +175,10 @@ const api = {
     openSettingsFolder: () => ipcRenderer.invoke('app:openSettingsFolder'),
     quit: () => ipcRenderer.invoke('app:quit'),
   },
+  onboarding: {
+    get: () => ipcRenderer.invoke('onboarding:get'),
+    complete: () => ipcRenderer.invoke('onboarding:complete'),
+  },
   updater: {
     getInfo: () => ipcRenderer.invoke('updater:getInfo'),
     check: () => ipcRenderer.invoke('updater:check'),

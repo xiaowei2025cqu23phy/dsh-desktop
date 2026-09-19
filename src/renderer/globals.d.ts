@@ -305,6 +305,10 @@ interface DesktopApi {
     openSettingsFolder(): Promise<{ opened: true }>
     quit(): Promise<void>
   }
+  onboarding: {
+    get(): Promise<boolean>
+    complete(): Promise<boolean>
+  }
   updater: {
     getInfo(): Promise<{ current: string; latest: string | null; url: string | null; checkedAt: number; hasUpdate: boolean }>
     check(): Promise<{ current: string; latest: string | null; url: string | null; checkedAt: number; hasUpdate: boolean }>
