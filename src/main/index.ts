@@ -101,14 +101,20 @@ function botHealthLines(qqBot: QQBotAdapter | null, telegramBot: TelegramBotAdap
   if (q !== undefined) {
     if (!q.configured) {
       lines.push('🤖 QQ 机器人:未启用(设置 → QQ 机器人填入凭据)')
+    } else if (q.locked) {
+      lines.push('🤖 QQ 机器人:🔒 锁定(未填「允许的用户 openid」,不服务任何聊天;设置页可查看被拒 openid 并填入)')
     } else if (q.connected) {
-      lines.push(`🤖 QQ 机器人:✓ 已连接${q.readyAt !== null ? `(${fmt(q.readyAt)})` : ''}`)
+      lines.push(`🤖 QQ 机器人:✓ 已连接${q.readyAt !== null ? `(${fmt(q.readyAt)})` : ''}(仅服务白名单用户)`)
     } else {
       lines.push('🤖 QQ 机器人:⚠️ 未连接(见下方最近失败;仍无头绪看服务日志)')
     }
     if (q.lastError !== null) {
       lines.push(`  ⚠️ 最近失败(${q.lastError.action}):${q.lastError.detail.slice(0, 120)}`)
       if (q.lastError.hint !== '') lines.push(`  💡 ${q.lastError.hint}`)
+    }
+    if (q.deniedUsers.length > 0) {
+      const latest = q.deniedUsers[q.deniedUsers.length - 1]
+      lines.push(`  🔒 最近被拒绝的 openid:${latest.id}(不在白名单)`)
     }
   }
   const t = telegramBot?.diag()

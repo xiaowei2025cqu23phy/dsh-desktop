@@ -114,6 +114,44 @@ function turnEndFailure(ev: Record<string, unknown>): { message: string; isTrans
   return failed ? { message, isTransport, failed } : null
 }
 
+/**
+ * 审批风险分级:决定「谁」有应答权(职责分离)。
+ *
+ * 高风险 = 聊天侧的「允许」无效,只能转桌面端确认:
+ *  - 删除/破坏类工具(rm/delete/remove/trash/unlink/mv 覆盖等);
+ *  - 执行类工具(bash/exec/shell/run)且理由涉及删除、权限提升或越权路径;
+ *  - 理由明确请求完全访问(danger-full-access / full-access / 完全访问 / 不受限);
+ *  - 理由表明路径在工作区之外(工作区外 / 任意路径 / 越权);
+ *  - 写入类工具(write/edit/save/create/mkdir/patch/apply/upload/put)一律按高风险保守处理
+ *    —— 写入可能落在工作区之外,聊天端看不到完整路径,只有桌面端能核对后再决定。
+ *
+ * 低风险 = 只读浏览(glob/read/list/cat 等)与理由不含任何越权信号的工具调用。
+ */
+function approvalRisk(toolName: string, reason: string): 'high' | 'low' {
+  // 工具名多为 snake_case / camelCase:先拆成词(下划线/连字符视为分隔),再按词匹配。
+  const tool = toolName.toLowerCase().replace(/[_-]+/g, ' ').trim()
+  const text = reason.toLowerCase()
+  // 删除/破坏类工具。
+  if (/\b(rm|del(ete)?|remove|trash|unlink|rmdir|purge|destroy|wipe)\b/.test(tool) || /删除|移除|清空|覆盖|删除文件|销毁/.test(text)) {
+    return 'high'
+  }
+  // 完全访问 / 越权 cwd 请求。
+  if (/danger-full-access|full[\s-]*access|完全访问|不受限|任意路径|工作区外|越权/.test(text)) {
+    return 'high'
+  }
+  // 执行类工具:能运行任意命令;理由若含删除/权限提升/越权路径则高风险。
+  if (/\b(bash|exec|shell|sh|run|eval|command|spawn)\b/.test(tool)) {
+    if (/rm |delete|sudo|chmod|chown|chgrp|curl|wget|>|>>|工作区外|任意路径|越权/.test(text)) return 'high'
+    // 无参数线索的执行类调用(如「执行 rm」的 reason 就含 rm)按保守高风险。
+    if (text.includes('rm') || text.includes('删除') || text.includes('执行')) return 'high'
+  }
+  // 写入类工具:保守按高风险(聊天端无法核对写入路径)。
+  if (/\b(write|edit|save|create|mkdir|patch|apply|upload|put|publish|deploy|install|uninstall)\b/.test(tool)) {
+    return 'high'
+  }
+  return 'low'
+}
+
 /** 对话模式上下文。 */
 interface ChatContext {
   sessionId: string
@@ -168,6 +206,8 @@ interface PendingApproval {
   toolName: string
   reason?: string
   createdAt: number
+  /** 风险分级:high = 聊天侧「允许」无效,只能转桌面端确认;low = 保留聊天内一键应答。 */
+  risk: 'high' | 'low'
 }
 
 /** 待回答的提问批次(选择题)。 */
@@ -552,8 +592,14 @@ export class RemoteCommandProcessor {
             }
           } else {
             const payload: Record<string, unknown> = {}
-            if (/[\\/]/.test(next.workspace)) payload.cwd = next.workspace
-            else payload.workspaceId = next.workspace
+            if (/[\\/]/.test(next.workspace)) {
+              // 目录路径必须过白名单(与「任务 目录:」一致),防止排队任务越权落到工作区之外。
+              const allowed = await this.resolveAllowedCwd(next.workspace)
+              if (!allowed.ok) throw new Error(allowed.message)
+              payload.cwd = next.workspace
+            } else {
+              payload.workspaceId = next.workspace
+            }
             const created = await client.rpc<{ sessionId: string }>('session.create', payload)
             createdId = created.sessionId
           }
@@ -727,6 +773,9 @@ export class RemoteCommandProcessor {
     if (pending === null) {
       return '该审批已处理或已过期。'
     }
+    if (pending.risk === 'high') {
+      return '该操作属高风险(写入/删除/执行等),需在电脑桌面端确认;聊天侧的「允许」/「拒绝」对此类请求无效。请在桌面端弹出的审批里操作。'
+    }
     const client = this.harness.client()
     try {
       const receipt = await client.respond(pending.rpcId, {
@@ -800,7 +849,7 @@ export class RemoteCommandProcessor {
         reply = await this.executeCommand(command, key, ctxKey, pushTarget)
       }
     }
-    const suffix = this.pendingSuffix(channel, userId)
+    const suffix = this.pendingSuffix(channel, userId, pushTarget?.scope === 'group')
     if (suffix === '') return reply
     return reply === '' ? suffix : `${reply}\n\n${suffix}`
   }
@@ -938,15 +987,16 @@ export class RemoteCommandProcessor {
     ctxKey: string,
     pushTarget?: { scope: string; targetId: string },
   ): Promise<string> {
+    const owner = this.ownerFromKey(key)
     switch (command.kind) {
       case 'help':
         return this.fullHelp()
       case 'status':
         return this.cmdStatus()
       case 'sessions':
-        return this.cmdSessions(ctxKey)
+        return this.cmdSessions(owner, ctxKey)
       case 'workspaces':
-        return this.cmdWorkspaces()
+        return this.cmdWorkspaces(owner)
       case 'models':
         return this.cmdModels()
       case 'model':
@@ -957,28 +1007,27 @@ export class RemoteCommandProcessor {
           if (denied !== null) return denied
           return this.cmdSchedAdd(key, command.delay, command.description, pushTarget)
         }
-        if (command.action === 'list') return this.cmdSchedList()
-        return this.cmdSchedRemove(command.index)
+        if (command.action === 'list') return this.cmdSchedList(owner)
+        return this.cmdSchedRemove(owner, command.index)
       case 'ls':
         return this.cmdLs(command.path)
       case 'cat':
         return this.cmdCat(command.path)
       case 'export':
-        return this.cmdExport(command.sessionId)
+        return this.cmdExport(owner, command.sessionId)
       case 'restore':
-        return this.cmdRestore(command.sessionId)
+        return this.cmdRestore(owner, command.sessionId)
       case 'usage':
-        return this.cmdUsage()
+        return this.cmdUsage(owner)
       case 'character':
         return this.cmdCharacter(command.text)
       case 'cancel':
-        return this.cmdCancel(command.sessionId)
+        return this.cmdCancel(owner, command.sessionId)
       case 'open':
-        return this.cmdOpen(command.sessionId)
+        return this.cmdOpen(owner, command.sessionId)
       case 'progress':
-        return this.cmdProgress(command.sessionId)
+        return this.cmdProgress(owner, command.sessionId)
       case 'broadcast': {
-        const owner = this.ownerFromKey(key)
         return this.cmdBroadcast(owner.channel, owner.userId, command.sessionId, command.on)
       }
       case 'follow':
@@ -1049,7 +1098,7 @@ export class RemoteCommandProcessor {
     }
   }
 
-  private async cmdSessions(key?: string): Promise<string> {
+  private async cmdSessions(owner: Pick<SessionOwner, 'channel' | 'userId'>, key?: string): Promise<string> {
     const client = this.harness.client()
     try {
       // 对话模式中:「会话」列出当前工作区的会话供选择(编号与「进入 ws N」一致)。
@@ -1059,7 +1108,9 @@ export class RemoteCommandProcessor {
           const wsData = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string; sessionIds?: string[] }>; archivedSessionIds?: string[] }>('workspace.list', {}, 20000)
           const found = (wsData.items ?? []).find((w) => w.title === ctx.label || w.path === ctx.label || w.workspaceId === ctx.label)
           if (found !== undefined) {
-            const sessions = await this.sessionsOfWorkspace(client, found, new Set(wsData.archivedSessionIds ?? []))
+            const allSessions = await this.sessionsOfWorkspace(client, found, new Set(wsData.archivedSessionIds ?? []))
+            // 只列出发起者自己的会话(他人/桌面端会话不可见,也不可进入)。
+            const sessions = allSessions.filter((s) => this.ownedByOwner(owner, s.sessionId))
             if (sessions.length === 0) return '该工作区暂无会话,发「进入 ' + ctx.label + ' 新」新建。'
             const currentIndex = sessions.findIndex((s) => s.sessionId === ctx.sessionId)
             const lines = [`工作区「${ctx.label}」的会话(共 ${sessions.length} 个${currentIndex >= 0 ? `,当前在第 ${currentIndex + 1} 个` : ''}):`]
@@ -1078,9 +1129,9 @@ export class RemoteCommandProcessor {
         client.rpc<{ archivedSessionIds?: string[] }>('workspace.list', {}, 20000),
       ])
       const archived = new Set(ws.archivedSessionIds ?? [])
-      // 隐藏:未发生的空会话(blank)、子代理(origin)与已归档会话;取最近 6 个。
+      // 隐藏:未发生的空会话(blank)、子代理(origin)与已归档会话;并按发起者过滤(只显示本人会话)。
       const items = (list.items ?? [])
-        .filter((s) => !s.blank && !archived.has(s.sessionId) && !(typeof s.origin === 'string' && s.origin !== ''))
+        .filter((s) => !s.blank && !archived.has(s.sessionId) && !(typeof s.origin === 'string' && s.origin !== '') && this.ownedByOwner(owner, s.sessionId))
         .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
         .slice(0, 6)
       if (items.length === 0) return '暂无会话'
@@ -1106,7 +1157,7 @@ export class RemoteCommandProcessor {
       })
       lines.push('回复「打开 <会话id>」查看完整内容')
       const archivedCount = (list.items ?? [])
-        .filter((s) => !s.blank && !(typeof s.origin === 'string' && s.origin !== '') && archived.has(s.sessionId))
+        .filter((s) => !s.blank && !(typeof s.origin === 'string' && s.origin !== '') && archived.has(s.sessionId) && this.ownedByOwner(owner, s.sessionId))
         .length
       if (archivedCount > 0) lines.push(`🗄 已归档 ${archivedCount} 个会话(发「恢复 <会话id>」或手机 PWA 底部「已归档」可恢复)`)
       return lines.join('\n')
@@ -1115,7 +1166,7 @@ export class RemoteCommandProcessor {
     }
   }
 
-  private async cmdWorkspaces(): Promise<string> {
+  private async cmdWorkspaces(owner: Pick<SessionOwner, 'channel' | 'userId'>): Promise<string> {
     const client = this.harness.client()
     try {
       const [data, list] = await Promise.all([
@@ -1125,7 +1176,8 @@ export class RemoteCommandProcessor {
       const items = data.items ?? []
       if (items.length === 0) return '暂无工作区'
       const archived = new Set(data.archivedSessionIds ?? [])
-      const sessions = (list.items ?? []).filter((s) => !s.blank && !archived.has(s.sessionId) && !(typeof s.origin === 'string' && s.origin !== ''))
+      // 会话数/运行数只统计发起者自己的会话(他人/桌面端会话不计入)。
+      const sessions = (list.items ?? []).filter((s) => !s.blank && !archived.has(s.sessionId) && !(typeof s.origin === 'string' && s.origin !== '') && this.ownedByOwner(owner, s.sessionId))
       // 每个工作区的会话数/运行数按 cwd/注册 id 归属统计(与「进入」一致,避免显示不全)。
       const countOf = (w: { workspaceId: string; path?: string; sessionIds?: string[] }): { total: number; running: number } => {
         const p = (w.path ?? '').replace(/\\/g, '/').toLowerCase()
@@ -1212,13 +1264,12 @@ export class RemoteCommandProcessor {
    * 校验发起者身份;返回给点击者的结果文本。
    */
   async handleButtonAction(channel: string, userId: string, sessionId: string, action: 'stop' | 'progress' | 'open'): Promise<string> {
-    const owner = this.sessionOwners.get(sessionId)
-    if (owner === undefined || owner.channel !== channel || normUserId(owner.userId) !== normUserId(userId)) {
-      return '该会话不是由你发起,无权操作。'
-    }
-    if (action === 'stop') return this.cmdCancel(sessionId)
-    if (action === 'progress') return this.cmdProgress(sessionId)
-    return this.cmdOpen(sessionId)
+    const owner = { channel, userId }
+    const denied = this.assertOwnership(owner, sessionId)
+    if (denied !== null) return denied
+    if (action === 'stop') return this.cmdCancel(owner, sessionId)
+    if (action === 'progress') return this.cmdProgress(owner, sessionId)
+    return this.cmdOpen(owner, sessionId)
   }
 
   // ---- 目录浏览(安全:仅限已注册工作区与预设根目录内) ----
@@ -1256,6 +1307,16 @@ export class RemoteCommandProcessor {
     } catch (error) {
       return { ok: false, message: `校验失败:${error instanceof Error ? error.message : String(error)}` }
     }
+  }
+
+  /**
+   * 解析并校验用户直接给出的 cwd 路径:任何「进入文件系统」的 session.create 都经这里。
+   * 工作区名(不含路径分隔符)由调用方按 workspace.list 解析为受信工作区,不走白名单;
+   * 只有用户给出绝对/相对路径时才校验。拒绝时返回与「目录/文件」命令一致的中文提示。
+   */
+  private async resolveAllowedCwd(raw: string): Promise<{ ok: boolean; message: string }> {
+    const check = await this.allowPath(raw)
+    return { ok: check.ok, message: check.message }
   }
 
   private async cmdLs(path: string): Promise<string> {
@@ -1323,8 +1384,10 @@ export class RemoteCommandProcessor {
     return { markdown: lines.join('\n'), count }
   }
 
-  private async cmdExport(sessionId: string): Promise<string> {
+  private async cmdExport(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId: string): Promise<string> {
     if (!/^session-/.test(sessionId)) return '用法:导出 <会话id>'
+    const denied = this.assertOwnership(owner, sessionId)
+    if (denied !== null) return denied
     try {
       const { markdown, count } = await this.exportSession(sessionId)
       if (count === 0) return '该会话没有可导出的文本消息。'
@@ -1344,8 +1407,10 @@ export class RemoteCommandProcessor {
   }
 
   /** 恢复(取消归档)一个会话:改注册表;本应用托管且空闲时自动重启让列表生效。 */
-  private async cmdRestore(sessionId: string): Promise<string> {
+  private async cmdRestore(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId: string): Promise<string> {
     if (!/^session-/.test(sessionId)) return '用法:恢复 <会话id>(会话被归档时发「会话」会提示)'
+    const denied = this.assertOwnership(owner, sessionId)
+    if (denied !== null) return denied
     try {
       const home = dshHomeOf(this.config?.get().harness.dshHome)
       unarchiveInRegistry(home, sessionId)
@@ -1474,8 +1539,8 @@ export class RemoteCommandProcessor {
     }
   }
 
-  /** 用量与费用估算(结构化;命令端与 PWA 共用)。 */
-  async usageReport(): Promise<{
+  /** 用量与费用估算(结构化;命令端与 PWA 共用)。owner 提供时按发起者过滤(机器人命令),桌面端/PWA 传 undefined 看全量。 */
+  async usageReport(owner?: Pick<SessionOwner, 'channel' | 'userId'>): Promise<{
     todaySessions: number
     totalSessions: number
     todayTurns: number
@@ -1490,7 +1555,7 @@ export class RemoteCommandProcessor {
   }> {
     const client = this.harness.client()
     const list = await client.rpc<{ items: Array<{ sessionId: string; updatedAt?: number; title?: string | null; projections?: { values?: { sessionStats?: { turns?: number; llmMs?: number } } } }> }>('session.list', {}, 20000)
-    const items = list.items ?? []
+    const items = (list.items ?? []).filter((s) => owner === undefined || this.ownedByOwner(owner, s.sessionId))
     const now = new Date()
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
     const today = items.filter((s) => (s.updatedAt ?? 0) >= todayStart)
@@ -1565,10 +1630,10 @@ export class RemoteCommandProcessor {
     }
   }
 
-  /** 用量统计命令:今日会话/回合/耗时/Token/费用,按模型分组。 */
-  private async cmdUsage(): Promise<string> {
+  /** 用量统计命令:今日会话/回合/耗时/Token/费用,按模型分组(仅本人会话)。 */
+  private async cmdUsage(owner: Pick<SessionOwner, 'channel' | 'userId'>): Promise<string> {
     try {
-      const r = await this.usageReport()
+      const r = await this.usageReport(owner)
       const fmt = (ms: number) => ms >= 60000 ? `${(ms / 60000).toFixed(1)} 分钟` : `${Math.round(ms / 1000)} 秒`
       const lines = [
         '📊 用量统计',
@@ -1633,16 +1698,23 @@ export class RemoteCommandProcessor {
     return `⏰ 定时任务已添加:${when} 执行「${description.slice(0, 50)}」`
   }
 
-  /** 取消定时任务(命令与 PWA 共用);返回是否成功。 */
-  removeScheduled(index: number): boolean {
-    const tasks = this.config?.get().scheduledTasks ?? []
+  /**
+   * 取消定时任务(命令与 PWA 共用);返回是否成功。
+   * owner 提供时(机器人命令)只能删除调用者自己的任务,编号按调用者视角呈现;PWA 不传 owner 用全量。
+   */
+  removeScheduled(index: number, owner?: Pick<SessionOwner, 'channel' | 'userId'>): boolean {
+    const all = this.config?.get().scheduledTasks ?? []
+    const tasks = owner === undefined ? all : all.filter((t) => t.channel === owner.channel && normUserId(t.userId) === normUserId(owner.userId))
     if (index < 0 || index >= tasks.length) return false
-    this.saveTasks(tasks.filter((_, i) => i !== index))
+    const target = tasks[index]
+    this.saveTasks(all.filter((t) => t.id !== target.id))
     return true
   }
 
-  private async cmdSchedList(): Promise<string> {
-    const tasks = this.config?.get().scheduledTasks ?? []
+  private async cmdSchedList(owner: Pick<SessionOwner, 'channel' | 'userId'>): Promise<string> {
+    const all = this.config?.get().scheduledTasks ?? []
+    // 只列出调用者自己的定时任务(他人/桌面端任务不可见)。
+    const tasks = all.filter((t) => t.channel === owner.channel && normUserId(t.userId) === normUserId(owner.userId))
     if (tasks.length === 0) return '暂无定时任务。添加:定时 <表达式> <描述>(如:定时 10分钟 检查更新 / 定时 每天9:00 写日报)'
     return tasks.map((t, i) => {
       const when = t.delay.kind === 'once' ? `一次性 ${Math.round(t.delay.delayMs / 60000)} 分钟后` : `每天 ${String(t.delay.hours).padStart(2, '0')}:${String(t.delay.minutes).padStart(2, '0')}`
@@ -1650,8 +1722,8 @@ export class RemoteCommandProcessor {
     }).join('\n')
   }
 
-  private async cmdSchedRemove(index: number): Promise<string> {
-    return this.removeScheduled(index) ? '已取消定时任务' : '编号无效,发「定时列表」查看'
+  private async cmdSchedRemove(owner: Pick<SessionOwner, 'channel' | 'userId'>, index: number): Promise<string> {
+    return this.removeScheduled(index, owner) ? '已取消定时任务' : '编号无效,发「定时列表」查看'
   }
 
   private async cmdSchedAdd(
@@ -1733,7 +1805,7 @@ export class RemoteCommandProcessor {
   }
 
   /** 队列列表(桌面端与 PWA 展示)。 */
-  queueList(): Array<{ id: string; description: string; sessionId: string | null; status: string; attempts: number; maxAttempts: number; nextAttemptAt: number | null; error?: string; workspace: string | null; source: string; createdAt: number; updatedAt: number }> {
+  queueList(): Array<{ id: string; description: string; sessionId: string | null; status: string; attempts: number; maxAttempts: number; nextAttemptAt: number | null; error?: string; workspace: string | null; source: string; channel: string; userId: string; createdAt: number; updatedAt: number }> {
     const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue'] }
     return typeof target?.taskQueue === 'function' ? target.taskQueue() : []
   }
@@ -1782,8 +1854,10 @@ export class RemoteCommandProcessor {
     }
   }
 
-  private async cmdCancel(sessionId: string): Promise<string> {
+  private async cmdCancel(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId: string): Promise<string> {
     if (!/^session-/.test(sessionId)) return '请提供完整的会话 id(以 session- 开头)'
+    const denied = this.assertOwnership(owner, sessionId)
+    if (denied !== null) return denied
     try {
       await this.harness.client().rpc('session.cancel', { sessionId })
       return `已请求停止 ${sessionId}`
@@ -1792,8 +1866,10 @@ export class RemoteCommandProcessor {
     }
   }
 
-  private async cmdOpen(sessionId: string): Promise<string> {
+  private async cmdOpen(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId: string): Promise<string> {
     if (!/^session-/.test(sessionId)) return '请提供完整的会话 id(以 session- 开头)'
+    const denied = this.assertOwnership(owner, sessionId)
+    if (denied !== null) return denied
     const client = this.harness.client()
     try {
       const data = await client.rpc<HistoryEventLike & { events?: HistoryEventLike[] }>('session.history', { sessionId, maxMessages: 2 }, 30000)
@@ -1992,8 +2068,10 @@ export class RemoteCommandProcessor {
   }
 
   /** 任务进展:阶段(思考/工具/输出/完成)+ 统计 + 最近动作与输出 + 产物提示。 */
-  private async cmdProgress(sessionId: string): Promise<string> {
+  private async cmdProgress(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId: string): Promise<string> {
     if (!/^session-/.test(sessionId)) return '请提供完整的会话 id(以 session- 开头)'
+    const denied = this.assertOwnership(owner, sessionId)
+    if (denied !== null) return denied
     const client = this.harness.client()
     try {
       const [list, data] = await Promise.all([
@@ -2057,15 +2135,23 @@ export class RemoteCommandProcessor {
   }
 
   private async cmdRetry(key: string, ctxKey: string, taskId: string, pushTarget?: { scope: string; targetId: string }): Promise<string> {
+    const owner = this.ownerFromKey(key)
     // 优先命中调度队列(失败/取消项可立即重试,保留退避状态)。
     const queueEntry = this.queueList().find((item) => item.id === taskId || item.sessionId === taskId)
     if (queueEntry !== undefined) {
+      if (queueEntry.channel !== owner.channel || normUserId(queueEntry.userId) !== normUserId(owner.userId)) {
+        return '该任务不是由你发起,无权重试。'
+      }
       if (queueEntry.status !== 'failed' && queueEntry.status !== 'cancelled') return '该任务未失败或未取消,无需重试。'
       return this.retryQueueEntry(queueEntry.id)
     }
     if (this.config === undefined) return '任务记录不可用'
     const task = (this.config.get().taskHistory ?? []).find((item) => item.id === taskId || item.sessionId === taskId)
     if (task === undefined) return `未找到任务「${taskId}」,可从桌面端任务记录查看 ID`
+    if (task.sessionId !== null) {
+      const denied = this.assertOwnership(owner, task.sessionId)
+      if (denied !== null) return denied
+    }
     if (task.status !== 'failed' && task.status !== 'cancelled') return '只有失败或已取消的任务可以重试。'
     return this.cmdRun(key, ctxKey, task.description, pushTarget)
   }
@@ -2086,6 +2172,11 @@ export class RemoteCommandProcessor {
     try {
       let workspaceId: string | null = null
       let cwd = parsed.cwd
+      // 用户直接给出的目录(「目录:」)必须过白名单,防止越权写入工作区之外。
+      if (cwd !== null) {
+        const allowed = await this.resolveAllowedCwd(cwd)
+        if (!allowed.ok) return allowed.message
+      }
       // 任务未指定工作区/目录时,优先沿用当前对话上下文的工作区(进入过工作区再发任务,
       // 任务就落在那个工作区);否则回退到 QQ 配置的默认工作区/目录。
       if (workspaceId === null && cwd === null) {
@@ -2246,6 +2337,9 @@ export class RemoteCommandProcessor {
           label = target
         }
         if (/[\\/]/.test(target)) {
+          // 直接给目录路径:必须过白名单,防止「进入」把会话 cwd 落到工作区之外。
+          const allowed = await this.resolveAllowedCwd(target)
+          if (!allowed.ok) return allowed.message
           cwd = target
         } else {
           const wsData = await client.rpc<{ items: Array<{ workspaceId: string; title?: string; path?: string; sessionIds?: string[] }>; archivedSessionIds?: string[] }>('workspace.list')
@@ -2267,8 +2361,10 @@ export class RemoteCommandProcessor {
             return await this.workspaceSessionPicker(client, target, sessions)
           }
           if (sessionIndex >= 0 && sessions[sessionIndex] !== undefined) {
-            // 选择已有会话:直接切换,不新建。
+            // 选择已有会话:直接切换,不新建。目标会话已被他人(含桌面端)占用时拒绝,不得改写归属。
             const chosen = sessions[sessionIndex]
+            const denied = this.assertOwnership(this.ownerFromKey(key), chosen.sessionId)
+            if (denied !== null) return denied
             this.sessionOwners.set(chosen.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
             this.chatContexts.set(ctxKey, { sessionId: chosen.sessionId, label: target, workspace: cwd ?? workspaceId })
             this.followSession(chosen.sessionId, this.ownerFromKey(key).channel, this.ownerFromKey(key).userId, pushTarget)
@@ -2483,21 +2579,30 @@ export class RemoteCommandProcessor {
         const sessionId = String(payload.sessionId ?? '')
         const approvalId = String(payload.approvalId ?? '')
         if (sessionId === '' || approvalId === '') return
+        const toolName = String(payload.toolName ?? '?')
+        const reason = payload.reason !== undefined ? String(payload.reason) : ''
         const pending: PendingApproval = {
           rpcId: frame.rpcId,
           sessionId,
           approvalId,
-          toolName: String(payload.toolName ?? '?'),
-          reason: payload.reason !== undefined ? String(payload.reason) : undefined,
+          toolName,
+          reason: reason === '' ? undefined : reason,
           createdAt: Date.now(),
+          risk: approvalRisk(toolName, reason),
         }
         this.pendingApprovals.set(`${sessionId}:${approvalId}`, pending)
         this.appendAudit({ time: pending.createdAt, type: 'approval.requested', sessionId, detail: `${pending.toolName}${pending.reason === undefined ? '' : `:${pending.reason.slice(0, 180)}`}` })
-        this.notifyOwner(sessionId, this.formatApproval(pending), {
-          kind: 'approval',
-          sessionId,
-          approvalId,
-        })
+        if (pending.risk === 'high') {
+          // 高风险:聊天侧只告知「已转交桌面端确认」,不提供允许/拒绝按钮;
+          // 桌面端通知由宿主(events.subscribe → DesktopNotifications)统一触发。
+          this.notifyOwner(sessionId, this.formatHighRiskApproval(pending))
+        } else {
+          this.notifyOwner(sessionId, this.formatApproval(pending), {
+            kind: 'approval',
+            sessionId,
+            approvalId,
+          })
+        }
         break
       }
       case 'approval/resolved': {
@@ -2892,6 +2997,24 @@ export class RemoteCommandProcessor {
       : { channel: key.slice(0, sep), userId: key.slice(sep + 1) }
   }
 
+  /**
+   * 会话归属校验:按 sessionId 操作的指令统一入口。
+   * 非属主(含桌面端自身产生的无归属会话)返回拒绝文案;属主返回 null。
+   */
+  private assertOwnership(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId: string): string | null {
+    const existing = this.sessionOwners.get(sessionId)
+    if (existing === undefined || existing.channel !== owner.channel || normUserId(existing.userId) !== normUserId(owner.userId)) {
+      return '该会话不是由你发起,无权操作。'
+    }
+    return null
+  }
+
+  /** 该会话是否由 owner 发起(全局列表/统计按调用者过滤用)。 */
+  private ownedByOwner(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId: string): boolean {
+    const existing = this.sessionOwners.get(sessionId)
+    return existing !== undefined && existing.channel === owner.channel && normUserId(existing.userId) === normUserId(owner.userId)
+  }
+
   /** 查该用户可应答的待审批项;sessionId/approvalId 非空时精确匹配。 */
   private findPendingApproval(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId: string, approvalId: string): PendingApproval | null {
     for (const pending of this.pendingApprovals.values()) {
@@ -2947,6 +3070,17 @@ export class RemoteCommandProcessor {
     return lines.join('\n')
   }
 
+  /** 高风险审批通知文本:聊天侧只转交,不提供应答按钮。 */
+  private formatHighRiskApproval(pending: PendingApproval): string {
+    const lines = [
+      `⚠️ 需要审批(会话 ${pending.sessionId})· 已转交桌面端确认`,
+      `工具:${pending.toolName}`,
+    ]
+    if (pending.reason !== undefined && pending.reason !== '') lines.push(`原因:${pending.reason.slice(0, 120)}`)
+    lines.push('此操作属高风险(写入/删除/执行等),需电脑桌面端主人确认;聊天侧的「允许」/「拒绝」对此类请求无效。')
+    return lines.join('\n')
+  }
+
   /** 提问通知文本(选择题)。 */
   private formatQuestion(sessionId: string, questions: AskUserQuestionItem[], answeredCount: number): string {
     const lines: string[] = [`❓ 需要你回答(会话 ${sessionId})`]
@@ -2971,19 +3105,28 @@ export class RemoteCommandProcessor {
     return lines.join('\n')
   }
 
-  /** 该用户未决的审批/提问提示(附加在下次回复末尾;QQ 被动模式的主要通知途径)。 */
-  private pendingSuffix(channel: string, userId: string): string {
+  /** 该用户未决的审批/提问提示(附加在下次回复末尾;QQ 被动模式的主要通知途径)。
+   *  isGroup = 消息来自群聊:群内无法应答审批/提问(按钮点击无法确认身份),指引去私聊处理。 */
+  private pendingSuffix(channel: string, userId: string, isGroup: boolean): string {
     const lines: string[] = []
     for (const pending of this.pendingApprovals.values()) {
       const o = this.sessionOwners.get(pending.sessionId)
-      if (o === undefined || o.channel !== channel || o.userId !== userId) continue
+      if (o === undefined || o.channel !== channel || normUserId(o.userId) !== normUserId(userId)) continue
       const reason = pending.reason !== undefined && pending.reason !== '' ? `(${pending.reason.slice(0, 50)})` : ''
-      lines.push(`⚠️ 待审批:${pending.toolName}${reason} 会话 ${pending.sessionId} — 回复「允许」或「拒绝」`)
+      if (pending.risk === 'high') {
+        lines.push(`⚠️ 待审批(高风险):${pending.toolName}${reason} 会话 ${pending.sessionId} — 请在桌面端处理`)
+      } else if (isGroup) {
+        lines.push(`⚠️ 待审批:${pending.toolName}${reason} 会话 ${pending.sessionId} — 请在私聊中处理`)
+      } else {
+        lines.push(`⚠️ 待审批:${pending.toolName}${reason} 会话 ${pending.sessionId} — 回复「允许」或「拒绝」`)
+      }
     }
     for (const pending of this.pendingQuestions.values()) {
       const o = this.sessionOwners.get(pending.sessionId)
-      if (o === undefined || o.channel !== channel || o.userId !== userId) continue
-      lines.push(`❓ 待回答:${pending.questions.length} 个问题(会话 ${pending.sessionId}) — 回复「选 1」或「#1 选 2」`)
+      if (o === undefined || o.channel !== channel || normUserId(o.userId) !== normUserId(userId)) continue
+      lines.push(isGroup
+        ? `❓ 待回答:${pending.questions.length} 个问题(会话 ${pending.sessionId}) — 请在私聊中处理`
+        : `❓ 待回答:${pending.questions.length} 个问题(会话 ${pending.sessionId}) — 回复「选 1」或「#1 选 2」`)
     }
     return lines.join('\n')
   }

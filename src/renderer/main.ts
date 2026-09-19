@@ -1698,6 +1698,7 @@ async function loadQQConfig(): Promise<void> {
     input('qq-enabled').checked = config.enabled
     input('qq-appid').value = config.appId
     input('qq-secret').value = config.appSecret
+    input('qq-users').value = config.allowedUserIds ?? ''
     input('qq-target').value = config.defaultTarget ?? ''
     input('qq-autochat').checked = config.autoChat === true
     input('qq-report').checked = config.report === true
@@ -1709,14 +1710,20 @@ async function loadQQConfig(): Promise<void> {
     const lines: string[] = []
     if (!config.enabled || !config.appId) {
       lines.push(config.enabled && !config.appId ? '⚠️ 已启用但凭据为空:请填写 AppID/AppSecret' : '')
+    } else if (diag.locked) {
+      lines.push('🔒 锁定:未配置「允许的用户 openid」,机器人不服务任何聊天。填入本人 openid 后自动解锁')
     } else if (diag.connected) {
-      lines.push(`✓ 已连接 QQ${time !== '' ? `(${time})` : ''}`)
+      lines.push(`✓ 已连接 QQ${time !== '' ? `(${time})` : ''}(仅服务白名单用户)`)
     } else {
       lines.push('⚠️ QQ 未连接(凭据错误、网络不通或连接断开;看服务日志)')
     }
     if (diag.lastError !== null) {
       lines.push(`最近失败(${diag.lastError.action}):${diag.lastError.detail.slice(0, 120)}`)
       if (diag.lastError.hint !== '') lines.push(diag.lastError.hint)
+    }
+    if (diag.deniedUsers.length > 0) {
+      const latest = diag.deniedUsers[diag.deniedUsers.length - 1]
+      lines.push(`有未授权消息被拒(openid:${latest.id}):如是你自己,把它填入「允许的用户 openid」即可`)
     }
     $id('qq-status').textContent = lines.filter((line) => line !== '').join('\n')
   } catch {
@@ -2091,6 +2098,10 @@ function bind(): void {
   })
   input('qq-secret').addEventListener('change', async () => {
     await API.qq.setConfig({ appSecret: input('qq-secret').value.trim() })
+  })
+  input('qq-users').addEventListener('change', async () => {
+    await API.qq.setConfig({ allowedUserIds: input('qq-users').value.trim() })
+    await loadQQConfig()
   })
   input('qq-target').addEventListener('change', async () => {
     await API.qq.setConfig({ defaultTarget: input('qq-target').value.trim() })

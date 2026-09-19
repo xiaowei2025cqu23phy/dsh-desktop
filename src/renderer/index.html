@@ -373,6 +373,10 @@
           <label for="qq-secret">AppSecret</label>
           <input id="qq-secret" type="password" placeholder="机器人密钥" />
         </div>
+        <div class="field">
+          <label for="qq-users">允许的用户 openid(必填,只填你自己的;留空 = 锁定,机器人不服务任何人)</label>
+          <input id="qq-users" type="text" placeholder="例如 1A2B3C…(被拒消息的 openid 会在下方状态显示)" />
+        </div>
         <div class="field-row">
           <button id="btn-qq-onboard" class="btn">扫码登录(自动获取凭据)</button>
           <button id="btn-qq-onboard-cancel" class="btn hidden">取消</button>

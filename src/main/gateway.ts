@@ -70,6 +70,18 @@ export class RemoteGateway {
   private server: ReturnType<typeof createServer> | null = null
   private expiryTimer: ReturnType<typeof setTimeout> | null = null
   private sseTickets = new Map<string, { deviceId: string; expiresAt: number }>()
+  /**
+   * 媒体预览 ticket:浏览器 <img>/<video>/<audio>/<a> 无法携带自定义头,只能把凭据放 URL。
+   * 因此签发短时效、绑定路径的 ticket 代替全权 token。注意:媒体元素会发多次 Range 请求
+   * (拖动进度条/下载),故不能严格「用一次即删」,靠 60 秒 TTL + 路径绑定限制暴露面。
+   */
+  private mediaTickets = new Map<string, { deviceId: string; path: string; expiresAt: number }>()
+  /** 媒体 ticket 有效期(毫秒)。 */
+  private static readonly MEDIA_TICKET_TTL_MS = 60_000
+  /** 活跃 SSE 连接:暂停/拉黑/撤销/过期时真正断开(否则已建立的连接会继续收到 agent 输出与审批)。 */
+  private activeSse = new Set<{ res: ServerResponse; unsubscribe: () => void; deviceId: string }>()
+  /** 并发 SSE 连接数上限:超出拒绝并记审计,防止单设备/恶意来源占满。 */
+  private static readonly MAX_SSE = 8
   private remoteDir: string
   /** 认证失败计数(防暴力尝试):ip → {count, until}。 */
   private authFails = new Map<string, { count: number; until: number }>()
@@ -178,6 +190,8 @@ export class RemoteGateway {
       blacklistedDevices: [...remote.blacklistedDevices.filter((device) => device.id !== id), entry],
     })
     this.config.appendAudit({ time: Date.now(), type: 'remote.device.blacklisted', detail: `拉黑设备:${entry.label} ${entry.address}` })
+    // 立即断开该设备已建立的连接(否则它仍会继续收到 agent 输出与审批请求)。
+    this.disconnectDeviceSse(id)
   }
 
   unblacklistDevice(id: string): void {
@@ -225,7 +239,8 @@ export class RemoteGateway {
     const host = addresses[0] ?? '127.0.0.1'
     const config = this.getConfig()
     // 用查询参数传递:部分扫码应用(如微信)会丢弃 URL fragment,导致参数丢失。
-    // PWA 读取后立即 replaceState 清除地址栏;网关无访问日志,Token 不会落盘。
+    // 这是一次性配对链接(二维码):扫码即绑定本机,PWA 读取后立即 replaceState 清除地址栏;
+    // 网关无访问日志,Token 不会落盘。配对后所有数据请求都改用 Authorization header,不再带 token。
     const server = `http://${host}:${config.port}`
     return `${server}/?server=${encodeURIComponent(server)}&token=${encodeURIComponent(config.token)}`
   }
@@ -299,11 +314,35 @@ export class RemoteGateway {
   }
 
   stop(): void {
+    // 真正断开:先结束所有已建立的 SSE 长连接(它们不受 server.close() 影响,会继续收到 agent 输出),
+    // 再关闭底层 TCP 连接并停止接受新连接。
+    this.disconnectAllSse()
+    // Node 18.2+ 提供 closeAllConnections:一并断开仍在存活的 HTTP 连接(如进行中的 RPC 请求)。
+    this.server?.closeAllConnections?.()
     this.server?.close()
     this.server = null
     if (this.expiryTimer !== null) {
       clearTimeout(this.expiryTimer)
       this.expiryTimer = null
+    }
+  }
+
+  /** 结束所有活跃 SSE 连接并退订 EventHub(防订阅泄漏)。 */
+  private disconnectAllSse(): void {
+    for (const entry of this.activeSse) {
+      try { entry.unsubscribe() } catch { /* 退订失败忽略 */ }
+      try { if (!entry.res.destroyed) entry.res.end() } catch { /* 已关闭忽略 */ }
+    }
+    this.activeSse.clear()
+  }
+
+  /** 断开指定设备的活跃 SSE 连接(拉黑/撤销设备时立即生效)。 */
+  private disconnectDeviceSse(deviceId: string): void {
+    for (const entry of [...this.activeSse]) {
+      if (entry.deviceId !== deviceId) continue
+      try { entry.unsubscribe() } catch { /* 退订失败忽略 */ }
+      try { if (!entry.res.destroyed) entry.res.end() } catch { /* 已关闭忽略 */ }
+      this.activeSse.delete(entry)
     }
   }
 
@@ -367,6 +406,10 @@ export class RemoteGateway {
         await this.handleRespond(url, req, res)
         return
       }
+      if (req.method === 'POST' && path === '/api/fs/ticket') {
+        await this.issueFsTicket(url, req, res)
+        return
+      }
       if (req.method === 'GET' && path === '/api/fs/stream') {
         await this.serveFsStream(url, req, res)
         return
@@ -421,10 +464,13 @@ export class RemoteGateway {
   }
 
   private authToken(url: URL, req: IncomingMessage): string | null {
-    const query = url.searchParams.get('token')
-    if (query !== null && query !== '') return query
+    // 优先 Authorization header:令牌不落入 URL(地址栏/浏览器历史/请求日志)更安全。
     const header = req.headers.authorization
     if (header !== undefined && header.startsWith('Bearer ')) return header.slice(7)
+    // 兼容保留:部分旧客户端/脚本仍把 token 放 query(如配对链接、媒体流)。风险是 token 会
+    // 出现在地址栏与访问日志中,且手机截屏/浏览器历史可能泄露——默认不主动生成这类链接。
+    const query = url.searchParams.get('token')
+    if (query !== null && query !== '') return query
     return null
   }
 
@@ -503,6 +549,8 @@ export class RemoteGateway {
     const device = remote.approvedDevices.find((item) => item.id === id)
     this.config.update('remote', { approvedDevices: remote.approvedDevices.filter((item) => item.id !== id) })
     if (device !== undefined) this.config.appendAudit({ time: Date.now(), type: 'remote.device.revoked', detail: `撤销远程设备:${device.label} ${device.address}` })
+    // 立即断开该设备已建立的连接。
+    this.disconnectDeviceSse(id)
   }
 
   /**
@@ -1139,18 +1187,57 @@ export class RemoteGateway {
     }
   }
 
-  /** Stream a whitelisted file with byte ranges for browser-native media/PDF viewers. */
-  private async serveFsStream(url: URL, req: IncomingMessage, res: ServerResponse, body?: { path?: unknown }): Promise<void> {
+  /** 签发媒体预览 ticket(短时效、绑定路径、绑定设备):令牌不落入 URL,只换一次 ticket。 */
+  private async issueFsTicket(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.authorized(url, req)) {
       this.json(res, 401, { error: 'unauthorized' })
       return
     }
-    const raw = typeof body?.path === 'string' ? body.path : url.searchParams.get('path')
-    const path = typeof raw === 'string' ? raw.trim() : ''
+    const chunks: Buffer[] = []
+    for await (const chunk of req) {
+      chunks.push(chunk as Buffer)
+      if (Buffer.concat(chunks).byteLength > 64 * 1024) {
+        this.json(res, 413, { error: 'payload too large' })
+        return
+      }
+    }
+    let body: { path?: unknown }
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { path?: unknown }
+    } catch {
+      this.json(res, 400, { error: 'invalid json' })
+      return
+    }
+    const path = typeof body.path === 'string' ? body.path.trim() : ''
+    if (path === '') {
+      this.json(res, 400, { error: 'path required' })
+      return
+    }
     if (!(await this.fsAllowed(path))) {
       this.json(res, 403, { error: 'path not allowed' })
       return
     }
+    const device = req.headers['x-dsh-device']
+    const deviceId = typeof device === 'string' && device !== '' ? device.slice(0, 120) : ''
+    const ticket = randomBytes(24).toString('hex')
+    this.mediaTickets.set(ticket, { deviceId, path, expiresAt: Date.now() + RemoteGateway.MEDIA_TICKET_TTL_MS })
+    this.json(res, 200, { ok: true, ticket })
+  }
+
+  /** 媒体流:用 ticket(而非全权 token)访问;ticket 绑定路径 + 短 TTL。 */
+  private async serveFsStream(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const ticket = url.searchParams.get('ticket')
+    if (ticket === null) {
+      this.json(res, 401, { error: 'media ticket required' })
+      return
+    }
+    const media = this.mediaTickets.get(ticket)
+    if (media === undefined || Date.now() >= media.expiresAt) {
+      this.json(res, 401, { error: 'invalid or expired media ticket' })
+      return
+    }
+    // 路径绑定:ticket 只能流它签发时绑定的那个文件,不接受 URL 里的任意 path。
+    const path = media.path
     let size: number
     try {
       const info = statSync(path)
@@ -1443,22 +1530,40 @@ export class RemoteGateway {
       return
     }
     this.sseTickets.delete(ticket as string)
+    // 并发上限:超出拒绝并记审计,防止单设备/恶意来源占满 SSE 连接。
+    if (this.activeSse.size >= RemoteGateway.MAX_SSE) {
+      this.config.appendAudit({ time: Date.now(), type: 'remote.sse-limit', detail: `SSE 并发超限(${RemoteGateway.MAX_SSE}),拒绝新连接` })
+      this.json(res, 429, { error: 'too many concurrent event streams' })
+      return
+    }
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
       connection: 'keep-alive',
     })
     res.write(': connected\n\n')
+    const deviceId = session.deviceId
     const unsubscribe = this.events.subscribe((frame) => {
       if (res.destroyed) return
       res.write(`data: ${JSON.stringify(frame)}\n\n`)
     })
-    req.on('close', () => {
+    // entry.unsubscribe 是幂等的收尾函数:连接自然关闭(req close/error)与主动断开(disconnectAllSse)
+    // 都会调用它,保证 EventHub 订阅只退订一次、activeSse 不残留。
+    const entry: { res: ServerResponse; unsubscribe: () => void; deviceId: string } = {
+      res,
+      deviceId,
+      unsubscribe: () => {},
+    }
+    let cleaned = false
+    entry.unsubscribe = (): void => {
+      if (cleaned) return
+      cleaned = true
       unsubscribe()
-    })
-    req.on('error', () => {
-      unsubscribe()
-    })
+      this.activeSse.delete(entry)
+    }
+    this.activeSse.add(entry)
+    req.on('close', entry.unsubscribe)
+    req.on('error', entry.unsubscribe)
   }
 
   private json(res: ServerResponse, status: number, body: unknown): void {

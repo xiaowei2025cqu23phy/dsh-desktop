@@ -68,7 +68,15 @@ console.log(`测试网关:${baseUrl} ${token === '' ? '(无 token)' : '(已读 t
     const entries = Array.isArray(data.entries) ? data.entries : []
     const file = entries.find((e) => e.isDir === false && typeof e.path === 'string')
     if (file === undefined) continue
-    const stream = await fetch(`${baseUrl}/api/fs/stream?path=${encodeURIComponent(file.path)}&token=${encodeURIComponent(token)}&device=regression-test`, {
+    // 先换 ticket(header 认证,令牌不落 URL),再带 ticket + Range 请求媒体流。
+    const ticketResp = await fetch(`${baseUrl}/api/fs/ticket`, {
+      method: 'POST',
+      headers: headers(true),
+      body: JSON.stringify({ path: file.path }),
+    })
+    const ticketBody = await ticketResp.json()
+    if (!ticketResp.ok || typeof ticketBody.ticket !== 'string') { fail('媒体 ticket 签发', `status=${ticketResp.status}`); tested = true; break }
+    const stream = await fetch(`${baseUrl}/api/fs/stream?ticket=${encodeURIComponent(ticketBody.ticket)}`, {
       headers: { range: 'bytes=0-63' },
     })
     if (stream.status !== 206) { fail('媒体流 Range 返回 206', `status=${stream.status}`); tested = true; break }
@@ -83,9 +91,13 @@ console.log(`测试网关:${baseUrl} ${token === '' ? '(无 token)' : '(已读 t
   if (!tested) fail('媒体流 Range', '白名单内没有可测文件(请在桌面端添加预设工作区根目录)')
 }
 
-// 4. 越权路径必须 403。
+// 4. 越权路径必须 403(签 ticket 时就被拒)。
 {
-  const res = await fetch(`${baseUrl}/api/fs/stream?path=${encodeURIComponent('C:/Windows/System32/notepad.exe')}&token=${encodeURIComponent(token)}&device=regression-test`)
+  const res = await fetch(`${baseUrl}/api/fs/ticket`, {
+    method: 'POST',
+    headers: headers(true),
+    body: JSON.stringify({ path: process.env.SystemRoot || 'C:/Windows' }),
+  })
   if (res.status === 403) pass('越权文件流被拒绝(403)')
   else fail('越权文件流被拒绝(403)', `got ${res.status}`)
 }

@@ -40,6 +40,29 @@ export type SchedDelay =
   | { kind: 'daily'; hours: number; minutes: number }
 
 /**
+ * 解析 QQ 白名单(逗号分隔 openid)为规范化集合。
+ * 与 Telegram 的 allowedUserIds 同语义:留空 = 锁定。
+ */
+export function parseAllowedUserIds(raw: string): Set<string> {
+  return new Set(
+    (raw ?? '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item !== ''),
+  )
+}
+
+/**
+ * 判断某 openid 是否在白名单内;白名单为空 = 锁定(拒绝所有人)。
+ * 私聊消息与按钮点击的入口守卫共用此判定,保证「留空即锁定」与「只服务白名单」一致。
+ */
+export function qqUserAllowed(allowedUserIds: string, userId: string): boolean {
+  const list = parseAllowedUserIds(allowedUserIds)
+  if (list.size === 0) return false
+  return list.has(userId)
+}
+
+/**
  * 解析定时表达式:
  * - `10分钟` / `10m` / `2小时` / `1天` → 一次性延迟
  * - `每天9:00` → 每日循环
@@ -341,4 +364,18 @@ export function findEventGroupOpenid(data: unknown): string {
     if (found !== '') return found
   }
   return ''
+}
+
+/**
+ * 解析 INTERACTION_CREATE 按钮点击者身份。
+ * user_openid 在事件顶层(部分 SDK 形态放 data.resolved.user_id,双路径兼容);
+ * 群按钮回调只带 group_openid 不带 user_openid——此时返回空 userId,由调用方
+ * 引导「去私聊处理」,**绝不猜测任何私聊用户兜底**(避免把群内点击归属给无关用户)。
+ */
+export function resolveInteractionIdentity(raw: unknown): { userId: string; groupOpenid: string } {
+  const record = (raw ?? {}) as Record<string, unknown>
+  const topUser = typeof record.user_openid === 'string' ? record.user_openid : ''
+  const topGroup = typeof record.group_openid === 'string' ? record.group_openid : ''
+  const userId = topUser !== '' ? topUser : findEventUserId(record.data)
+  return { userId, groupOpenid: topGroup }
 }

@@ -143,7 +143,7 @@ This guide walks you through the desktop client end to end: installation, config
 
 **准备**:在 [QQ 开放平台](https://q.qq.com) 注册机器人,获取 AppID / AppSecret(需实名)。也可以直接点设置面板的「**扫码登录**」:用手机 QQ 扫二维码,绑定成功后 AppID/AppSecret 自动填入。
 
-**配置**:「设置 → QQ 机器人」→ 勾选「启用」→ 填入 AppID / AppSecret → 可填「默认工作区/目录」(任务未指定时使用)、勾选「**默认对话模式**」(非指令消息直接进入纯对话,无需先发「进入」)→ 状态显示「✓ 已连接 QQ」即就绪。
+**配置**:「设置 → QQ 机器人」→ 勾选「启用」→ 填入 AppID / AppSecret → **填「允许的用户 openid」(必填,只填你自己的;留空 = 锁定,机器人不服务任何聊天)** → 可填「默认工作区/目录」(任务未指定时使用)、勾选「**默认对话模式**」(非指令消息直接进入纯对话,无需先发「进入」)→ 状态显示「✓ 已连接 QQ」即就绪。首次使用:先发一条私聊消息,被拒的 openid 会显示在设置页状态里,填入白名单即解锁。
 
 **指令**(私聊机器人;发送无法识别的消息会自动回复完整指令集与示例):
 
@@ -152,12 +152,12 @@ This guide walks you through the desktop client end to end: installation, config
 | `状态` / `会话` / `工作区` / `模型` | 查询类 | `状态` |
 | `任务 <描述>` | 默认工作区执行 | `任务 分析这个仓库的架构` |
 | `任务 @<工作区名> <描述>` | 指定工作区执行 | `任务 @qqbot 修复登录 bug` |
-| `任务 目录:<路径> <描述>` | 指定目录执行 | `任务 目录:D:/work 写一个脚本` |
+| `任务 目录:<路径> <描述>` | 指定目录执行(仅限工作区/预设根目录内) | `任务 目录:D:/work 写一个脚本` |
 | `进入 <工作区/目录>` | **进入对话模式**(不带参数 = 纯对话,不绑定工作区) | `进入 qqbot` / `进入` |
 | *(对话模式)* | 直接发消息连续对话,无需前缀;`退出` 结束 | `帮我看看项目里的 TODO` |
 | `进展 <会话id>` | 实时进展(状态/工具统计/最新输出) | `进展 session-xxxxxxxx` |
 | `停止 <会话id>` / `打开 <会话id>` | 停止任务 / 查看内容 | `停止 session-xxxxxxxx` |
-| `允许` / `拒绝` | **审批应答**:agent 请求权限时,允许/拒绝当前操作(多个待审批时带会话 id) | `允许` / `拒绝 session-xxxxxxxx` |
+| `允许` / `拒绝` | **审批应答**:agent 请求权限时,允许/拒绝当前操作(多个待审批时带会话 id;高风险写入/删除/执行操作只转桌面端确认,聊天侧「允许」无效) | `允许` / `拒绝 session-xxxxxxxx` |
 | `选 <编号>` | **选择题应答**:回答 agent 的提问(多选:`选 1 3`;自定义:`选 自定义:先备份再删`;多题批次:`#2 选 1`) | `选 2` |
 | `定时 <时长> <任务>` | **定时任务**:一次性(`10分钟`/`5m`/`2小时`/`1天`)或每天(`每天9:00`) | `定时 10分钟 检查更新` |
 | `定时列表` / `取消定时 <编号>` | 查看 / 取消已排定时任务 | `取消定时 2` |
@@ -169,7 +169,7 @@ This guide walks you through the desktop client end to end: installation, config
 
 **典型流程**:`工作区` 看列表 → `进入 qqbot` → 连续对话(修改代码、查资料……)→ `退出`。
 
-**说明**:QQ 官方机器人以**被动回复**为主,但与机器人交互后 48 小时内支持**主动推送**(任务完成/失败汇报、审批/提问即时通知;**审批通知带「允许/拒绝」内联按钮**,点一下即可应答,也可回复文字);长回复自动分段;推送失败时待办仍会附加在下次回复末尾提醒。
+**说明**:QQ 官方机器人以**被动回复**为主,但与机器人交互后 48 小时内支持**主动推送**(任务完成/失败汇报、审批/提问即时通知;**低风险审批通知带「允许/拒绝」内联按钮**,点一下即可应答,也可回复文字;**高风险写入/删除/执行操作只转桌面端确认**);长回复自动分段;推送失败时待办仍会附加在下次回复末尾提醒。
 
 **English**
 
@@ -184,7 +184,7 @@ This guide walks you through the desktop client end to end: installation, config
 | `状态` / `会话` / `工作区` / `模型` | Status / sessions / workspaces / models | `状态` |
 | `任务 <description>` | Run in the default workspace | `任务 分析这个仓库的架构` |
 | `任务 @<workspace> <description>` | Run in a specific workspace | `任务 @qqbot 修复登录 bug` |
-| `任务 目录:<path> <description>` | Run in a specific directory | `任务 目录:D:/work 写一个脚本` |
+| `任务 目录:<path> <description>` | Run in a specific directory (workspaces/preset roots only) | `任务 目录:D:/work 写一个脚本` |
 | `进入 <workspace/dir>` | **Enter chat mode** (no argument = pure chat, no workspace bound) | `进入 qqbot` / `进入` |
 | *(chat mode)* | Chat freely without prefixes; `退出` ends it | `帮我看看项目里的 TODO` |
 | `进展 <sessionId>` | Live progress (status / tool stats / latest output) | `进展 session-xxxxxxxx` |

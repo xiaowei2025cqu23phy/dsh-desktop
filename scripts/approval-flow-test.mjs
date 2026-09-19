@@ -48,20 +48,21 @@ function makeHarness(log) {
   const log = []
   const pushes = []
   const processor = new RemoteCommandProcessor(makeHarness(log))
-  processor.setPush((channel, userId, text) => pushes.push([channel, userId, text]))
+  processor.setPush((channel, userId, text, meta) => pushes.push([channel, userId, text, meta]))
 
   const entered = await processor.handleText('telegram', '42', '进入 ws1')
   check('进入工作区', entered.startsWith('已进入工作区'), true)
 
+  // 低风险审批(read_file):聊天内一键应答。
   processor.handleInteractionFrame({
     type: 'server-request',
     rpcId: 'r1',
     method: 'approval/requested',
-    payload: { sessionId: 'session-test-1', approvalId: 'a1', toolName: 'write_file', reason: '写入 src/a.ts' },
+    payload: { sessionId: 'session-test-1', approvalId: 'a1', toolName: 'read_file', reason: '读取 src/a.ts' },
   })
   check('审批帧推送通知', pushes.length, 1)
-  check('通知含工具名', pushes[0][2].includes('write_file'), true)
-  check('通知含原因', pushes[0][2].includes('写入 src/a.ts'), true)
+  check('通知含工具名', pushes[0][2].includes('read_file'), true)
+  check('通知含原因', pushes[0][2].includes('读取 src/a.ts'), true)
 
   const statusReply = await processor.handleText('telegram', '42', '状态')
   check('回复附加待审批提示', statusReply.includes('待审批'), true)
@@ -71,24 +72,37 @@ function makeHarness(log) {
   check('非发起者无待审批', otherReply, '当前没有待审批项。收到审批通知后回复「允许」或「拒绝」即可。')
 
   const allowReply = await processor.handleText('telegram', '42', '允许')
-  check('允许回复', allowReply.startsWith('✓ 已允许:write_file'), true)
+  check('允许回复', allowReply.startsWith('✓ 已允许:read_file'), true)
   const respondCall = log.find(([kind]) => kind === 'respond')
   check('respond 载荷', respondCall[1], 'r1')
   check('approval 值', respondCall[2], { ok: true, value: { sessionId: 'session-test-1', approvalId: 'a1', outcome: 'allowed-once' } })
   const statusReply2 = await processor.handleText('telegram', '42', '状态')
   check('应答后无待审批提示', statusReply2.includes('待审批'), false)
 
-  // 拒绝流
+  // 低风险拒绝流
   processor.handleInteractionFrame({
     type: 'server-request',
     rpcId: 'r2',
     method: 'approval/requested',
-    payload: { sessionId: 'session-test-1', approvalId: 'a2', toolName: 'bash', reason: '执行 rm' },
+    payload: { sessionId: 'session-test-1', approvalId: 'a2', toolName: 'glob', reason: '查找文件' },
   })
   const rejectReply = await processor.handleText('telegram', '42', '拒绝 session-test-1')
-  check('拒绝回复', rejectReply.startsWith('✗ 已拒绝:bash'), true)
+  check('拒绝回复', rejectReply.startsWith('✗ 已拒绝:glob'), true)
   const rejectCall = log.filter(([kind]) => kind === 'respond').pop()
   check('reject 载荷', rejectCall[2], { ok: true, value: { sessionId: 'session-test-1', approvalId: 'a2', outcome: 'rejected' } })
+
+  // 高风险审批(write_file):转桌面端,聊天侧「允许」无效、不提供应答按钮。
+  pushes.length = 0
+  processor.handleInteractionFrame({
+    type: 'server-request',
+    rpcId: 'r3',
+    method: 'approval/requested',
+    payload: { sessionId: 'session-test-1', approvalId: 'a3', toolName: 'write_file', reason: '写入 src/a.ts' },
+  })
+  check('高风险-转桌面端提示', pushes.length === 1 && pushes[0][2].includes('已转交桌面端确认'), true)
+  check('高风险-无应答按钮', pushes[0][3] === undefined, true)
+  const denyHigh = await processor.handleText('telegram', '42', '允许 session-test-1')
+  check('高风险-聊天允许无效', denyHigh.includes('高风险'), true)
 
   // 应答被拒(回执 accepted:false)
   const log2 = []
@@ -157,7 +171,9 @@ function makeHarness(log) {
   const processor = new RemoteCommandProcessor(makeHarness(log))
   const entered = await processor.handleText('telegram', '7', '进入')
   check('裸进入-纯对话', entered.startsWith('已进入对话模式 ✓(纯对话'), true)
-  check('裸进入-无工作区参数', log.some(([kind, method, payload]) => kind === 'rpc' && method === 'session.create' && JSON.stringify(payload) === '{}'), true)
+  // 0.6.0 起:纯对话会话自动落到「机器人对话」目录(带默认 cwd),不再是无参 {};只断言「不含用户指定的工作区/目录」。
+  const createCall = log.find(([kind, method]) => kind === 'rpc' && method === 'session.create')
+  check('裸进入-无工作区参数', createCall !== undefined && createCall[2].workspaceId === undefined && (createCall[2].cwd === undefined || String(createCall[2].cwd).includes('机器人对话')), true)
   const reply = await processor.handleText('telegram', '7', '你好')
   check('纯对话发消息-静默', reply, '')
 }
@@ -220,26 +236,27 @@ function makeHarness(log) {
   check('汇报-其他事件不推送', pushes.length, 0)
 }
 
-// ---- 群场景:推送目标=群(修复群里收不到审批/汇报) ----
+// ---- 群场景:只聊天,不执行任务指令(群里发「任务」不再启动任务) ----
 {
   const pushes = []
   const processor = new RemoteCommandProcessor(makeHarness([]))
   processor.setPush((channel, userId, text, meta, target) => pushes.push([channel, userId, text, meta, target]))
   processor.setReport('qq', true)
-  // 群里发任务(带群推送目标)
+  // 群里发「任务」(带群推送目标)→ 只聊天,不启动任务,返回安全提醒。
   const entered = await processor.handleText('qq', 'member-openid-1', '任务 写首诗', { scope: 'group', targetId: 'GROUP_OPENID_9' })
-  check('群-任务启动', entered.includes('任务已启动'), true)
-  // 任务完成汇报 → 应推送到群 target
+  check('群-任务不启动', entered.includes('任务已启动'), false)
+  check('群-任务返回安全提醒', entered.includes('安全提醒'), true)
+  // 群里没有任务 → turn/end 不推「任务完成」。
   processor.handleInteractionFrame({
     type: 'server-request', rpcId: 'r-g1', method: 'session/event',
     payload: { sessionId: 'session-test-1', event: { type: 'turn/end', data: { reason: { kind: 'ok' } } } },
   })
-  check('群-汇报推送目标', pushes.length === 1 && JSON.stringify(pushes[0][4]) === JSON.stringify({ scope: 'group', targetId: 'GROUP_OPENID_9' }), true)
-  // 审批 → 推送目标同样是群
+  check('群-无任务汇报不推送', pushes.length, 0)
+  // 审批(低风险 read_file)→ 推送目标同样是群,带 meta 按钮。
   pushes.length = 0
   processor.handleInteractionFrame({
     type: 'server-request', rpcId: 'r-g2', method: 'approval/requested',
-    payload: { sessionId: 'session-test-1', approvalId: 'ga1', toolName: 'write', reason: '写文件' },
+    payload: { sessionId: 'session-test-1', approvalId: 'ga1', toolName: 'read_file', reason: '读文件' },
   })
   check('群-审批推送目标', pushes.length === 1 && pushes[0][3] !== undefined && pushes[0][4].targetId === 'GROUP_OPENID_9', true)
   // 私聊对照:无 pushTarget → 回调 target 为 undefined
@@ -326,6 +343,26 @@ function makeHarness(log) {
   check('操作按钮-非发起者拒绝', r4.includes('无权'), true)
 }
 
+// ---- 会话归属:文本指令(停止/打开/进展/导出/恢复)只允许发起者操作 ----
+{
+  const log = []
+  const processor = new RemoteCommandProcessor(makeHarness(log))
+  await processor.handleText('telegram', '42', '任务 干活', undefined)
+  const stop = await processor.handleText('telegram', '99', '停止 session-test-1', undefined)
+  check('文本停止-非发起者拒绝', stop.includes('无权'), true)
+  const open = await processor.handleText('telegram', '99', '打开 session-test-1', undefined)
+  check('文本打开-非发起者拒绝', open.includes('无权'), true)
+  const progress = await processor.handleText('telegram', '99', '进展 session-test-1', undefined)
+  check('文本进展-非发起者拒绝', progress.includes('无权'), true)
+  const exp = await processor.handleText('telegram', '99', '导出 session-test-1', undefined)
+  check('文本导出-非发起者拒绝', exp.includes('无权'), true)
+  const restore = await processor.handleText('telegram', '99', '恢复 session-test-1', undefined)
+  check('文本恢复-非发起者拒绝', restore.includes('无权'), true)
+  // 发起者可正常操作
+  const stop2 = await processor.handleText('telegram', '42', '停止 session-test-1', undefined)
+  check('文本停止-发起者可用', stop2.includes('已请求停止'), true)
+}
+
 // ---- 提示词注入(任务=助手,对话=朋友)与对话会话持久化 ----
 {
   // 假 config:记录 chatSessions 更新
@@ -341,11 +378,12 @@ function makeHarness(log) {
   await processor.handleText('telegram', '42', '今天天气如何', undefined)
   const chatPrompt = log.find(([kind, m, p]) => kind === 'rpc' && m === 'session.prompt')
   check('对话注入朋友提示词', chatPrompt[2].content[0].text.includes('朋友提示'), true)
-  // 任务注入助手提示词
+  // 任务模式不再叠加「助手提示」角色壳:透传原文(harness 自带系统提示词)。
   log.length = 0
   await processor.handleText('telegram', '42', '任务 写报告', undefined)
   const taskPrompt = log.find(([kind, m, p]) => kind === 'rpc' && m === 'session.prompt')
-  check('任务注入助手提示词', taskPrompt[2].content[0].text.includes('助手提示'), true)
+  check('任务注入助手提示词', taskPrompt[2].content[0].text.includes('助手提示'), false)
+  check('任务模式透传原文', taskPrompt[2].content[0].text.includes('写报告'), true)
   // 对话会话持久化:新实例恢复同一会话
   const processor2 = new RemoteCommandProcessor(makeHarness([]), fakeConfig)
   const reply2 = await processor2.handleText('telegram', '42', '继续聊', undefined)
@@ -504,6 +542,18 @@ function makeHarness(log) {
   require('node:fs').rmSync(tempDir, { recursive: true, force: true })
 }
 
+// ---- cwd 白名单:任务/进入带越权目录被拒绝,不产生 session.create ----
+{
+  const log = []
+  const processor = new RemoteCommandProcessor(makeHarness(log))
+  const runReply = await processor.handleText('telegram', '42', '任务 目录:C:/Windows 系统', undefined)
+  check('任务-越权目录拒绝', runReply.includes('已拒绝访问') || runReply.includes('不存在'), true)
+  check('任务-越权目录不创建会话', log.some(([kind, method]) => kind === 'rpc' && method === 'session.create'), false)
+  const enterReply = await processor.handleText('telegram', '42', '进入 C:/Windows', undefined)
+  check('进入-越权目录拒绝', enterReply.includes('已拒绝访问') || enterReply.includes('不存在'), true)
+  check('进入-越权目录不创建会话', log.some(([kind, method]) => kind === 'rpc' && method === 'session.create'), false)
+}
+
 // ---- 会话导出 + 用量 + TRANSPORT 自动重试 ----
 {
   const log = []
@@ -520,7 +570,7 @@ function makeHarness(log) {
           ] }
         }
         if (method === 'session.list') {
-          return { items: [{ sessionId: 's1', updatedAt: Date.now(), projections: { values: { sessionStats: { turns: 3, llmMs: 120000 } } } }] }
+          return { items: [{ sessionId: 'session-test-1', updatedAt: Date.now(), projections: { values: { sessionStats: { turns: 3, llmMs: 120000 } } } }] }
         }
         return {}
       },
@@ -557,20 +607,20 @@ function makeHarness(log) {
   // 用量结构化:模型分组 + 费用估算(request/header 记录模型,usage 事件累计 token)
   processor.handleInteractionFrame({
     type: 'server-request', rpcId: 'r-um', method: 'session/event',
-    payload: { sessionId: 's1', event: { type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4-pro' } } } } },
+    payload: { sessionId: 'session-test-1', event: { type: 'request/header', data: { header: { config: { provider: 'deepseek', model: 'deepseek-v4-pro' } } } } },
   })
   processor.handleInteractionFrame({
     type: 'server-request', rpcId: 'r-ut', method: 'session/event',
-    payload: { sessionId: 's1', event: { type: 'assistant/chunk', data: { chunk: { type: 'usage', usage: { inputTokens: 1000, outputTokens: 2000, cacheReadTokens: 100 } } } } },
+    payload: { sessionId: 'session-test-1', event: { type: 'assistant/chunk', data: { chunk: { type: 'usage', usage: { inputTokens: 1000, outputTokens: 2000, cacheReadTokens: 100 } } } } },
   })
   // 同一会话中途切 Gemini:后续 usage 必须进入独立模型桶。
   processor.handleInteractionFrame({
     type: 'server-request', rpcId: 'r-gm', method: 'session/event',
-    payload: { sessionId: 's1', event: { type: 'request/header', data: { header: { config: { provider: 'google', model: 'gemini-3.6-flash' } } } } },
+    payload: { sessionId: 'session-test-1', event: { type: 'request/header', data: { header: { config: { provider: 'google', model: 'gemini-3.6-flash' } } } } },
   })
   processor.handleInteractionFrame({
     type: 'server-request', rpcId: 'r-gu', method: 'session/event',
-    payload: { sessionId: 's1', event: { type: 'assistant/chunk', data: { chunk: { type: 'usage', usage: { inputTokens: 500, outputTokens: 250, cacheReadTokens: 0 } } } } },
+    payload: { sessionId: 'session-test-1', event: { type: 'assistant/chunk', data: { chunk: { type: 'usage', usage: { inputTokens: 500, outputTokens: 250, cacheReadTokens: 0 } } } } },
   })
   const report = await processor.usageReport()
   check('用量-模型分组', report.byModel.some((m) => m.provider === 'deepseek' && m.model === 'deepseek-v4-pro' && m.input === 1000 && m.output === 2000 && m.cache === 100 && m.calls === 1), true)

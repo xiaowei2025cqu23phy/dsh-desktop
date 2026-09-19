@@ -142,6 +142,11 @@ export interface QQBotConfig {
   /** QQ 开放平台机器人 AppSecret。 */
   appSecret: string
   /**
+   * 允许的用户 openid(逗号分隔)。**留空 = 锁定**:机器人不服务任何聊天、不执行任何指令
+   * (私聊等于远程操控电脑,只允许桌面端主人自己的 openid;与 Telegram 同语义)。
+   */
+  allowedUserIds: string
+  /**
    * QQ 任务默认工作区/目录:任务命令未指定 @工作区 或 目录: 时使用。
    * 填目录路径(含 / 或 \)按 cwd 处理,否则按工作区标题/ID 匹配。
    */
@@ -365,6 +370,7 @@ const DEFAULTS: AppConfig = {
     enabled: false,
     appId: '',
     appSecret: '',
+    allowedUserIds: '',
     defaultTarget: '',
     autoChat: false,
     report: false,

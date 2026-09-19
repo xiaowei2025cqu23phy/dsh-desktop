@@ -55,7 +55,7 @@ The installer ships without the agent runtime and without any config/keys (by de
 - **Embedded Web UI**: native control bar + the full harness Web UI (sessions, tools, plugins).
 - **AI Screensaver (system screensaver replacement)**: after N idle minutes, a fullscreen view shows the agent working live (reasoning, text stream, tool calls); click, key, wheel, or touch exits instantly. Built-in **task timeout guard** prevents runaway CPU loops; can be registered as the Windows system screensaver — idle time becomes productive time.
 - **Phone remote control (PWA)**: scan the QR code to connect over LAN — send tasks, watch live streaming progress, stop tasks; **one-tap approval/question cards** — no more waiting forever when the agent asks for permission.
-- **QQ / Telegram bot channels**: run tasks from private chat (in groups the bot chats only — every command and query is ignored); **proactive push** enabled (QQ 48h interaction window) — task done, failed, or needs approval, the bot comes to you; QQ approvals carry inline **Allow/Deny buttons**; **scan-to-login** grabs bot credentials automatically.
+- **QQ / Telegram bot channels**: run tasks from private chat (in groups the bot chats only — every command and query is ignored); **proactive push** enabled (QQ 48h interaction window) — task done, failed, or needs approval, the bot comes to you; low-risk approvals carry inline **Allow/Deny buttons** (high-risk write/delete/exec operations are routed to the desktop for confirmation); **allowlist gate** (empty = locked) plus **scan-to-login** grabs bot credentials automatically.
 - **QQ bot experience (0.6.0+)**: workspace-less tasks merge into one per-user default task session (no more session spam; the same session is reused across restarts); pick a workspace with `任务 @workspace` or send tasks while inside a workspace chat; `进展` shows the phase (thinking/tool/output/done + product hint); tasks are silent by default, `播报` opts into live digests; robot chats (DM & groups) live in a visible "机器人对话" workspace; **groups are chat-only — commands and queries are ignored** (so strangers cannot read your data or drive your PC) with a safety reminder; archived sessions can be brought back anytime with `恢复 <sessionId>`; full command set & deployment/permission guide: [QQ-BOT.md](docs/QQ-BOT.md).
 - **Default chat mode**: with one toggle, plain messages enter pure chat directly (no workspace bound) — no command prefix needed.
 - **Model selection**: quick default-model switching (DeepSeek official, OpenAI, Anthropic, 37+ catalog providers), plus custom OpenAI-compatible gateways (corporate gateways, Ollama local, etc.); API keys are written securely via `credentials.set`.
@@ -110,14 +110,14 @@ Phone features:
 
 ## QQ Bot Remote Control (optional)
 
-In **Settings → QQ Bot**, fill in the AppID/AppSecret from the [QQ Open Platform](https://q.qq.com) (empty = disabled). You can also set a **default workspace/directory** (used when a task command does not specify one). Private-chat the bot; sending anything unrecognized replies with the full command set and examples:
+In **Settings → QQ Bot**, fill in the AppID/AppSecret from the [QQ Open Platform](https://q.qq.com) (empty = disabled), then set the **allowed-user openid allowlist** (empty = locked, the bot serves nobody — same semantics as Telegram). You can also set a **default workspace/directory** (used when a task command does not specify one). Private-chat the bot; sending anything unrecognized replies with the full command set and examples:
 
 | Command | Description | Example |
 |---|---|---|
 | `状态` / `会话` / `工作区` / `模型` | Status / sessions / workspaces / models | `状态` |
 | `任务 <description>` | Run a task in the default workspace | `任务 分析这个仓库的架构` |
 | `任务 @<workspace> <description>` | Run in a specific workspace | `任务 @qqbot 修复登录 bug` |
-| `任务 目录:<path> <description>` | Run in a specific directory | `任务 目录:D:/work 写一个脚本` |
+| `任务 目录:<path> <description>` | Run in a specific directory (workspaces/preset roots only) | `任务 目录:D:/work 写一个脚本` |
 | `进入` | **Pure chat**: no workspace bound, friend mode | `进入` |
 | `进入 <workspace/dir>` | Chat inside that workspace (assistant mode) | `进入 qqbot`、`进入 D:/work` |
 | *(chat mode)* | Just send messages, no prefix needed; the agent's reply is **pushed back automatically**, no "sent" noise; `退出` ends it | `帮我看看项目里的 TODO` → 💬 reply → `退出` |

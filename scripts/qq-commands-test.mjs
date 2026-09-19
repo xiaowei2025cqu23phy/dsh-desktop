@@ -6,7 +6,7 @@
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { parseCommand, parseTaskOptions, parseApprovalButtonData, findEventUserId, findEventGroupOpenid, parseQuestionButtonData, parseActionButtonData, parseSchedDelay } = require('../dist/main/qq-commands.js')
+const { parseCommand, parseTaskOptions, parseApprovalButtonData, findEventUserId, findEventGroupOpenid, parseQuestionButtonData, parseActionButtonData, parseSchedDelay, qqUserAllowed, resolveInteractionIdentity } = require('../dist/main/qq-commands.js')
 
 let failures = 0
 function check(name, actual, expected) {
@@ -145,6 +145,20 @@ check('角色-清除', parseCommand('角色 无'), { kind: 'character', text: '�
 check('扮演-设定', parseCommand('扮演 你是温柔的英语老师'), { kind: 'character', text: '你是温柔的英语老师' })
 check('character-设定', parseCommand('character 你是侦探'), { kind: 'character', text: '你是侦探' })
 check('角色-空', parseCommand('角色'), { kind: 'character', text: '' })
+
+// QQ 白名单门禁(留空 = 锁定,不服务任何人;与 Telegram 同语义)
+check('QQ白名单-空即锁定', qqUserAllowed('', 'OPENID_1'), false)
+check('QQ白名单-空串空格即锁定', qqUserAllowed('  , , ', 'OPENID_1'), false)
+check('QQ白名单-命中', qqUserAllowed('OPENID_1,OPENID_2', 'OPENID_1'), true)
+check('QQ白名单-未命中', qqUserAllowed('OPENID_1,OPENID_2', 'OPENID_9'), false)
+check('QQ白名单-去空格', qqUserAllowed(' OPENID_1 , OPENID_2 ', 'OPENID_2'), true)
+check('QQ白名单-群共享身份不越权', qqUserAllowed('OPENID_1', 'g:GROUP_9'), false)
+
+// 群按钮回调身份解析:只带 group_openid 时不猜测私聊身份(否则会误归给无关私聊用户)。
+check('群按钮-不猜测私聊身份', resolveInteractionIdentity({ group_openid: 'GROUP_9', data: { resolved: { button_data: 'dsh-approve|s1|a1|allowed-once' } } }), { userId: '', groupOpenid: 'GROUP_9' })
+check('群按钮-仅 data 内 group_openid', resolveInteractionIdentity({ data: { detail: { group_openid: 'GROUP_9' } } }), { userId: '', groupOpenid: '' })
+check('私聊按钮-顶层 user_openid', resolveInteractionIdentity({ user_openid: 'U1', data: {} }), { userId: 'U1', groupOpenid: '' })
+check('私聊按钮-data 内 user_id', resolveInteractionIdentity({ data: { resolved: { user_id: 'U2' } } }), { userId: 'U2', groupOpenid: '' })
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

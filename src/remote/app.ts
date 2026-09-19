@@ -1000,7 +1000,7 @@
     Promise.all([
       apiRpc('workspace.list', {}),
       apiRpc('session.list', {}),
-      fetch(state.server + '/api/info?token=' + encodeURIComponent(state.token), { signal: AbortSignal.timeout(10000) }).then(function (r) { return r.json() }).catch(function () { return {} }),
+      fetch(state.server + '/api/info', { signal: AbortSignal.timeout(10000) }).then(function (r) { return r.json() }).catch(function () { return {} }),
       apiAction('fs.list', { path: '' }).then(function (d) { return d.roots || [] }).catch(function () { return [] }),
     ]).then(function (results) {
       var wsData = results[0]
@@ -1632,8 +1632,9 @@
 
   function loadWallpapers() {
     var host = $('set-wallpapers')
-    fetch(state.server + '/api/wallpapers?token=' + encodeURIComponent(state.token), {
+    fetch(state.server + '/api/wallpapers', {
       signal: AbortSignal.timeout(10000),
+      headers: { authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId },
     }).then(function (res) {
       return res.json()
     }).then(function (data) {
@@ -1688,7 +1689,10 @@
   // ---- 定时任务 ----
   function loadScheduled() {
     var host = $('sched-list')
-    fetch(state.server + '/api/tasks?token=' + encodeURIComponent(state.token), { signal: AbortSignal.timeout(10000) })
+    fetch(state.server + '/api/tasks', {
+      signal: AbortSignal.timeout(10000),
+      headers: { authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId },
+    })
       .then(function (r) { return r.json() })
       .then(function (data) {
         var items = data.items || []
@@ -1890,6 +1894,20 @@
     }
   }
 
+  /** 换取媒体预览 ticket(短时效、绑定路径):令牌不落入 URL,只换一次。 */
+  function fetchFsTicket(path) {
+    return fetch(state.server + '/api/fs/ticket', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId },
+      body: JSON.stringify({ path: path }),
+    }).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      return res.json()
+    }).then(function (data) {
+      return data && typeof data.ticket === 'string' ? data.ticket : ''
+    })
+  }
+
   function openFsPreview(path, name) {
     $('fsp-title').textContent = name
     var content = $('fsp-content')
@@ -1902,40 +1920,45 @@
     else if (lower.endsWith('.pdf')) media = 'pdf'
     else if (['.png', '.jpg', '.jpeg', '.gif', '.webp'].some(function (ext) { return lower.endsWith(ext) })) media = 'image'
     if (media !== null) {
-      var source = state.server + '/api/fs/stream?path=' + encodeURIComponent(path)
-        + '&token=' + encodeURIComponent(state.token) + '&device=' + encodeURIComponent(state.deviceId)
-      if (media === 'pdf') {
-        // 手机浏览器通常禁用在 iframe 里嵌 PDF;提供"新窗口打开 + 下载"。
-        var pdfHint = document.createElement('p')
-        pdfHint.className = 'empty'
-        pdfHint.textContent = '浏览器不支持内嵌 PDF,请用下方按钮打开或下载'
-        content.appendChild(pdfHint)
-        content.appendChild(previewActionRow(source, name, true))
-      } else if (media === 'video') {
-        var video = document.createElement('video')
-        video.className = 'fsp-media'
-        video.controls = true
-        video.playsInline = true
-        video.preload = 'metadata'
-        video.src = source
-        content.appendChild(video)
-        content.appendChild(previewActionRow(source, name, false))
-      } else if (media === 'audio') {
-        var audio = document.createElement('audio')
-        audio.className = 'fsp-audio'
-        audio.controls = true
-        audio.preload = 'metadata'
-        audio.src = source
-        content.appendChild(audio)
-        content.appendChild(previewActionRow(source, name, false))
-      } else {
-        var image = document.createElement('img')
-        image.className = 'fsp-media'
-        image.alt = name
-        image.src = source
-        content.appendChild(image)
-        content.appendChild(previewActionRow(source, name, false))
-      }
+      // 先用 header 认证换取 ticket,再拿 ticket 构造媒体 URL——令牌不进入任何 href/src。
+      fetchFsTicket(path).then(function (ticket) {
+        if (ticket === '') { S.toast('媒体预览未授权或已过期', 'error'); return }
+        var source = state.server + '/api/fs/stream?ticket=' + encodeURIComponent(ticket)
+        if (media === 'pdf') {
+          // 手机浏览器通常禁用在 iframe 里嵌 PDF;提供"新窗口打开 + 下载"。
+          var pdfHint = document.createElement('p')
+          pdfHint.className = 'empty'
+          pdfHint.textContent = '浏览器不支持内嵌 PDF,请用下方按钮打开或下载'
+          content.appendChild(pdfHint)
+          content.appendChild(previewActionRow(source, name, true))
+        } else if (media === 'video') {
+          var video = document.createElement('video')
+          video.className = 'fsp-media'
+          video.controls = true
+          video.playsInline = true
+          video.preload = 'metadata'
+          video.src = source
+          content.appendChild(video)
+          content.appendChild(previewActionRow(source, name, false))
+        } else if (media === 'audio') {
+          var audio = document.createElement('audio')
+          audio.className = 'fsp-audio'
+          audio.controls = true
+          audio.preload = 'metadata'
+          audio.src = source
+          content.appendChild(audio)
+          content.appendChild(previewActionRow(source, name, false))
+        } else {
+          var image = document.createElement('img')
+          image.className = 'fsp-media'
+          image.alt = name
+          image.src = source
+          content.appendChild(image)
+          content.appendChild(previewActionRow(source, name, false))
+        }
+      }).catch(function () {
+        S.toast('媒体预览未授权或已过期', 'error')
+      })
       return
     }
     content.textContent = '加载中…'

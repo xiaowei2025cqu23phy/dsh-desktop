@@ -11,7 +11,7 @@ import { app, net } from 'electron'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import type { ConfigStore, QQBotConfig } from './config'
-import { ACTION_BUTTON_PREFIX, APPROVE_BUTTON_PREFIX, findEventGroupOpenid, findEventUserId, parseActionButtonData, parseApprovalButtonData, parseQuestionButtonData, QUESTION_BUTTON_PREFIX } from './qq-commands'
+import { ACTION_BUTTON_PREFIX, APPROVE_BUTTON_PREFIX, findEventGroupOpenid, parseActionButtonData, parseApprovalButtonData, parseQuestionButtonData, QUESTION_BUTTON_PREFIX, qqUserAllowed, resolveInteractionIdentity } from './qq-commands'
 import { startOnboard, type OnboardProgress } from './qq-onboard'
 import type { RemoteCommandProcessor } from './remote-commands'
 
@@ -57,8 +57,12 @@ export interface QQDiagState {
   connected: boolean
   /** 连接就绪时间(ms);从未连上为 null。 */
   readyAt: number | null
+  /** 锁定中:已配置凭据但「允许的用户 openid」为空,不服务任何人。 */
+  locked: boolean
   /** 最近一次失败(发送成功后清除);null = 最近无失败。 */
   lastError: { at: number; action: string; detail: string; hint: string } | null
+  /** 最近被拒绝的 openid(未在白名单;桌面端设置里可看到,方便把本人 openid 加入白名单)。 */
+  deniedUsers: Array<{ id: string; at: number }>
 }
 
 /** SDK 实例的最小类型(createRequire 加载 ESM 入口后可用)。 */
@@ -90,6 +94,8 @@ export class QQBotAdapter {
   private readyAt: number | null = null
   /** 最近一次失败(发送成功后清除);供「状态」自检一眼定位。 */
   private lastError: { at: number; action: string; detail: string; hint: string } | null = null
+  /** 最近被拒绝的 openid(未授权;桌面端设置里可看到,方便把本人 openid 加入白名单)。 */
+  private deniedUsers: Array<{ id: string; at: number }> = []
 
   constructor(
     private config: ConfigStore,
@@ -116,12 +122,22 @@ export class QQBotAdapter {
   /** 通道自检信息(「状态」指令、桌面端设置页与诊断导出共用)。 */
   diag(): QQDiagState {
     const config = this.getConfig()
+    const configured = config.enabled && config.appId.trim() !== '' && config.appSecret.trim() !== ''
+    const unlocked = (config.allowedUserIds ?? '').trim() !== ''
     return {
-      configured: config.enabled && config.appId.trim() !== '' && config.appSecret.trim() !== '',
+      configured,
       connected: this.started,
       readyAt: this.readyAt,
+      locked: configured && !unlocked,
       lastError: this.lastError,
+      deniedUsers: [...this.deniedUsers],
     }
+  }
+
+  /** 记录一次被拒绝的未授权 openid(桌面端设置里可看到,方便把本人 openid 加入白名单)。 */
+  private rememberDenied(userId: string): void {
+    if (userId === '' || userId.startsWith('g:')) return
+    this.deniedUsers = [...this.deniedUsers.filter((item) => item.id !== userId), { id: userId, at: Date.now() }].slice(-8)
   }
 
   /** 记录一次失败(自检用;动作名 + 分类提示)。 */
@@ -197,6 +213,11 @@ export class QQBotAdapter {
     if (!config.enabled || config.appId.trim() === '' || config.appSecret.trim() === '') {
       console.log('[qq-bot] 未配置或未启用,跳过')
       return
+    }
+    if ((config.allowedUserIds ?? '').trim() === '') {
+      // 安全锁定:凭据已配置但「允许的用户 openid」为空,保持连接但拒绝服务任何消息
+      // (不解析指令、不创建会话),仅记录被拒 openid 供桌面端主人填入白名单。
+      console.log('[qq-bot] 安全锁定:未配置「允许的用户 openid」,机器人不服务任何聊天。请在桌面端设置中填入本人 openid(被拒消息会在设置页显示)')
     }
     this.started = false
     this.readyAt = null
@@ -550,19 +571,23 @@ export class QQBotAdapter {
       return
     }
     // 按钮点击者身份:QQ INTERACTION_CREATE 的 user_openid/group_openid 在事件顶层
-    // (部分 SDK 形态放 data 内,双路径兼容);缺失时退回该用户的私聊登记。
-    const rawRecord = raw as Record<string, unknown>
-    const topUserOpenid = typeof rawRecord.user_openid === 'string' ? rawRecord.user_openid : ''
-    const topGroupOpenid = typeof rawRecord.group_openid === 'string' ? rawRecord.group_openid : ''
-    let userId = topUserOpenid !== '' ? topUserOpenid : findEventUserId(raw.data)
-    if (userId === '') {
-      for (const [k, v] of this.userTargets) {
-        if (v.target.scope === 'c2c') { userId = k; break }
-      }
-    }
-    console.log(`[qq-bot] interaction identity: topUser=${topUserOpenid} topGroup=${topGroupOpenid} userTargets=${this.userTargets.size}`)
+    // (部分 SDK 形态放 data 内,双路径兼容)。
+    // 群内按钮回调只携带 group_openid 而非 user_openid:此时无法确认点击者身份,
+    // 绝不能把它归属给任意私聊用户(否则群内审批/操作会误当他人应答,拒绝文案还会错发给无关用户)。
+    const { userId, groupOpenid: topGroupOpenid } = resolveInteractionIdentity(raw)
+    console.log(`[qq-bot] interaction identity: user=${userId} topGroup=${topGroupOpenid} userTargets=${this.userTargets.size}`)
     let result: string
-    if (approval !== null) {
+    if (userId === '' && topGroupOpenid !== '') {
+      // 群内点击且无用户身份:不猜测归属,明确引导去私聊处理(与群路径一致)。
+      result = '请在私聊中处理该项审批/操作:群内按钮点击无法确认你的身份。'
+    } else if (userId === '' || !this.userAllowed(userId)) {
+      // 无身份或未授权(白名单门禁):静默忽略,只记审计。
+      if (userId !== '') {
+        this.rememberDenied(userId)
+        this.config.appendAudit({ time: Date.now(), type: 'qq.denied', detail: `未授权 openid 按钮点击被忽略:${userId}` })
+      }
+      result = '未授权:该操作无法确认你的身份。'
+    } else if (approval !== null) {
       result = await this.processor.respondApproval('qq', userId, approval.sessionId, approval.approvalId, approval.decision)
     } else if (question !== null) {
       result = await this.processor.respondQuestion('qq', userId, question.sessionId, question.questionId, question.optionIndex)
@@ -595,12 +620,24 @@ export class QQBotAdapter {
     }
   }
 
+  /** 该 openid 是否被允许使用机器人(私聊 = 完整指令集,必须白名单)。 */
+  private userAllowed(userId: string): boolean {
+    return qqUserAllowed(this.getConfig().allowedUserIds ?? '', userId)
+  }
+
   private async handleMessage(msg: unknown): Promise<void> {
     const bot = this.bot
     if (bot === null) return
     const record = msg as { content?: unknown; replyTarget?: unknown; author?: unknown; attachments?: unknown }
     const content = typeof record.content === 'string' ? record.content.trim() : ''
     const userId = this.senderId(record)
+    // 白名单门禁:留空 = 锁定(不服务任何聊天);已配置 = 只服务白名单内 openid。
+    // 未授权用户静默忽略,不解析指令、不创建会话,只写入审计与自检(便于主人把本人 openid 加入白名单)。
+    if (!this.userAllowed(userId)) {
+      this.rememberDenied(userId)
+      this.config.appendAudit({ time: Date.now(), type: 'qq.denied', detail: `未授权 openid 消息被忽略:${userId}` })
+      return
+    }
     this.registerPushTarget(userId, record.replyTarget)
     const pushTarget = this.pushTargetOf(record.replyTarget)
     // 记录该群最近一条用户消息的 msg_id:群 bot 只能「回复式」发消息,回复永远用最新的。

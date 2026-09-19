@@ -78,6 +78,7 @@ interface QQConfigView {
   enabled: boolean
   appId: string
   appSecret: string
+  allowedUserIds: string
   defaultTarget: string
   autoChat: boolean
   report: boolean
@@ -87,7 +88,9 @@ interface QQDiagView {
   configured: boolean
   connected: boolean
   readyAt: number | null
+  locked: boolean
   lastError: { at: number; action: string; detail: string; hint: string } | null
+  deniedUsers: Array<{ id: string; at: number }>
 }
 
 interface TelegramDiagView {
