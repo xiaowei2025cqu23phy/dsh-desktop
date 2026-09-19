@@ -145,7 +145,7 @@
       </nav>
 
       <div class="drawer-group">⚙️ 通用设置</div>
-      <section class="panel">
+      <section class="panel" data-drawer-group="general">
         <h3>通知与勿扰</h3>
         <label class="check-row"><input id="notify-enabled" type="checkbox" />启用桌面通知</label>
         <label class="check-row"><input id="notify-approval" type="checkbox" />审批请求</label>
@@ -158,7 +158,7 @@
         <label class="check-row"><input id="notify-urgent-bypass" type="checkbox" />审批和失败可绕过勿扰</label>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="general">
         <h3>用量费用</h3>
         <div class="field">
           <label for="usage-multiplier">费用倍率(1 = 官方价;中转站可按实际价格调整)</label>
@@ -167,7 +167,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="general">
         <h3>配置备份与恢复</h3>
         <p class="hint">导出的配置会自动移除远程令牌、QQ 密钥和 Telegram Token。</p>
         <div class="field-row">
@@ -179,7 +179,7 @@
       </section>
 
       <div class="drawer-group">🔌 服务与通道</div>
-      <section class="panel">
+      <section class="panel" data-drawer-group="service">
         <h3>Harness 服务</h3>
         <div class="field">
           <label for="cfg-mode">模式</label>
@@ -227,7 +227,7 @@
         <p id="cap-main" class="hint">正在探测实例来源与能力…</p>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="service">
         <h3>🧪 实验预览实例</h3>
         <p id="cap-preview" class="hint"></p>
         <div class="field">
@@ -264,7 +264,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="maintenance">
         <h3>诊断与支持</h3>
         <pre id="diagnostics-report" class="help-pre">点击“收集诊断”查看脱敏状态。</pre>
         <div class="field-row">
@@ -273,7 +273,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="maintenance">
         <h3>软件更新</h3>
         <div class="field-row">
           <span id="update-info" class="hint">正在读取版本…</span>
@@ -286,7 +286,7 @@
         </label>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="service">
         <h3>远程访问(手机 PWA)</h3>
         <label class="check-row">
           <input id="remote-enabled" type="checkbox" />
@@ -359,7 +359,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="service">
         <h3>QQ 机器人(可选)</h3>
         <label class="check-row">
           <input id="qq-enabled" type="checkbox" />
@@ -410,7 +410,7 @@
         <div id="qq-status" class="hint"></div>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="service">
         <h3>Telegram 机器人(可选)</h3>
         <label class="check-row">
           <input id="tg-enabled" type="checkbox" />
@@ -447,7 +447,7 @@
         <div id="tg-status" class="hint"></div>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="service">
         <h3>Webhook 命令端点(可选)</h3>
         <p class="hint">启用「远程访问」后,任意 HTTP 客户端可 POST 指令执行远程命令(脚本、钉钉/飞书群机器人、Home Assistant 等):</p>
         <div class="field">
@@ -458,7 +458,7 @@
       </section>
 
       <div class="drawer-group">🎨 外观与扩展</div>
-      <section class="panel">
+      <section class="panel" data-drawer-group="appearance">
         <h3>外观 · 壁纸</h3>
         <div class="field">
           <label>内置壁纸包(一键应用到三端)</label>
@@ -495,7 +495,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="appearance">
         <h3>AI 屏保</h3>
         <label class="check-row">
           <input id="ss-enabled" type="checkbox" />
@@ -532,7 +532,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="maintenance">
         <h3>添加自定义 Provider(OpenAI 兼容网关)</h3>
         <div class="field">
           <label for="gw-preset">网关预设</label>
@@ -568,7 +568,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-drawer-group="maintenance">
         <h3>服务日志</h3>
         <pre id="log-view" class="log-view"></pre>
       </section>

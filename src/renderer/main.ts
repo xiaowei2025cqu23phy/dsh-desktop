@@ -722,16 +722,9 @@ async function loadWorkbench(): Promise<void> {
 
 function applyDrawerGroup(group: string): void {
   const panels = Array.from(document.querySelectorAll<HTMLElement>('#drawer > .panel'))
-  const groups: Record<string, string[]> = {
-    general: ['通知与勿扰', '用量费用', '配置备份与恢复'],
-    service: ['Harness 服务', '远程访问', 'QQ 机器人', 'Telegram 机器人', 'Webhook'],
-    appearance: ['外观', 'AI 屏保'],
-    maintenance: ['诊断与支持', '软件更新', '添加自定义 Provider', '服务日志'],
-  }
-  const allowed = groups[group] ?? groups.general
+  // 用 data-drawer-group 分组,不再匹配 <h3> 界面文案(否则「实验预览实例」等面板始终不可达)。
   panels.forEach((panel) => {
-    const title = panel.querySelector('h3')?.textContent ?? ''
-    panel.classList.toggle('drawer-panel-hidden', !allowed.some((name) => title.includes(name)))
+    panel.classList.toggle('drawer-panel-hidden', panel.dataset.drawerGroup !== group)
   })
   document.querySelectorAll<HTMLButtonElement>('.drawer-tab').forEach((button) => button.classList.toggle('active', button.dataset.drawerGroup === group))
 }
