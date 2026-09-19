@@ -10,6 +10,8 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { toWireMethod, toWirePayload } from './rpc-protocol'
+import type { RpcProtocol } from './rpc-protocol'
 
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; error: RpcError }
 
@@ -52,13 +54,13 @@ export interface RpcReceipt {
   reason?: string
 }
 
-/** 端点协议协商状态(HarnessManager 共享:多个 client 实例必须同一协议)。 */
-export type RpcProtocol = 'slash' | 'dot' | null
-
 /** 可变的协议盒:多个 HarnessClient 实例共享一次协商结果。 */
 export interface RpcProtocolBox {
   value: RpcProtocol
 }
+
+/** 保持原导出路径不变(协议类型现在定义于 rpc-protocol.ts)。 */
+export type { RpcProtocol } from './rpc-protocol'
 
 export class HarnessClient {
   /** 每次登录(`?token=` 换 cookie)后的会话 cookie(不含属性部分)。 */
@@ -67,38 +69,6 @@ export class HarnessClient {
   private loginFlight: Promise<string | null> | null = null
   /** 最近一次 probe 的失败信息(null = 成功或从未探测)。 */
   private probeFailure: { code: string; message: string } | null = null
-  /** 官方 0.1.2-rc.1+ 各方法的 typert 参数壳(按 wire 方法名;缺省 _request)。 */
-  private static readonly SLASH_ENVELOPE: Record<string, '_request' | 'request' | 'spread' | 'nsRequest'> = {
-    'session/modelCatalog': 'spread',
-    'llm/listProviders': 'spread',
-    'llm/listConfigurableProviders': 'spread',
-    'llm/discoverModels': 'nsRequest',
-    'session/create': 'request',
-    'session/rename': 'request',
-    'session/selectModel': 'request',
-    'session/page': 'request',
-    'session/prompt': 'request',
-    'session/updateQueue': 'request',
-    'session/cancel': 'request',
-    'workspace/create': 'request',
-    'workspace/rename': 'request',
-    'workspace/delete': 'request',
-    'workspace/archiveSession': 'request',
-    'settings/describe': 'spread',
-    'settings/update': 'spread',
-    'settings/mutate': 'spread',
-    'settings/replace': 'spread',
-    'credentials/set': 'spread',
-    'credentials/describe': 'spread',
-    'credentials/unset': 'spread',
-    // 目录类方法:官方 UI 实测均为展开参数(spread),旧版点端点默认 _request 不适用。
-    'agentPresets/list': 'spread',
-    'dynamicCordisRunner/inventory': 'spread',
-    'dynamicCordisRunner/syncInspectManifest': 'spread',
-    'commands/list': 'spread',
-    'subagents/list': 'spread',
-    'skills/list': 'request',
-  }
 
   constructor(
     readonly baseUrl: string,
@@ -114,28 +84,6 @@ export class HarnessClient {
    */
   get protocol(): RpcProtocol {
     return this.protocolBox.value
-  }
-
-  /** 把调用端点名映射到当前协议的 wire 形式(路径与 body.method 都用它)。 */
-  private wire(method: string): string {
-    return this.protocolBox.value === 'dot' ? method : method.replace('.', '/')
-  }
-
-  /**
-   * 按协议与目标方法包装调用 payload。官方 0.1.2-rc.1+ 的 typert 签名因方法而异:
-   * 会话/设置类多为 `request`,列表类为 `_request`,llm/模型目录类直接展开参数。
-   */
-  private wirePayload(payload: unknown, wireMethod: string): unknown {
-    if (this.protocolBox.value !== 'slash') return payload
-    const envelope = HarnessClient.SLASH_ENVELOPE[wireMethod] ?? '_request'
-    if (envelope === 'nsRequest') {
-      const record = (payload ?? {}) as Record<string, unknown>
-      const { settingsNs, ...rest } = record
-      return { args: { settingsNs: settingsNs ?? 'llm-pi-ai', request: rest } }
-    }
-    if (envelope === 'spread') return { args: (payload ?? {}) as object }
-    if (envelope === 'request') return { args: { request: payload } }
-    return { args: { _request: payload } }
   }
 
   /**
@@ -251,7 +199,7 @@ export class HarnessClient {
 
   /** 一元 RPC 调用,返回业务值;失败抛 HarnessError。 */
   async rpc<T>(method: string, payload: unknown = {}, timeoutMs = 30000): Promise<T> {
-    const wireMethod = this.wire(method)
+    const wireMethod = toWireMethod(this.protocolBox.value, method)
     // 官方 0.1.2-rc.1+ 没有旧版的一些方法:提供别名/降级,避免整条链路抛 404。
     if (this.protocolBox.value === 'slash') {
       if (method === 'session.prompt') {
@@ -268,7 +216,7 @@ export class HarnessClient {
       }
       if (method === 'host.describe') {
         try {
-          return await this.rpcRaw<T>('host/describe', this.wirePayload(payload, 'host/describe'), timeoutMs)
+          return await this.rpcRaw<T>('host/describe', toWirePayload(this.protocolBox.value, 'host/describe', payload), timeoutMs)
         } catch (error) {
           if (error instanceof HarnessError && error.code === 'http-404') {
             return { version: '', cwd: '', canOpenPath: false } as T
@@ -329,7 +277,7 @@ export class HarnessClient {
       }
       if (method === 'workspace.list') {
         // 官方没有 workspace/list:由会话的 cwd 合成工作区列表。
-        const raw = await this.rpcRaw<{ items?: Array<{ cwd?: string }> }>('session/list', this.wirePayload({}, 'session/list'), timeoutMs)
+        const raw = await this.rpcRaw<{ items?: Array<{ cwd?: string }> }>('session/list', toWirePayload(this.protocolBox.value, 'session/list', {}), timeoutMs)
         const byPath = new Map<string, string>()
         for (const item of raw.items ?? []) {
           if (typeof item.cwd === 'string' && item.cwd !== '' && !byPath.has(item.cwd)) {
@@ -341,7 +289,7 @@ export class HarnessClient {
       }
       if (method === 'workspace.create') {
         // 官方返回 { workspace: {...} }:展平为旧调用方期望的 { workspaceId } 形状。
-        const value = await this.rpcRaw<{ workspace?: { workspaceId?: string } }>('workspace/create', this.wirePayload(payload, 'workspace/create'), timeoutMs)
+        const value = await this.rpcRaw<{ workspace?: { workspaceId?: string } }>('workspace/create', toWirePayload(this.protocolBox.value, 'workspace/create', payload), timeoutMs)
         const id = value?.workspace?.workspaceId
         return (id === undefined ? value : { workspaceId: id, ...value.workspace }) as T
       }
@@ -351,14 +299,14 @@ export class HarnessClient {
         const params = { ...((payload ?? {}) as Record<string, unknown>) }
         const id = params.workspaceId
         if (typeof id === 'string' && /[\\/]/.test(id)) {
-          const created = await this.rpcRaw<{ workspace?: { workspaceId?: string } }>('workspace/create', this.wirePayload({ path: id }, 'workspace/create'), timeoutMs)
+          const created = await this.rpcRaw<{ workspace?: { workspaceId?: string } }>('workspace/create', toWirePayload(this.protocolBox.value, 'workspace/create', { path: id }), timeoutMs)
           const realId = created?.workspace?.workspaceId
           if (typeof realId === 'string' && realId !== '') params.workspaceId = realId
         }
-        return await this.rpcRaw<T>(wireMethod, this.wirePayload(params, wireMethod), timeoutMs)
+        return await this.rpcRaw<T>(wireMethod, toWirePayload(this.protocolBox.value, wireMethod, params), timeoutMs)
       }
     }
-    return this.rpcRaw<T>(wireMethod, this.wirePayload(payload, wireMethod), timeoutMs)
+    return this.rpcRaw<T>(wireMethod, toWirePayload(this.protocolBox.value, wireMethod, payload), timeoutMs)
   }
 
   /** 一元 RPC wire 传输:按已给定(协商好的)端点名发请求并解析响应。 */
