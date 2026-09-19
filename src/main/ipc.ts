@@ -275,6 +275,55 @@ export function registerIpc(deps: IpcDeps): void {
         /* package.json 解析失败时跳过。 */
       }
     }
+    // 新增(P3-3):从该工作区的近期会话归纳候选——首条消息补简介、工具调用补常用命令,
+    // 让记忆「更主动」,不只依赖 README/package.json。
+    try {
+      const client = deps.harness.client()
+      const normPath = path.replace(/\\/g, '/').toLowerCase()
+      const list = await client.rpc<{ items: Array<{ sessionId: string; cwd?: string; updatedAt?: number; blank?: boolean; origin?: string }> }>('session.list', {}, 20000)
+      const recent = (list.items ?? [])
+        .filter((s) => !s.blank && !(typeof s.origin === 'string' && s.origin !== '') &&
+          typeof s.cwd === 'string' && s.cwd.replace(/\\/g, '/').toLowerCase().startsWith(normPath))
+        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+        .slice(0, 3)
+      const firstMessages: string[] = []
+      const toolCommands: string[] = []
+      for (const s of recent) {
+        try {
+          const hist = await client.rpc<{ events: Array<Record<string, unknown>> }>('session.history', { sessionId: s.sessionId, maxMessages: 8 }, 15000)
+          for (const entry of hist.events ?? []) {
+            const raw = entry !== null && typeof entry === 'object' ? entry : {}
+            const inner = raw.event
+            const ev = (inner !== null && typeof inner === 'object' ? inner : raw) as Record<string, unknown>
+            const data = (ev.data !== null && typeof ev.data === 'object' ? ev.data : {}) as Record<string, unknown>
+            if (ev.type === 'user/message') {
+              const message = (data.message !== null && typeof data.message === 'object' ? data.message : {}) as Record<string, unknown>
+              const content = message.content
+              if (Array.isArray(content)) {
+                const text = content.map((b) => (b !== null && typeof b === 'object' && typeof (b as { text?: unknown }).text === 'string' ? (b as { text: string }).text : '')).join('').trim()
+                if (text !== '') firstMessages.push(text.slice(0, 120))
+              }
+            } else if (ev.type === 'tool/call' && typeof ev.name === 'string') {
+              const name = (ev.name as string).toLowerCase()
+              if (/bash|exec|shell|sh|npm|pnpm|yarn|node|tsc|python|pip|git|cargo|\bgo\b/i.test(name)) {
+                const args = typeof ev.arguments === 'string' ? ev.arguments : ''
+                const brief = args.replace(/\s+/g, ' ').trim().slice(0, 80)
+                if (brief !== '') toolCommands.push(`${name} ${brief}`)
+              }
+            }
+          }
+        } catch {
+          /* 单个会话历史读取失败跳过,不影响其它候选。 */
+        }
+      }
+      if (suggest.summary === '' && firstMessages.length > 0) suggest.summary = `近期会话:${firstMessages[0]}`
+      const extra = [...new Set(toolCommands)].slice(0, 6).join('\n')
+      if (extra !== '') {
+        suggest.commands = suggest.commands === '' ? extra : `${suggest.commands}\n${extra}`
+      }
+    } catch {
+      /* 会话扫描失败(harness 未就绪等)不影响基础草稿。 */
+    }
     return suggest
   })
   ipcMain.handle('diagnostics:collect', () => deps.diagnostics?.() ?? { error: '诊断不可用' })

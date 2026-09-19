@@ -360,7 +360,7 @@ async function suggestMemory(): Promise<void> {
   try {
     const suggest = await API.memory.suggest(path)
     if (suggest.summary === '' && suggest.commands === '') {
-      $id('memory-status').textContent = '未找到 README 或 package.json,无法生成草稿。'
+      $id('memory-status').textContent = '未找到 README、package.json 或近期会话,无法生成草稿。'
       return
     }
     const summary = (input('memory-summary') as unknown as HTMLTextAreaElement)
