@@ -1933,7 +1933,14 @@ async function loadUpdateInfo(): Promise<void> {
 
 // ---- 事件绑定 ----
 
-function bind(): void {
+/** 把一组复选框的 change 事件统一绑定到「勾选状态 → 配置字段」,消除重复的 input → setConfig 样板。 */
+function bindCheckboxFields(fields: Record<string, string>, save: (patch: Record<string, unknown>) => unknown): void {
+  Object.entries(fields).forEach(([id, field]) => {
+    input(id).addEventListener('change', () => void save({ [field]: input(id).checked }))
+  })
+}
+
+function bindWebview(): void {
   const view = harnessView()
   view.addEventListener('did-fail-load', (event) => {
     const details = event as unknown as { errorCode?: number; errorDescription?: string }
@@ -1951,11 +1958,13 @@ function bind(): void {
     $id('view-error').classList.add('hidden')
     void syncWebviewWallpaper()
   })
-    view.addEventListener('did-finish-load', () => {
-      webviewFailStreak = 0
-      $id('view-error').classList.add('hidden')
-    })
+  view.addEventListener('did-finish-load', () => {
+    webviewFailStreak = 0
+    $id('view-error').classList.add('hidden')
+  })
+}
 
+function bindTopBar(): void {
   select('model-select').addEventListener('change', () => void applyModelSelection())
 
   $id('btn-screensaver').addEventListener('click', () => {
@@ -2021,6 +2030,9 @@ function bind(): void {
     }
   })
   switchView('workbench')
+}
+
+function bindHarness(): void {
   $id('btn-retry').addEventListener('click', () => {
     void API.harness.restart()
   })
@@ -2033,8 +2045,9 @@ function bind(): void {
     })
   })
   $id('btn-open-webui').addEventListener('click', () => void API.harness.openWebUi())
+}
 
-  // 远程访问
+function bindRemote(): void {
   input('remote-enabled').addEventListener('change', async () => {
     const enabled = input('remote-enabled').checked
     await API.remote.setConfig({ enabled, expiresAt: enabled ? Date.now() + 120 * 60 * 1000 : null })
@@ -2118,8 +2131,9 @@ function bind(): void {
     await API.remote.setConfig({ pauseOnLock: input('remote-pause-on-lock').checked })
     S.toast(input('remote-pause-on-lock').checked ? '已开启:锁屏/睡眠时自动暂停远程访问' : '已关闭自动暂停', 'ok')
   })
+}
 
-  // QQ 机器人
+function bindQQ(): void {
   const qqConfigFail = (error: unknown): void => {
     S.toast(`QQ 设置保存失败:${error instanceof Error ? error.message : String(error)}`, 'error')
     void loadQQConfig()
@@ -2154,6 +2168,9 @@ function bind(): void {
       S.toast(input('qq-report').checked ? '已开启主动汇报(完成/失败/审批/提问)' : '已关闭主动汇报', 'ok')
     } catch (error) { qqConfigFail(error) }
   })
+}
+
+function bindWorkbench(): void {
   $id('usage-multiplier').addEventListener('change', async () => {
     const value = Number(($id('usage-multiplier') as HTMLInputElement).value)
     if (!Number.isFinite(value) || value <= 0) {
@@ -2228,8 +2245,11 @@ function bind(): void {
   $id('btn-memory-save').addEventListener('click', () => void saveMemory())
   $id('btn-memory-clear').addEventListener('click', () => void clearMemory())
   $id('btn-memory-suggest').addEventListener('click', () => void suggestMemory())
+}
+
+function bindNotifications(): void {
   // 通知设置:全部即改即存(与其他配置一致)。
-  const notifyFields: Record<string, string> = {
+  bindCheckboxFields({
     'notify-enabled': 'enabled',
     'notify-approval': 'approval',
     'notify-question': 'question',
@@ -2238,12 +2258,12 @@ function bind(): void {
     'notify-update': 'update',
     'notify-quiet': 'quietHoursEnabled',
     'notify-urgent-bypass': 'urgentBypassQuiet',
-  }
-  Object.entries(notifyFields).forEach(([id, field]) => {
-    input(id).addEventListener('change', () => void saveNotificationConfig({ [field]: input(id).checked }))
-  })
+  }, (patch) => saveNotificationConfig(patch))
   input('notify-quiet-start').addEventListener('change', () => void saveNotificationConfig({ quietStart: Number(input('notify-quiet-start').value) }))
   input('notify-quiet-end').addEventListener('change', () => void saveNotificationConfig({ quietEnd: Number(input('notify-quiet-end').value) }))
+}
+
+function bindMaintenance(): void {
   $id('btn-config-backup').addEventListener('click', async () => {
     const path = await API.config.backup()
     $id('config-status').textContent = `已备份:${path}`
@@ -2264,6 +2284,9 @@ function bind(): void {
     const path = await API.diagnostics.export()
     $id('diagnostics-report').textContent = path === null ? '已取消导出' : `已导出:${path}`
   })
+}
+
+function bindBotPrompt(): void {
   $id('bot-chat-prompt').addEventListener('change', async () => {
     await API.bot.setConfig({ chatPrompt: ($id('bot-chat-prompt') as HTMLTextAreaElement).value.trim() })
     S.toast('对话模式提示词已保存', 'ok')
@@ -2283,8 +2306,9 @@ function bind(): void {
       pre.textContent = '加载失败:' + String(error)
     }
   })
+}
 
-  // QQ 扫码登录
+function bindQQOnboard(): void {
   let onboardTimer: number | null = null
   const clearOnboardTimer = () => {
     if (onboardTimer !== null) { window.clearInterval(onboardTimer); onboardTimer = null }
@@ -2347,8 +2371,9 @@ function bind(): void {
     clearOnboardTimer()
     showOnboard(false)
   })
+}
 
-  // Telegram 机器人
+function bindTelegram(): void {
   const tgConfigFail = (error: unknown): void => {
     S.toast(`Telegram 设置保存失败:${error instanceof Error ? error.message : String(error)}`, 'error')
     void loadTelegramConfig()
@@ -2408,8 +2433,9 @@ function bind(): void {
     clearTgBindTimer()
     await loadTelegramConfig()
   })
+}
 
-  // 更新
+function bindUpdate(): void {
   $id('btn-check-update').addEventListener('click', async () => {
     $id('update-info').textContent = '正在检查更新…'
     try {
@@ -2430,8 +2456,9 @@ function bind(): void {
     await API.updater.setConfig({ autoCheck: input('upd-autocheck').checked })
     S.toast(input('upd-autocheck').checked ? '已开启:启动后自动检查更新' : '已关闭自动检查', 'ok')
   })
+}
 
-  // 外观
+function bindAppearance(): void {
   $id('btn-wall-window').addEventListener('click', () => void pickWallpaper('window'))
   $id('btn-wall-window-clear').addEventListener('click', () => void clearWallpaper('window'))
   $id('btn-wall-phone').addEventListener('click', () => void pickWallpaper('phone'))
@@ -2447,8 +2474,9 @@ function bind(): void {
       void API.appearance.setMask(Number(input('wall-mask').value)).catch(() => { /* 忽略 */ })
     }, 400)
   })
+}
 
-  // 屏保设置
+function bindScreensaver(): void {
   input('ss-enabled').addEventListener('change', () =>
     void saveScreensaverConfig({ enabled: input('ss-enabled').checked }))
   input('ss-idle').addEventListener('change', () =>
@@ -2480,8 +2508,9 @@ function bind(): void {
       void loadRegistered()
     })
   })
+}
 
-  // Harness 配置
+function bindHarnessConfig(): void {
   select('cfg-mode').addEventListener('change', () => void saveHarnessConfig())
   for (const id of ['cfg-url', 'cfg-port', 'cfg-command', 'cfg-dshhome']) {
     input(id).addEventListener('change', () => void saveHarnessConfig())
@@ -2502,6 +2531,24 @@ function bind(): void {
   presetSelect.addEventListener('change', fillGatewayPreset)
   $id('btn-gw-discover').addEventListener('click', () => void discoverGatewayModels())
   $id('btn-gw-save').addEventListener('click', () => void saveGatewayProvider())
+}
+
+function bind(): void {
+  bindWebview()
+  bindTopBar()
+  bindHarness()
+  bindRemote()
+  bindQQ()
+  bindWorkbench()
+  bindNotifications()
+  bindMaintenance()
+  bindBotPrompt()
+  bindQQOnboard()
+  bindTelegram()
+  bindUpdate()
+  bindAppearance()
+  bindScreensaver()
+  bindHarnessConfig()
 }
 
 /** 在设置面板显示当前构建版本与 commit,便于发现「跑的是旧包」的情况。 */
