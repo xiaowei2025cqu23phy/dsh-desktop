@@ -433,7 +433,7 @@ export class RemoteGateway {
           .map(([, e]) => e.sessionId)
         this.json(res, 200, {
           name: 'dsh-desktop-remote',
-          version: '0.1.0',
+          version: app.getVersion(),
           wallpaperPosition: spec.position,
           chatSessionIds: botChatIds,
         })

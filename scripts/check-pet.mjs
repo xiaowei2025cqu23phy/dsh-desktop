@@ -1,7 +1,5 @@
 // 通过 CDP 验证桌面宠物渲染:canvas 可见性 + 像素统计
 // 用法: node scripts/check-pet.mjs
-import WebSocket from 'ws'
-
 const wsUrl = process.argv[2] || 'ws://127.0.0.1:9222/devtools/page/31FDC2282E9EA55572DE1AAC24A514B5'
 const ws = new WebSocket(wsUrl)
 let id = 0
@@ -15,17 +13,17 @@ function send(method, params = {}) {
   })
 }
 
-ws.on('message', (data) => {
-  const msg = JSON.parse(data.toString())
+ws.onmessage = (event) => {
+  const msg = JSON.parse(String(event.data))
   if (msg.id && pending.has(msg.id)) {
     const { resolve, reject } = pending.get(msg.id)
     pending.delete(msg.id)
     if (msg.error) reject(new Error(msg.error.message))
     else resolve(msg.result)
   }
-})
+}
 
-ws.on('open', async () => {
+ws.onopen = async () => {
   try {
     await send('Runtime.enable')
     const expr = `(() => {
@@ -65,9 +63,9 @@ ws.on('open', async () => {
   } finally {
     ws.close()
   }
-})
+}
 
-ws.on('error', (e) => {
-  console.error('WS_ERR', e.message)
+ws.onerror = (e) => {
+  console.error('WS_ERR', e && e.message ? e.message : String(e))
   process.exit(1)
-})
+}

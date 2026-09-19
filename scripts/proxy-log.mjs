@@ -3,7 +3,7 @@
 import { createServer } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 
-const port = Number(process.argv[2]) || 3083
+const port = Number(process.argv[2]) || 3082
 const targetHost = process.argv[3] || 'generativelanguage.googleapis.com'
 const targetPort = Number(process.argv[4]) || 443
 

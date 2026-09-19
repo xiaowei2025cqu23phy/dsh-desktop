@@ -6,7 +6,7 @@
  *   4. 越权路径必须 403。
  *
  * 用法:node scripts/test-remote.mjs [baseUrl] [token]
- * 不传 token 时自动读取桌面端配置 %APPDATA%/DeepSeek Harness Desktop/config.json。
+ * 端口与 token 都自动读取桌面端配置 %APPDATA%/DeepSeek Harness Desktop/config.json(缺省端口 3082)。
  * 退出码:0 全部通过,1 有失败。
  */
 
@@ -14,16 +14,19 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
-const baseUrl = (process.argv[2] ?? 'http://127.0.0.1:3083').replace(/\/+$/, '')
+// 端口与 token 都从 config.json 读取(默认 3082,与源码默认值一致);命令行参数仍可覆盖:[baseUrl] [token]。
+const cfgPath = join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'DeepSeek Harness Desktop', 'config.json')
+let cfg = null
+if (existsSync(cfgPath)) {
+  try {
+    cfg = JSON.parse(readFileSync(cfgPath, 'utf8').replace(/^\uFEFF/, ''))
+  } catch { /* 配置读不出来时按默认处理 */ }
+}
+const defaultPort = typeof cfg?.remote?.port === 'number' ? cfg.remote.port : 3082
+const baseUrl = (process.argv[2] ?? `http://127.0.0.1:${defaultPort}`).replace(/\/+$/, '')
 let token = process.argv[3] ?? ''
 if (token === '') {
-  const cfgPath = join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'DeepSeek Harness Desktop', 'config.json')
-  if (existsSync(cfgPath)) {
-    try {
-      const cfg = JSON.parse(readFileSync(cfgPath, 'utf8').replace(/^\uFEFF/, ''))
-      token = cfg.remote?.token ?? ''
-    } catch { /* 配置读不出来时按无 token 处理 */ }
-  }
+  token = cfg?.remote?.token ?? ''
 }
 
 let failures = 0

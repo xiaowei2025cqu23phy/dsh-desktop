@@ -1,5 +1,4 @@
 // 验证桌面端与 PWA 的新 UI:按钮存在 + PWA 页面元素
-import WebSocket from 'ws'
 
 const desktopWs = process.argv[2]
 
@@ -8,18 +7,18 @@ function openTarget(wsUrl, url) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl)
     const timer = setTimeout(() => { ws.close(); reject(new Error('timeout')) }, 8000)
-    ws.on('open', () => {
+    ws.onopen = () => {
       ws.send(JSON.stringify({ id: 1, method: 'Target.createTarget', params: { url } }))
-    })
-    ws.on('message', (data) => {
-      const msg = JSON.parse(data.toString())
+    }
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data))
       if (msg.id === 1) {
         clearTimeout(timer)
         ws.close()
         resolve(msg.result && msg.result.targetId)
       }
-    })
-    ws.on('error', (e) => { clearTimeout(timer); reject(e) })
+    }
+    ws.onerror = (e) => { clearTimeout(timer); reject(e) }
   })
 }
 
@@ -27,16 +26,16 @@ function listTargets(wsUrl) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl)
     const timer = setTimeout(() => { ws.close(); reject(new Error('timeout')) }, 8000)
-    ws.on('open', () => { ws.send(JSON.stringify({ id: 1, method: 'Target.getTargets' })) })
-    ws.on('message', (data) => {
-      const msg = JSON.parse(data.toString())
+    ws.onopen = () => { ws.send(JSON.stringify({ id: 1, method: 'Target.getTargets' })) }
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data))
       if (msg.id === 1) {
         clearTimeout(timer)
         ws.close()
         resolve(msg.result && msg.result.targetInfos || [])
       }
-    })
-    ws.on('error', (e) => { clearTimeout(timer); reject(e) })
+    }
+    ws.onerror = (e) => { clearTimeout(timer); reject(e) }
   })
 }
 
@@ -44,18 +43,18 @@ function evalIn(wsUrl, expr) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl)
     const timer = setTimeout(() => { ws.close(); reject(new Error('timeout')) }, 8000)
-    ws.on('open', () => {
+    ws.onopen = () => {
       ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: expr, returnByValue: true } }))
-    })
-    ws.on('message', (data) => {
-      const msg = JSON.parse(data.toString())
+    }
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(String(event.data))
       if (msg.id === 1) {
         clearTimeout(timer)
         ws.close()
         resolve(msg.result && msg.result.result && msg.result.result.value)
       }
-    })
-    ws.on('error', (e) => { clearTimeout(timer); reject(e) })
+    }
+    ws.onerror = (e) => { clearTimeout(timer); reject(e) }
   })
 }
 

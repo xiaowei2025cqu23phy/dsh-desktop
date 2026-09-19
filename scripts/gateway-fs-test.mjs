@@ -3,7 +3,7 @@
  * 覆盖:根列表、目录列表、文件读取、越权拒绝(403)、预设根添加/移除。
  * 用法:GATEWAY_TOKEN=xxx node scripts/gateway-fs-test.mjs [baseUrl]
  */
-import { readdirSync, statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 
 const base = process.argv[2] || 'http://127.0.0.1:3082'
 const token = process.env.GATEWAY_TOKEN || ''

@@ -1,5 +1,4 @@
 // 截取桌面宠物区域(右下角 canvas)并保存 PNG
-import WebSocket from 'ws'
 import { writeFileSync } from 'node:fs'
 
 const wsUrl = process.argv[2]
@@ -15,16 +14,16 @@ function send(method, params = {}) {
     ws.send(JSON.stringify({ id: msgId, method, params }))
   })
 }
-ws.on('message', (data) => {
-  const msg = JSON.parse(data.toString())
+ws.onmessage = (event) => {
+  const msg = JSON.parse(String(event.data))
   if (msg.id && pending.has(msg.id)) {
     const { resolve, reject } = pending.get(msg.id)
     pending.delete(msg.id)
     if (msg.error) reject(new Error(msg.error.message))
     else resolve(msg.result)
   }
-})
-ws.on('open', async () => {
+}
+ws.onopen = async () => {
   try {
     // 等 1.5s 让动画与图片加载
     await new Promise((r) => setTimeout(r, 1500))
@@ -61,5 +60,5 @@ ws.on('open', async () => {
   } finally {
     ws.close()
   }
-})
-ws.on('error', (e) => { console.error('WS_ERR', e.message); process.exit(1) })
+}
+ws.onerror = (e) => { console.error('WS_ERR', e && e.message ? e.message : String(e)); process.exit(1) }

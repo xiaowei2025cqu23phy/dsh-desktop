@@ -9,6 +9,11 @@
 | tencent-connect/qqbot-agent-sdk(协议参考,未分发) | MIT | Copyright (c) Tencent |
 | tencent-connect/dsh-qqbot(协议参考,未分发) | MIT | Copyright (c) Tencent |
 | qrcode | MIT | Copyright (c) 2011 Ryan Day |
+| js-yaml | MIT | Copyright (C) 2011-2015 Vitaly Puzrin |
+| pngjs(qrcode 传递依赖) | MIT | Copyright (c) 2012 Kuba Niegowski;2015 Luke Page |
+| dijkstrajs(qrcode 传递依赖) | MIT | Copyright (c) dijkstrajs contributors |
+| yargs(qrcode 传递依赖) | MIT | Copyright 2010 James Halliday;2014 contributors |
+| ws(qqbot-nodejs 传递依赖) | MIT | Copyright (c) 2011 Einar Otto Stangvik |
 | Electron | MIT | Copyright (c) Electron contributors |
 | electron-builder | MIT | Copyright (c) electron-builder contributors |
 

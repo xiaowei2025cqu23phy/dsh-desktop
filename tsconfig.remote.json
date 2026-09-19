@@ -2,6 +2,11 @@
  * 远程 PWA 渲染层类型检查配置。
  * 源文件 src/remote/app.ts,经 esbuild 打包为单文件 dist/remote/app.js(IIFE)。
  * 类型检查从宽松起步:先保证变量/类型明显错误被捕获,再逐步收紧(strict)。
+ *
+ * 收紧评估(2026-09-20):noImplicitAny 会在 app.ts 报 ~203 处错误——根因是
+ * 顶层 `state` 对象字面量与大量函数参数未标注类型(隐式 any)。这是一个独立的大
+ * 重构(与 app.ts 拆分同量级),暂不开 noImplicitAny/strict,待拆分 app.ts 时一并
+ * 收敛类型。剩余项:1) 为 `state` 定义完整接口;2) 约 200 个函数参数补显式类型。
  */
 {
   "compilerOptions": {
