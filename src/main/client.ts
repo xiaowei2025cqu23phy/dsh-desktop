@@ -125,9 +125,9 @@ export class HarnessClient {
    * 按协议与目标方法包装调用 payload。官方 0.1.2-rc.1+ 的 typert 签名因方法而异:
    * 会话/设置类多为 `request`,列表类为 `_request`,llm/模型目录类直接展开参数。
    */
-  private wirePayload(payload: unknown): unknown {
+  private wirePayload(payload: unknown, wireMethod: string): unknown {
     if (this.protocolBox.value !== 'slash') return payload
-    const envelope = HarnessClient.SLASH_ENVELOPE[this.lastWireMethod] ?? '_request'
+    const envelope = HarnessClient.SLASH_ENVELOPE[wireMethod] ?? '_request'
     if (envelope === 'nsRequest') {
       const record = (payload ?? {}) as Record<string, unknown>
       const { settingsNs, ...rest } = record
@@ -137,9 +137,6 @@ export class HarnessClient {
     if (envelope === 'request') return { args: { request: payload } }
     return { args: { _request: payload } }
   }
-
-  /** 最近一次 wire 方法名(rpcRaw 里设置,供 wirePayload 选择参数壳)。 */
-  private lastWireMethod = ''
 
   /**
    * 官方 0.1.2-rc.1+ 鉴权:GET `/ ?token=`(redirect manual)换取持久签名 cookie,
@@ -271,8 +268,7 @@ export class HarnessClient {
       }
       if (method === 'host.describe') {
         try {
-          this.lastWireMethod = 'host/describe'
-          return await this.rpcRaw<T>('host/describe', this.wirePayload(payload), timeoutMs)
+          return await this.rpcRaw<T>('host/describe', this.wirePayload(payload, 'host/describe'), timeoutMs)
         } catch (error) {
           if (error instanceof HarnessError && error.code === 'http-404') {
             return { version: '', cwd: '', canOpenPath: false } as T
@@ -333,8 +329,7 @@ export class HarnessClient {
       }
       if (method === 'workspace.list') {
         // 官方没有 workspace/list:由会话的 cwd 合成工作区列表。
-        this.lastWireMethod = 'session/list'
-        const raw = await this.rpcRaw<{ items?: Array<{ cwd?: string }> }>('session/list', this.wirePayload({}), timeoutMs)
+        const raw = await this.rpcRaw<{ items?: Array<{ cwd?: string }> }>('session/list', this.wirePayload({}, 'session/list'), timeoutMs)
         const byPath = new Map<string, string>()
         for (const item of raw.items ?? []) {
           if (typeof item.cwd === 'string' && item.cwd !== '' && !byPath.has(item.cwd)) {
@@ -346,29 +341,24 @@ export class HarnessClient {
       }
       if (method === 'workspace.create') {
         // 官方返回 { workspace: {...} }:展平为旧调用方期望的 { workspaceId } 形状。
-        this.lastWireMethod = 'workspace/create'
-        const value = await this.rpcRaw<{ workspace?: { workspaceId?: string } }>('workspace/create', this.wirePayload(payload), timeoutMs)
+        const value = await this.rpcRaw<{ workspace?: { workspaceId?: string } }>('workspace/create', this.wirePayload(payload, 'workspace/create'), timeoutMs)
         const id = value?.workspace?.workspaceId
         return (id === undefined ? value : { workspaceId: id, ...value.workspace }) as T
       }
       if (method === 'workspace.rename' || method === 'workspace.delete') {
         // 合成列表给出的 workspaceId 是路径;官方端点需要注册表 id:先用
         // workspace/create 换取(同一路径返回既有工作区),再执行操作。
-        this.lastWireMethod = wireMethod
         const params = { ...((payload ?? {}) as Record<string, unknown>) }
         const id = params.workspaceId
         if (typeof id === 'string' && /[\\/]/.test(id)) {
-          this.lastWireMethod = 'workspace/create'
-          const created = await this.rpcRaw<{ workspace?: { workspaceId?: string } }>('workspace/create', this.wirePayload({ path: id }), timeoutMs)
+          const created = await this.rpcRaw<{ workspace?: { workspaceId?: string } }>('workspace/create', this.wirePayload({ path: id }, 'workspace/create'), timeoutMs)
           const realId = created?.workspace?.workspaceId
           if (typeof realId === 'string' && realId !== '') params.workspaceId = realId
-          this.lastWireMethod = wireMethod
         }
-        return await this.rpcRaw<T>(wireMethod, this.wirePayload(params), timeoutMs)
+        return await this.rpcRaw<T>(wireMethod, this.wirePayload(params, wireMethod), timeoutMs)
       }
     }
-    this.lastWireMethod = wireMethod
-    return this.rpcRaw<T>(wireMethod, this.wirePayload(payload), timeoutMs)
+    return this.rpcRaw<T>(wireMethod, this.wirePayload(payload, wireMethod), timeoutMs)
   }
 
   /** 一元 RPC wire 传输:按已给定(协商好的)端点名发请求并解析响应。 */

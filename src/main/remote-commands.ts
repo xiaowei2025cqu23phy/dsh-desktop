@@ -165,6 +165,29 @@ function approvalRisk(toolName: string, reason: string): 'high' | 'low' {
 }
 
 /** 对话模式上下文。 */
+/** 命令分发上下文(由 executeCommand 统一构造后传给各 handler)。 */
+interface DispatchContext {
+  /** `${channel}:${userId}` 发起者键。 */
+  key: string
+  /** 对话上下文键(群聊按群,私聊按用户)。 */
+  ctxKey: string
+  /** 发起者归属。 */
+  owner: Pick<SessionOwner, 'channel' | 'userId'>
+  /** 推送目标(群消息=群;私聊可不传)。 */
+  pushTarget?: { scope: string; targetId: string }
+}
+
+/**
+ * 命令分发表项:声明作用域与是否要求会话归属,路由与守卫在 executeCommand 单一入口统一执行。
+ * - scope 'private' = 仅私聊(群聊只聊天);'any' = 群聊也可(查询类)。
+ * - requiresOwnership = 该命令按 sessionId 操作会话,handler 内部用 assertOwnership 校验发起者。
+ */
+interface CommandEntry {
+  scope: 'private' | 'any'
+  requiresOwnership: boolean
+  handler: (command: QQCommand, ctx: DispatchContext) => string | Promise<string>
+}
+
 interface ChatContext {
   sessionId: string
   label: string
@@ -997,94 +1020,89 @@ export class RemoteCommandProcessor {
     ].join('\n')
   }
 
+  /**
+   * 命令分发表:parseCommand 的 union 与此表用 satisfies 对齐,漏项会在编译期报错。
+   * 每个命令声明 scope(私聊/任意)与 requiresOwnership(是否按 sessionId 校验归属),
+   * 路由与守卫在 executeCommand 单一入口统一执行——新增命令必须显式声明,不再自动继承零守卫。
+   */
+  private readonly commandTable = {
+    help: { scope: 'any', requiresOwnership: false, handler: (): string => this.fullHelp() },
+    status: { scope: 'any', requiresOwnership: false, handler: (): Promise<string> => this.cmdStatus() },
+    sessions: { scope: 'any', requiresOwnership: false, handler: (_c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdSessions(ctx.owner, ctx.ctxKey) },
+    workspaces: { scope: 'any', requiresOwnership: false, handler: (_c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdWorkspaces(ctx.owner) },
+    models: { scope: 'any', requiresOwnership: false, handler: (): Promise<string> => this.cmdModels() },
+    model: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdModelSwitch(ctx.ctxKey, (c as { query: string }).query) },
+    sched: {
+      scope: 'any',
+      requiresOwnership: false,
+      handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => {
+        const s = c as Extract<QQCommand, { kind: 'sched' }>
+        if (s.action === 'add') {
+          const denied = this.taskScopeGuard(ctx.pushTarget)
+          if (denied !== null) return Promise.resolve(denied)
+          return this.cmdSchedAdd(ctx.key, s.delay, s.description, ctx.pushTarget)
+        }
+        if (s.action === 'list') return this.cmdSchedList(ctx.owner)
+        return this.cmdSchedRemove(ctx.owner, s.index)
+      },
+    },
+    ls: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand): Promise<string> => this.cmdLs((c as { path: string }).path) },
+    cat: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand): Promise<string> => this.cmdCat((c as { path: string }).path) },
+    export: { scope: 'any', requiresOwnership: true, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdExport(ctx.owner, (c as { sessionId: string }).sessionId) },
+    restore: { scope: 'any', requiresOwnership: true, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdRestore(ctx.owner, (c as { sessionId: string }).sessionId) },
+    usage: { scope: 'any', requiresOwnership: false, handler: (_c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdUsage(ctx.owner) },
+    character: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand): string => this.cmdCharacter((c as { text: string }).text) },
+    cancel: { scope: 'any', requiresOwnership: true, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdCancel(ctx.owner, (c as { sessionId: string }).sessionId) },
+    open: { scope: 'any', requiresOwnership: true, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdOpen(ctx.owner, (c as { sessionId: string }).sessionId) },
+    progress: { scope: 'any', requiresOwnership: true, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdProgress(ctx.owner, (c as { sessionId: string }).sessionId) },
+    broadcast: {
+      scope: 'any',
+      requiresOwnership: false,
+      handler: (c: QQCommand, ctx: DispatchContext): string => {
+        const b = c as Extract<QQCommand, { kind: 'broadcast' }>
+        return this.cmdBroadcast(ctx.owner.channel, ctx.owner.userId, b.sessionId, b.on)
+      },
+    },
+    follow: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): string => this.cmdFollow(ctx.key, (c as { sessionId: string }).sessionId, ctx.pushTarget) },
+    nofollow: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): string => this.cmdNofollow(ctx.key, (c as { sessionId: string }).sessionId) },
+    clearqueue: { scope: 'any', requiresOwnership: false, handler: (_c: QQCommand, ctx: DispatchContext): string => this.cmdClearQueue(ctx.owner) },
+    run: { scope: 'private', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdRun(ctx.key, ctx.ctxKey, (c as { description: string }).description, ctx.pushTarget) },
+    retry: { scope: 'private', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdRetry(ctx.key, ctx.ctxKey, (c as { taskId: string }).taskId, ctx.pushTarget) },
+    enter: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdEnter(ctx.ctxKey, ctx.key, (c as { target: string }).target, ctx.pushTarget) },
+    exit: { scope: 'any', requiresOwnership: false, handler: (_c: QQCommand, ctx: DispatchContext): string => this.cmdExit(ctx.ctxKey) },
+    newchat: {
+      scope: 'any',
+      requiresOwnership: false,
+      handler: (_c: QQCommand, ctx: DispatchContext): Promise<string> => {
+        // 强制开启一个全新的默认对话(重开线程)。
+        this.chatContexts.delete(ctx.ctxKey)
+        if (this.config !== undefined) {
+          const next = { ...this.config.get().chatSessions }
+          delete next[ctx.ctxKey]
+          this.config.update('chatSessions', next)
+        }
+        return this.cmdEnter(ctx.ctxKey, ctx.key, '', ctx.pushTarget)
+      },
+    },
+    allow: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdAllow(ctx.key, (c as { sessionId: string }).sessionId, 'allowed-once') },
+    reject: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdAllow(ctx.key, (c as { sessionId: string }).sessionId, 'rejected') },
+    select: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdSelect(ctx.key, (c as { text: string }).text) },
+    unknown: { scope: 'any', requiresOwnership: false, handler: (): string => this.fullHelp() },
+  } satisfies Record<QQCommand['kind'], CommandEntry>
+
   private async executeCommand(
     command: QQCommand,
     key: string,
     ctxKey: string,
     pushTarget?: { scope: string; targetId: string },
   ): Promise<string> {
-    const owner = this.ownerFromKey(key)
-    switch (command.kind) {
-      case 'help':
-        return this.fullHelp()
-      case 'status':
-        return this.cmdStatus()
-      case 'sessions':
-        return this.cmdSessions(owner, ctxKey)
-      case 'workspaces':
-        return this.cmdWorkspaces(owner)
-      case 'models':
-        return this.cmdModels()
-      case 'model':
-        return this.cmdModelSwitch(ctxKey, command.query)
-      case 'sched':
-        if (command.action === 'add') {
-          const denied = this.taskScopeGuard(pushTarget)
-          if (denied !== null) return denied
-          return this.cmdSchedAdd(key, command.delay, command.description, pushTarget)
-        }
-        if (command.action === 'list') return this.cmdSchedList(owner)
-        return this.cmdSchedRemove(owner, command.index)
-      case 'ls':
-        return this.cmdLs(command.path)
-      case 'cat':
-        return this.cmdCat(command.path)
-      case 'export':
-        return this.cmdExport(owner, command.sessionId)
-      case 'restore':
-        return this.cmdRestore(owner, command.sessionId)
-      case 'usage':
-        return this.cmdUsage(owner)
-      case 'character':
-        return this.cmdCharacter(command.text)
-      case 'cancel':
-        return this.cmdCancel(owner, command.sessionId)
-      case 'open':
-        return this.cmdOpen(owner, command.sessionId)
-      case 'progress':
-        return this.cmdProgress(owner, command.sessionId)
-      case 'broadcast': {
-        return this.cmdBroadcast(owner.channel, owner.userId, command.sessionId, command.on)
-      }
-      case 'follow':
-        return this.cmdFollow(key, command.sessionId, pushTarget)
-      case 'nofollow':
-        return this.cmdNofollow(key, command.sessionId)
-      case 'clearqueue':
-        return this.cmdClearQueue(owner)
-      case 'run': {
-        const denied = this.taskScopeGuard(pushTarget)
-        if (denied !== null) return denied
-        return this.cmdRun(key, ctxKey, command.description, pushTarget)
-      }
-      case 'retry': {
-        const denied = this.taskScopeGuard(pushTarget)
-        if (denied !== null) return denied
-        return this.cmdRetry(key, ctxKey, command.taskId, pushTarget)
-      }
-      case 'enter':
-        return this.cmdEnter(ctxKey, key, command.target, pushTarget)
-      case 'exit':
-        return this.cmdExit(ctxKey)
-      case 'newchat': {
-        // 强制开启一个全新的默认对话(重开线程)。
-        this.chatContexts.delete(ctxKey)
-        if (this.config !== undefined) {
-          const next = { ...this.config.get().chatSessions }
-          delete next[ctxKey]
-          this.config.update('chatSessions', next)
-        }
-        return this.cmdEnter(ctxKey, key, '', pushTarget)
-      }
-      case 'allow':
-        return this.cmdAllow(key, command.sessionId, 'allowed-once')
-      case 'reject':
-        return this.cmdAllow(key, command.sessionId, 'rejected')
-      case 'select':
-        return this.cmdSelect(key, command.text)
-      default:
-        return this.fullHelp()
+    const ctx: DispatchContext = { key, ctxKey, owner: this.ownerFromKey(key), pushTarget }
+    const entry = this.commandTable[command.kind]
+    // 群聊守卫在单一入口执行:private 命令(任务/定时等)在群聊一律拒绝。
+    if (entry.scope === 'private' && pushTarget !== undefined && pushTarget.scope === 'group') {
+      return '该指令仅支持私聊:请私聊机器人使用(防群聊刷屏与身份混淆);群内对话/查询不受影响。'
     }
+    return entry.handler(command, ctx)
   }
 
   private async cmdStatus(): Promise<string> {
