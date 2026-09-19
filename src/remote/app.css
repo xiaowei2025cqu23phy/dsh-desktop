@@ -118,6 +118,14 @@ textarea { resize: vertical; }
 .topbar .btn-ghost:active { background: rgba(255, 255, 255, 0.15); }
 
 .chat-stream { flex: 1; overflow-y: auto; padding: 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+
+/* ---- 常驻状态条:运行中 / 今日 Token ---- */
+.status-strip { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: rgba(18, 22, 31, 0.18); border-bottom: 1px solid rgba(139, 148, 167, 0.14); }
+.ss-chip {
+  padding: 2px 9px; border-radius: 999px; font-size: 11px; line-height: 1.6;
+  color: var(--text-dim); background: rgba(139, 148, 167, 0.10); white-space: nowrap;
+}
+.ss-chip.ss-active { color: var(--ok); background: rgba(52, 201, 143, 0.14); }
 .chat-empty {
   margin: auto; text-align: center; color: var(--text-dim);
   display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 30px 20px;

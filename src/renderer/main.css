@@ -124,6 +124,20 @@ select:disabled { opacity: 0.55; }
 
 .topbar-actions { display: flex; gap: 8px; }
 
+/* ---- 常驻状态条(顶栏右侧:运行中 / 今日 Token / 设备) ---- */
+.topbar-status { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.ts-chip {
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  background: rgba(139, 148, 167, 0.10);
+  border: 1px solid transparent;
+  cursor: default;
+}
+.ts-chip.ts-active { color: var(--ok); background: rgba(52, 201, 143, 0.14); }
+
 .btn {
   background: var(--bg-panel-2);
   color: var(--text);

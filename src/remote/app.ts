@@ -429,6 +429,7 @@
   var esAttempts = 0
   var reconnectTimer: ReturnType<typeof setTimeout> | null = null
   var esWatchdog: ReturnType<typeof setTimeout> | null = null
+  var statusStripTimer: ReturnType<typeof setInterval> | null = null
   var eventsGeneration = 0
   var eventsWasDisconnected = false
   var historyGeneration = 0
@@ -2234,6 +2235,28 @@
     })
   }
 
+  // ---- 常驻状态条:运行中活动 / 今日 Token(免发指令、免翻设置) ----
+  function refreshStatusStrip() {
+    apiAction('activity.get').then(function (data) {
+      var items = data.items || []
+      var running = items.filter(function (item) { return item.status === 'running' || item.status === 'queued' || item.status === 'waiting' }).length
+      var el = $('ss-running')
+      if (el) {
+        el.textContent = '▶ ' + running
+        el.classList.toggle('ss-active', running > 0)
+      }
+    }).catch(function () { /* 加载失败保留占位 */ })
+    apiAction('usage.get').then(function (data) {
+      var r = data.report
+      var total = r ? (r.tokens.total || 0) : 0
+      var el = $('ss-tokens')
+      if (el) {
+        el.textContent = total > 0 ? '💰 ' + (total >= 1000 ? (total / 1000).toFixed(1) + 'K' : String(total)) : '💰 0'
+        el.classList.toggle('ss-active', total > 0)
+      }
+    }).catch(function () { /* 加载失败保留占位 */ })
+  }
+
   function enterMain(host) {
     $('set-server').textContent = state.server
     $('set-harness').textContent = host ? ('v' + (host.version || '?') + ' · ' + (host.cwd || '')) : ''
@@ -2245,6 +2268,9 @@
     fillWorkspaceSelect()
     loadModels()
     openSidebar()
+    refreshStatusStrip()
+    if (statusStripTimer !== null) clearInterval(statusStripTimer)
+    statusStripTimer = setInterval(refreshStatusStrip, 10_000)
   }
 
   function showView(name) {

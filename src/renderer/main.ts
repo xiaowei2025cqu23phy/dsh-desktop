@@ -2564,11 +2564,37 @@ async function showBuildInfo(): Promise<void> {
   }
 }
 
+/** 顶栏常驻状态条:运行中活动 / 今日 Token / 已批准设备,免发指令、免翻设置。 */
+async function refreshStatusBar(): Promise<void> {
+  try {
+    const activities = await API.activity.list()
+    const running = activities.filter((item) => item.status === 'running' || item.status === 'queued' || item.status === 'waiting').length
+    const runningEl = $id('ts-running')
+    runningEl.textContent = `▶ ${running}`
+    runningEl.classList.toggle('ts-active', running > 0)
+  } catch { /* 加载失败保留占位 */ }
+  try {
+    const usage = await API.usage.report()
+    const total = usage?.tokens?.total ?? 0
+    const tokensEl = $id('ts-tokens')
+    tokensEl.textContent = total > 0 ? `💰 ${total >= 1000 ? `${(total / 1000).toFixed(1)}K` : String(total)}` : '💰 0'
+    tokensEl.classList.toggle('ts-active', total > 0)
+  } catch { /* 加载失败保留占位 */ }
+  try {
+    const approved = await API.remote.approvedDevices()
+    const devicesEl = $id('ts-devices')
+    devicesEl.textContent = `📱 ${approved.length}`
+    devicesEl.classList.toggle('ts-active', approved.length > 0)
+  } catch { /* 加载失败保留占位 */ }
+}
+
 function init(): void {
   bind()
   void showBuildInfo()
   void refreshStatus()
   setInterval(() => void refreshStatus(), 2000)
+  void refreshStatusBar()
+  setInterval(() => void refreshStatusBar(), 10_000)
   void loadModels()
   void loadAppearance()
   initPet()
