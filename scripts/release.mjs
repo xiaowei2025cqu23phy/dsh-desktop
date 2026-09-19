@@ -10,6 +10,7 @@
  */
 
 import { execSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 
 const REPO = 'xiaowei2025cqu23phy/dsh-desktop'
 
@@ -19,7 +20,7 @@ function run(cmd, opts = {}) {
 }
 
 ;(async () => {
-  const { version } = JSON.parse(require('fs').readFileSync('package.json', 'utf8'))
+  const { version } = JSON.parse(readFileSync('package.json', 'utf8'))
   const tag = `v${version}`
   console.log(`=== 发布 ${tag} (${REPO}) ===`)
 
@@ -39,9 +40,9 @@ function run(cmd, opts = {}) {
     console.log(`Release ${tag} 已存在,跳过创建`)
   }
 
-  // 4. 上传资产
-  const setup = `dist/DeepSeek-Harness-Desktop-Setup-${version}.exe`
-  const zip = `dist/DeepSeek Harness Desktop-${version}-win.zip`
+  // 4. 上传资产(electron-builder 输出到 release/ 目录)。
+  const setup = `release/DeepSeek-Harness-Desktop-Setup-${version}.exe`
+  const zip = `release/DeepSeek Harness Desktop-${version}-win.zip`
   run(`gh release upload ${tag} -R ${REPO} "${setup}" "${zip}" --clobber`)
 
   console.log(`

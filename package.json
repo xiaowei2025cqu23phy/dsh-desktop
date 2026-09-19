@@ -18,6 +18,7 @@
         "build": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.remote.json && node scripts/build-remote.mjs && node scripts/copy-assets.mjs",
         "start": "npm run build && electron .",
         "smoke": "node scripts/smoke.mjs",
+        "lint": "eslint .",
         "test": "node scripts/qq-commands-test.mjs && node scripts/approval-flow-test.mjs && node scripts/task-queue-test.mjs && node scripts/db-test.mjs && node scripts/gateway-stop-test.mjs",
         "pack": "npm run build && electron-builder --win nsis zip",
         "pack:portable": "npm run build && electron-builder --win portable",
@@ -43,8 +44,14 @@
             "!node_modules/pngjs/coverage/**"
         ],
         "extraResources": [
-            { "from": "LICENSE", "to": "LICENSE" },
-            { "from": "THIRD_PARTY_NOTICES.md", "to": "THIRD_PARTY_NOTICES.md" }
+            {
+                "from": "LICENSE",
+                "to": "LICENSE"
+            },
+            {
+                "from": "THIRD_PARTY_NOTICES.md",
+                "to": "THIRD_PARTY_NOTICES.md"
+            }
         ],
         "asarUnpack": [
             "node_modules/@tencent-connect/**",
@@ -69,11 +76,14 @@
         }
     },
     "devDependencies": {
+        "@types/node": "^24.13.3",
+        "@typescript-eslint/eslint-plugin": "^8.70.0",
+        "@typescript-eslint/parser": "^8.70.0",
         "electron": "^43.4.0",
         "electron-builder": "^26.15.3",
         "esbuild": "^0.28.2",
-        "typescript": "^5.9.3",
-        "@types/node": "^24.13.3"
+        "eslint": "^10.11.0",
+        "typescript": "^5.9.3"
     },
     "dependencies": {
         "@tencent-connect/qqbot-nodejs": "^1.0.4",

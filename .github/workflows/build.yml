@@ -44,6 +44,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Lint (non-blocking, warnings only)
+        run: npm run lint
+
       - name: Offline tests
         run: npm test
 
