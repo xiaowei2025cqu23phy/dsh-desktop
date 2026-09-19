@@ -113,6 +113,8 @@ export interface RemoteConfig {
   port: number
   /** 监听地址:0.0.0.0 = 全部网卡(默认);或具体局域网 IP = 只暴露该网卡。 */
   bindHost: string
+  /** 用 HTTPS(自签证书)提供远程访问:手机信任证书后才能注册 PWA 离线外壳。 */
+  https: boolean
   /** 桌面端一键暂停:临时断开所有远程连接(保留令牌与设备,恢复后原样可用)。 */
   paused: boolean
   /** 锁屏/睡眠时自动暂停远程访问(解锁后需桌面端手动恢复)。 */
@@ -359,6 +361,7 @@ const DEFAULTS: AppConfig = {
     enabled: false,
     port: 3082,
     bindHost: '0.0.0.0',
+    https: false,
     paused: false,
     pauseOnLock: true,
     blacklistedDevices: [],

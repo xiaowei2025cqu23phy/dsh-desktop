@@ -1569,6 +1569,7 @@ async function loadRemoteConfig(): Promise<void> {
     input('remote-port').value = '' + config.port
     input('remote-token').value = '' + config.token
     input('remote-pause-on-lock').checked = config.pauseOnLock !== false
+    input('remote-https').checked = config.https === true
     const bindSelect = $id('remote-bind') as HTMLSelectElement
     bindSelect.value = config.bindHost === '0.0.0.0' || !config.bindHost ? '0.0.0.0' : 'lan'
     renderRemoteBindStatus(config.bindHost || '0.0.0.0')
@@ -2130,6 +2131,12 @@ function bindRemote(): void {
   input('remote-pause-on-lock').addEventListener('change', async () => {
     await API.remote.setConfig({ pauseOnLock: input('remote-pause-on-lock').checked })
     S.toast(input('remote-pause-on-lock').checked ? '已开启:锁屏/睡眠时自动暂停远程访问' : '已关闭自动暂停', 'ok')
+  })
+  input('remote-https').addEventListener('change', async () => {
+    const https = input('remote-https').checked
+    await API.remote.setConfig({ https })
+    await loadRemoteConfig()
+    S.toast(https ? '已启用 HTTPS:手机需信任自签证书(首次访问 https:// 地址时手动信任),之后可注册离线外壳' : '已关闭 HTTPS,回到明文 HTTP(浏览器标签页模式)', 'ok')
   })
 }
 

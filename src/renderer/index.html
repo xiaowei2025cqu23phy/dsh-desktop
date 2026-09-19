@@ -353,6 +353,10 @@
           锁屏/睡眠时自动暂停远程访问(解锁后需在桌面端手动恢复)
         </label>
         <p class="hint">🔒 控制权永远在桌面端:可随时暂停全部连接,或对单个设备暂停/拉黑;被拉黑的设备即使令牌正确也会被拒绝。</p>
+        <label class="check-row">
+          <input id="remote-https" type="checkbox" />
+          启用 HTTPS(自签证书,手机需信任证书后才能注册 PWA 离线外壳)
+        </label>
         <div class="field">
           <label>访问令牌</label>
           <div class="field-row">

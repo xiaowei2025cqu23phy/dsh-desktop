@@ -10,6 +10,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
 import { randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
@@ -22,6 +23,7 @@ import type { HarnessManager } from './harness'
 import { parseSchedDelay } from './qq-commands'
 import type { RemoteCommandProcessor } from './remote-commands'
 import { dshHomeOf, unarchiveInRegistry } from './workspace-registry'
+import { generateSelfSignedCert } from './tls-cert'
 
 /** 远程访问配置:直接复用 ConfigStore 的完整结构(监听地址/暂停/黑名单等)。 */
 export type RemoteConfig = ReturnType<ConfigStore['get']>['remote']
@@ -67,7 +69,7 @@ interface RpcBody {
 }
 
 export class RemoteGateway {
-  private server: ReturnType<typeof createServer> | null = null
+  private server: ReturnType<typeof createServer> | ReturnType<typeof createHttpsServer> | null = null
   private expiryTimer: ReturnType<typeof setTimeout> | null = null
   private sseTickets = new Map<string, { deviceId: string; expiresAt: number }>()
   /**
@@ -241,7 +243,8 @@ export class RemoteGateway {
     // 用查询参数传递:部分扫码应用(如微信)会丢弃 URL fragment,导致参数丢失。
     // 这是一次性配对链接(二维码):扫码即绑定本机,PWA 读取后立即 replaceState 清除地址栏;
     // 网关无访问日志,Token 不会落盘。配对后所有数据请求都改用 Authorization header,不再带 token。
-    const server = `http://${host}:${config.port}`
+    const scheme = config.https === true ? 'https' : 'http'
+    const server = `${scheme}://${host}:${config.port}`
     return `${server}/?server=${encodeURIComponent(server)}&token=${encodeURIComponent(config.token)}`
   }
 
@@ -267,9 +270,10 @@ export class RemoteGateway {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const QRCode = require('qrcode') as { toDataURL: (text: string, opts?: object) => Promise<string> }
       const addresses = this.lanAddresses()
+      const scheme = config.https === true ? 'https' : 'http'
       const results: Array<{ address: string; url: string; dataUrl: string | null }> = []
       for (const address of addresses.slice(0, 3)) {
-        const server = `http://${address}:${config.port}`
+        const server = `${scheme}://${address}:${config.port}`
         const url = `${server}/?server=${encodeURIComponent(server)}&token=${encodeURIComponent(config.token)}`
         try {
           results.push({ address, url, dataUrl: await QRCode.toDataURL(url, { width: 180, margin: 1 }) })
@@ -284,6 +288,34 @@ export class RemoteGateway {
     }
   }
 
+  /** 生成/读取 HTTPS 自签证书(缓存到 userData,手机只需信任一次)。 */
+  private httpsCert(): { key: string; cert: string } {
+    const dir = app.getPath('userData')
+    const keyPath = join(dir, 'https-key.pem')
+    const certPath = join(dir, 'https-cert.pem')
+    try {
+      if (existsSync(keyPath) && existsSync(certPath)) {
+        return { key: readFileSync(keyPath, 'utf8'), cert: readFileSync(certPath, 'utf8') }
+      }
+    } catch {
+      /* 读取失败则重新生成。 */
+    }
+    const hosts: Array<{ kind: 'ip' | 'dns'; value: string }> = [
+      { kind: 'ip', value: '127.0.0.1' },
+      { kind: 'dns', value: 'localhost' },
+      ...this.lanAddresses().map((ip) => ({ kind: 'ip' as const, value: ip })),
+    ]
+    const { key, cert } = generateSelfSignedCert(hosts)
+    try {
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(keyPath, key, 'utf8')
+      writeFileSync(certPath, cert, 'utf8')
+    } catch (error) {
+      console.warn('[gateway] HTTPS 证书写盘失败(下次仍会重新生成):', error instanceof Error ? error.message : String(error))
+    }
+    return { key, cert }
+  }
+
   start(): void {
     if (this.server !== null) return
     const config = this.getConfig()
@@ -294,13 +326,17 @@ export class RemoteGateway {
       return
     }
     const bindHost = typeof config.bindHost === 'string' && config.bindHost.trim() !== '' ? config.bindHost.trim() : '0.0.0.0'
-    const server = createServer((req, res) => void this.handle(req, res))
+    // HTTPS 自签证书:开启后手机信任该证书,Service Worker(离线外壳)才能注册。
+    const tls = config.https === true ? this.httpsCert() : null
+    const server = tls !== null
+      ? createHttpsServer({ key: tls.key, cert: tls.cert }, (req, res) => void this.handle(req, res))
+      : createServer((req, res) => void this.handle(req, res))
     server.on('error', (error) => {
       console.error('[gateway] 监听失败:', error.message)
       this.config.appendAudit({ time: Date.now(), type: 'remote.listen-error', detail: `监听 ${bindHost}:${config.port} 失败:${error.message}` })
     })
     server.listen(config.port, bindHost, () => {
-      console.log(`[gateway] 远程网关已启动,监听 ${bindHost}:${config.port} (仅可信局域网客户端)`)
+      console.log(`[gateway] 远程网关已启动,监听 ${tls !== null ? 'https' : 'http'}://${bindHost}:${config.port} (仅可信局域网客户端)`)
     })
     if (config.expiresAt !== null) {
       const delay = Math.max(0, config.expiresAt - Date.now())

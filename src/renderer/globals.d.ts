@@ -64,6 +64,7 @@ interface RemoteConfigView {
   enabled: boolean
   port: number
   bindHost: string
+  https: boolean
   paused: boolean
   pauseOnLock: boolean
   blacklistedDevices: Array<{ id: string; label: string; address: string; blockedAt: number }>
