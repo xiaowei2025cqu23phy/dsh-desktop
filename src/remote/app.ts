@@ -2439,6 +2439,12 @@
 
     if ((serverParam && tokenParam) || (savedServer && savedToken)) connect()
 
+    // 注册离线外壳 Service Worker。仅在「安全上下文」(HTTPS 或 localhost)下成功;
+    // 网关走明文 HTTP 时浏览器拒绝注册,静默跳过(此时 PWA 退化为浏览器标签页使用)。
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').catch(function () { /* 忽略 */ })
+    }
+
     // 侧边栏
     $('btn-menu').addEventListener('click', openSidebar)
     $('btn-empty-new').addEventListener('click', openNewsessSheet)

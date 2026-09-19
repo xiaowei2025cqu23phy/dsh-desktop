@@ -373,7 +373,9 @@ export class RemoteGateway {
       const path = url.pathname
 
       if (req.method === 'GET' && (path === '/' || path === '/index.html' || path === '/app.js' ||
-          path === '/app.css' || path === '/manifest.webmanifest' || path === '/icon.png')) {
+          path === '/app.css' || path === '/manifest.webmanifest' || path === '/icon.png' ||
+          path === '/icon-192.png' || path === '/icon-512.png' || path === '/icon-maskable.png' ||
+          path === '/sw.js')) {
         this.serveStatic(path, res)
         return
       }
