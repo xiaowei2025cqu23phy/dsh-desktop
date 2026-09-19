@@ -97,6 +97,33 @@ interface ChatFollow {
   ts: number
 }
 
+/**
+ * 单个会话的全部进程内运行时状态(收敛原先散落的 10 个 per-session Map,
+ * 统一淘汰与生命周期,避免新增入口漏更新某张 Map 导致归属/重试/统计错乱)。
+ */
+interface SessionState {
+  /** 归属:哪个通道的哪个用户发起了该会话(审批/提问定向通知 + 归属校验)。 */
+  owner?: SessionOwner
+  /** 任务会话的最近描述(TRANSPORT 中断自动重试用)。 */
+  taskDescription?: string
+  /** 已自动重试过 TRANSPORT(每个会话最多重试一次)。 */
+  retriedTransport?: boolean
+  /** 会话 Token 累计(按模型分组;usage 到达时归入当时的模型)。 */
+  tokenUsage?: Map<string, { provider: string; model: string; input: number; output: number; cache: number; calls: number }>
+  /** 会话当前模型(request/header 事件;用于把后续 usage 归入正确模型)。 */
+  currentModel?: { provider: string; model: string }
+  /** 对话会话等待回复推送(发消息后注册,回合结束推给发起者)。 */
+  chatReply?: { channel: string; userId: string; pushTarget?: { scope: string; targetId: string }; ts: number }
+  /** 对话会话最近一次提示内容(TRANSPORT 流中断时重放)。 */
+  chatPrompt?: { parts: Array<{ type: string; text?: string; mediaType?: string; data?: string }>; ts: number }
+  /** 非流式通道的回合文本缓冲(整段推送用)。 */
+  replyBuffer?: string
+  /** 会话的现场播报状态(QQ/Telegram 可见 agent 过程)。 */
+  liveView?: LiveView
+  /** 会话跟随(私聊进入后自动登记)。 */
+  follow?: ChatFollow
+}
+
 /** 待审批项。 */
 interface PendingApproval {
   rpcId: string
@@ -154,7 +181,8 @@ export interface ChatStreamSink {
 
 export class RemoteCommandProcessor {
   private chatContexts = new Map<string, ChatContext>()
-  private sessionOwners = new Map<string, SessionOwner>()
+  /** 所有会话的进程内运行时状态(owner/任务描述/token/回复/播报/跟随等,统一淘汰)。 */
+  private sessions = new Map<string, SessionState>()
   private pendingApprovals = new Map<string, PendingApproval>()
   private pendingQuestions = new Map<string, PendingQuestion>()
   private push: PushFn | null = null
@@ -164,26 +192,8 @@ export class RemoteCommandProcessor {
   private reportChannels = new Set<string>()
   /** 会话最近一次汇报时间(去重:同一会话的完成/失败在窗口内只报一次)。 */
   private lastTurnReports = new Map<string, { done: number; fail: number }>()
-  /** 任务会话的最近描述(TRANSPORT 中断自动重试用)。 */
-  private taskDescriptions = new Map<string, string>()
-  /** 已自动重试过 TRANSPORT 的会话(每个会话最多重试一次)。 */
-  private retriedTransports = new Set<string>()
-  /** 会话 Token 累计:每个 usage 在到达时归入当时的模型，本次运行内精确分组。 */
-  private tokenUsage = new Map<string, Map<string, { provider: string; model: string; input: number; output: number; cache: number; calls: number }>>()
-  /** 会话当前模型(来自 request/header 事件;用于把后续 usage 归入正确模型)。 */
-  private sessionModels = new Map<string, { provider: string; model: string }>()
-  /** 对话会话等待回复推送:发送消息后注册,回合结束把 agent 回复推给发起者。 */
-  private chatReplies = new Map<string, { channel: string; userId: string; pushTarget?: { scope: string; targetId: string }; ts: number }>()
-  /** 对话会话的最近一次提示内容(TRANSPORT 流中断时重放;每会话最多重试一次)。 */
-  private chatPrompts = new Map<string, { parts: Array<{ type: string; text?: string; mediaType?: string; data?: string }>; ts: number }>()
   /** 流式输出通道(QQ 私聊打字机效果);缺失时回合计束后整段推送。 */
   private chatStream: ChatStreamSink | null = null
-  /** 非流式通道的回合文本缓冲(整段推送用)。 */
-  private chatReplyBuffer = new Map<string, string>()
-  /** 会话的现场播报状态(QQ/Telegram 可见 agent 过程)。 */
-  private liveViews = new Map<string, LiveView>()
-  /** 会话跟随(私聊进入后自动登记;该会话的任何回合输出都主动推送)。 */
-  private chatFollows = new Map<string, ChatFollow>()
   /** 无工作区任务的"默认任务会话"(按 channel:userId 复用;「任务 新:」另起;重启后沿用配置持久化)。 */
   private defaultTaskSessions = new Map<string, string>()
   /** 已自动命名过的对话会话(进程内去重;标题让列表可读,不再满屏"新会话";重启后沿用配置持久化)。 */
@@ -406,7 +416,7 @@ export class RemoteCommandProcessor {
     const activityConfig = this.config as ConfigStore & { activities?: ConfigStore['activities']; upsertActivity?: ConfigStore['upsertActivity'] }
     if (typeof activityConfig.activities === 'function' && typeof activityConfig.upsertActivity === 'function') {
       const existingActivity = activityConfig.activities().find((item) => item.id === activityId)
-      const owner = next.sessionId === null ? undefined : this.sessionOwners.get(next.sessionId)
+      const owner = next.sessionId === null ? undefined : this.sessions.get(next.sessionId)?.owner
       activityConfig.upsertActivity({
         id: activityId,
         type: 'task',
@@ -502,10 +512,8 @@ export class RemoteCommandProcessor {
             const created = await client.rpc<{ sessionId: string }>('session.create', payload)
             createdId = created.sessionId
           }
-          this.sessionOwners.set(createdId, { ...this.ownerFromKey(key), pushTarget: next.pushTarget ?? undefined, kind: 'task' })
-          evictOldest(this.sessionOwners, 500)
-          this.taskDescriptions.set(createdId, next.description)
-          evictOldest(this.taskDescriptions, 500)
+          this.session(createdId).owner = { ...this.ownerFromKey(key), pushTarget: next.pushTarget ?? undefined, kind: 'task' }
+          this.session(createdId).taskDescription = next.description
           if (next.pushTarget !== null && next.pushTarget !== undefined) this.startLiveView(createdId, false)
           this.recordTask({ description: next.description, sessionId: createdId, workspace: next.workspace, status: 'running' })
           target.upsertTaskQueueEntry({ ...next, sessionId: createdId, status: 'running', attempts: 1, updatedAt: Date.now() })
@@ -551,7 +559,7 @@ export class RemoteCommandProcessor {
     const existing = next.sessionId === null ? undefined : target.taskQueue().find((item) => item.sessionId === next.sessionId)
     if (existing === undefined) {
       // 首次记录:任务启动即入队。
-      const owner = next.sessionId === null ? undefined : this.sessionOwners.get(next.sessionId)
+      const owner = next.sessionId === null ? undefined : this.sessions.get(next.sessionId)?.owner
       target.upsertTaskQueueEntry({
         id: `queue-${next.id}`,
         description: next.description,
@@ -1416,7 +1424,7 @@ export class RemoteCommandProcessor {
             entry.calls += 1
             byModel.set(key, entry)
           }
-          this.sessionModels.set(sessionId, current)
+          this.session(sessionId).currentModel = current
           continue
         }
         const chunk = isRecord(data.chunk) ? data.chunk : undefined
@@ -1468,9 +1476,10 @@ export class RemoteCommandProcessor {
     const todayIds = new Set(today.map((s) => s.sessionId))
     let inTok = 0, outTok = 0, cacheTok = 0
     const byModel = new Map<string, { provider: string; model: string; input: number; output: number; cache: number; calls: number }>()
-    for (const [sessionId, models] of this.tokenUsage) {
+    for (const [sessionId, state] of this.sessions) {
+      if (state.tokenUsage === undefined) continue
       if (!todayIds.has(sessionId)) continue
-      for (const [key, rec] of models) {
+      for (const [key, rec] of state.tokenUsage) {
         inTok += rec.input
         outTok += rec.output
         cacheTok += rec.cache
@@ -1483,7 +1492,7 @@ export class RemoteCommandProcessor {
       }
     }
     // 重启前的会话只读取最近 20 个历史消息；无法快速恢复的历史不会阻塞报表。
-    const historicalSessions = today.filter((s) => !this.tokenUsage.has(s.sessionId)).slice(0, 12)
+    const historicalSessions = today.filter((s) => this.sessions.get(s.sessionId)?.tokenUsage === undefined).slice(0, 12)
     const historical = await Promise.all(historicalSessions.map((s) => this.sessionUsageByModel(s.sessionId, todayStart)))
     for (const models of historical) {
       for (const item of models) {
@@ -1683,7 +1692,7 @@ export class RemoteCommandProcessor {
     for (const entry of due) {
       const result = await this.retryQueueEntry(entry.id).catch(() => '')
       if (result !== '' && this.push !== null) {
-        const owner = entry.sessionId === null ? undefined : this.sessionOwners.get(entry.sessionId)
+        const owner = entry.sessionId === null ? undefined : this.sessions.get(entry.sessionId)?.owner
         if (owner !== undefined && owner.pushTarget !== undefined) {
           this.push(owner.channel, owner.userId, `🔄 任务自动重试:${entry.description.slice(0, 60)}\n${result}`, undefined, owner.pushTarget)
         }
@@ -1816,30 +1825,30 @@ export class RemoteCommandProcessor {
 
   /** 任务会话启动时开启现场播报(仅支持主动推送的通道会话;群聊默认静音防刷屏)。 */
   private startLiveView(sessionId: string, enabledByDefault: boolean): void {
-    if (this.liveViews.has(sessionId)) return
+    if (this.sessions.get(sessionId)?.liveView !== undefined) return
     const live: LiveView = { tool: '', text: '', chunkBuf: '', changed: false, broadcast: enabledByDefault, startedAt: Date.now(), timer: null }
-    this.liveViews.set(sessionId, live)
+    this.session(sessionId).liveView = live
     live.timer = setInterval(() => this.tickLiveView(sessionId), LIVE_VIEW_INTERVAL_MS)
   }
 
   /** 回合结束(含失败/TRANSPORT 重试)时停止播报;后续新回合懒重建。 */
   private stopLiveView(sessionId: string): void {
-    const live = this.liveViews.get(sessionId)
+    const live = this.sessions.get(sessionId)?.liveView
     if (live === undefined) return
     if (live.timer !== null) clearInterval(live.timer)
-    this.liveViews.delete(sessionId)
+    this.clearSessionField(sessionId, 'liveView')
   }
 
   /** 播报 tick:有新内容且未静音时推一条合并摘要;无人认领/超长运行自动收摊。 */
   private tickLiveView(sessionId: string): void {
-    const live = this.liveViews.get(sessionId)
+    const live = this.sessions.get(sessionId)?.liveView
     if (live === undefined) return
     if (Date.now() - live.startedAt > 45 * 60 * 1000) {
       this.stopLiveView(sessionId)
       return
     }
     if (!live.changed || !live.broadcast || this.push === null) return
-    const owner = this.sessionOwners.get(sessionId)
+    const owner = this.sessions.get(sessionId)?.owner
     if (owner === undefined || owner.pushTarget === undefined) {
       this.stopLiveView(sessionId)
       return
@@ -1861,12 +1870,12 @@ export class RemoteCommandProcessor {
       this.stopLiveView(sessionId)
       return
     }
-    let live = this.liveViews.get(sessionId)
+    let live = this.sessions.get(sessionId)?.liveView
     if (live === undefined) {
       // 新回合懒重建(TRANSPORT 重试 / 排队任务重跑 / 助手模式工作回合)。
       if (this.push === null) return
       live = { tool: '', text: '', chunkBuf: '', changed: false, broadcast: false, startedAt: Date.now(), timer: null }
-      this.liveViews.set(sessionId, live)
+      this.session(sessionId).liveView = live
     }
     if (live.timer === null) {
       live.timer = setInterval(() => this.tickLiveView(sessionId), LIVE_VIEW_INTERVAL_MS)
@@ -1911,12 +1920,13 @@ export class RemoteCommandProcessor {
   /** 播报开关:播报 [会话id] / 静音 [会话id](作用于该用户运行中的任务会话)。 */
   private cmdBroadcast(channel: string, userId: string, sessionId: string, on: boolean): string {
     let count = 0
-    for (const [sid, live] of this.liveViews) {
+    for (const [sid, state] of this.sessions) {
+      if (state.liveView === undefined) continue
       if (sessionId !== '' && sid !== sessionId) continue
-      const owner = this.sessionOwners.get(sid)
+      const owner = state.owner
       if (owner === undefined || owner.channel !== channel || normUserId(owner.userId) !== normUserId(userId)) continue
-      live.broadcast = on
-      if (on) live.changed = true
+      state.liveView.broadcast = on
+      if (on) state.liveView.changed = true
       count += 1
     }
     if (count === 0) {
@@ -1937,7 +1947,7 @@ export class RemoteCommandProcessor {
     pushTarget?: { scope: string; targetId: string },
   ): void {
     if (pushTarget?.scope !== 'c2c') return
-    this.chatFollows.set(sessionId, { channel, userId, pushTarget, ts: Date.now() })
+    this.session(sessionId).follow = { channel, userId, pushTarget, ts: Date.now() }
   }
 
   /** 跟随 <会话id|空=当前对话>:该会话所有回合输出主动推送(自动跟随的同款入口)。 */
@@ -1945,15 +1955,15 @@ export class RemoteCommandProcessor {
     const owner = this.ownerFromKey(key)
     const target = sessionId === '' ? this.chatContexts.get(key)?.sessionId ?? '' : sessionId
     if (target === '') return '当前不在对话模式;发送「跟随 <会话id>」可跟随指定会话(列表见「会话」)'
-    const existing = this.sessionOwners.get(target)
+    const existing = this.sessions.get(target)?.owner
     if (existing !== undefined
       && (existing.channel !== owner.channel || normUserId(existing.userId) !== normUserId(owner.userId))) {
       return `会话 ${target.slice(0, 20)}… 不是由你发起,无法跟随`
     }
-    this.chatFollows.set(target, {
+    this.session(target).follow = {
       channel: owner.channel, userId: owner.userId,
       pushTarget: pushTarget ?? existing?.pushTarget, ts: Date.now(),
-    })
+    }
     return `📌 已跟随会话 ${target.slice(0, 20)}…:该会话的输出(含你不在时产生的回复)都会主动推送给你;「不跟随」停止`
   }
 
@@ -1961,14 +1971,15 @@ export class RemoteCommandProcessor {
   private cmdNofollow(key: string, sessionId: string): string {
     const owner = this.ownerFromKey(key)
     const target = sessionId === '' ? this.chatContexts.get(key)?.sessionId ?? '' : sessionId
-    if (target !== '' && this.chatFollows.delete(target)) {
+    if (target !== '' && this.deleteFollow(target)) {
       return `已取消跟随会话 ${target.slice(0, 20)}…`
     }
     let count = 0
-    for (const [sid, follow] of this.chatFollows) {
-      if (follow.channel !== owner.channel || normUserId(follow.userId) !== normUserId(owner.userId)) continue
+    for (const [sid, state] of this.sessions) {
+      if (state.follow === undefined) continue
+      if (state.follow.channel !== owner.channel || normUserId(state.follow.userId) !== normUserId(owner.userId)) continue
       if (sessionId !== '' && sid !== sessionId) continue
-      this.chatFollows.delete(sid)
+      this.deleteFollow(sid)
       count += 1
     }
     return count > 0
@@ -2002,7 +2013,7 @@ export class RemoteCommandProcessor {
       const running = meta?.running === true
       const toolCalls = events.filter((e) => e.event?.type === 'tool/call').length
       const toolFails = events.filter((e) => e.event?.type === 'tool/result' && e.event.data?.error !== undefined).length
-      const live = this.liveViews.get(sessionId)
+      const live = this.sessions.get(sessionId)?.liveView
       const liveTool = live !== undefined && live.tool !== '' ? live.tool : ''
       // 阶段判定:运行中按最近动向(工具/输出/思考)细分;已结束按 turn/end reason 定性。
       let phase = ''
@@ -2162,15 +2173,13 @@ export class RemoteCommandProcessor {
         const created = await client.rpc<{ sessionId: string }>('session.create', payload)
         sessionId = created.sessionId
       }
-      if (!this.sessionOwners.has(sessionId)) {
-        this.sessionOwners.set(sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
-        evictOldest(this.sessionOwners, 500)
+      if (this.sessions.get(sessionId)?.owner === undefined) {
+        this.session(sessionId).owner = { ...this.ownerFromKey(key), pushTarget, kind: 'task' }
       } else {
-        const owner = this.sessionOwners.get(sessionId)!
+        const owner = this.sessions.get(sessionId)?.owner!
         if (pushTarget !== undefined) owner.pushTarget = pushTarget
       }
-      this.taskDescriptions.set(sessionId, taskText)
-      evictOldest(this.taskDescriptions, 500)
+      this.session(sessionId).taskDescription = taskText
       if (pushTarget !== undefined) this.startLiveView(sessionId, false)
       this.recordTask({ description: taskText, sessionId, workspace: cwd ?? workspaceId, status: 'running' })
       this.enqueueTaskRun(taskText, sessionId, cwd ?? workspaceId)
@@ -2297,7 +2306,7 @@ export class RemoteCommandProcessor {
             const chosen = sessions[sessionIndex]
             const denied = this.assertOwnership(this.ownerFromKey(key), chosen.sessionId)
             if (denied !== null) return denied
-            this.sessionOwners.set(chosen.sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
+            this.session(chosen.sessionId).owner = { ...this.ownerFromKey(key), pushTarget, kind: 'task' }
             this.chatContexts.set(ctxKey, { sessionId: chosen.sessionId, label: target, workspace: cwd ?? workspaceId })
             this.followSession(chosen.sessionId, this.ownerFromKey(key).channel, this.ownerFromKey(key).userId, pushTarget)
             return [
@@ -2319,8 +2328,7 @@ export class RemoteCommandProcessor {
       const created = await client.rpc<{ sessionId: string }>('session.create', payload)
       // 工作区 = 助手模式;纯对话 = 朋友模式。
       const kind = target === '' ? 'chat' : 'task'
-      this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind })
-      evictOldest(this.sessionOwners, 500)
+      this.session(created.sessionId).owner = { ...this.ownerFromKey(key), pushTarget, kind }
       this.chatContexts.set(ctxKey, { sessionId: created.sessionId, label, workspace: cwd ?? workspaceId })
       this.persistChat(ctxKey)
       this.followSession(created.sessionId, this.ownerFromKey(key).channel, this.ownerFromKey(key).userId, pushTarget)
@@ -2423,7 +2431,7 @@ export class RemoteCommandProcessor {
     if (ctx === undefined) return '当前不在对话模式。'
     const isPureChat = ctx.label.startsWith('(纯对话')
     this.chatContexts.delete(ctxKey)
-    const unfollowed = this.chatFollows.delete(ctx.sessionId)
+    const unfollowed = this.deleteFollow(ctx.sessionId)
     const note = unfollowed ? '\n已停止跟随:该会话后续输出不再主动推送(「跟随」可重新开启)。' : ''
     if (isPureChat) {
       // 默认线程持久化在配置里:退出只离开"激活态",下次消息自动回到同一会话。
@@ -2443,7 +2451,7 @@ export class RemoteCommandProcessor {
     if (ctx === undefined) return this.fullHelp()
     const client = this.harness.client()
     try {
-      let owner = this.sessionOwners.get(ctx.sessionId)
+      let owner = this.sessions.get(ctx.sessionId)?.owner
       // 工作区会话 = 助手模式提示词;纯对话 = 朋友模式提示词。
       const mode = owner !== undefined && owner.kind === 'task' ? 'task' : 'chat'
       const parts: Array<{ type: string; text?: string; mediaType?: string; data?: string }> = []
@@ -2455,30 +2463,27 @@ export class RemoteCommandProcessor {
         content: parts,
       })
       // 记录提示内容:TRANSPORT 流中断时自动重试(重放)用。
-      this.chatPrompts.set(ctx.sessionId, { parts, ts: Date.now() })
-      if (this.chatPrompts.size > 64) {
-        const oldest = this.chatPrompts.keys().next().value as string | undefined
-        if (oldest !== undefined) this.chatPrompts.delete(oldest)
-      }
+      // (会话状态已统一收敛到 sessions,由 session() 的有界淘汰兜底,不再单列 chatPrompts 上限。)
+      this.session(ctx.sessionId).chatPrompt = { parts, ts: Date.now() }
       // 注册回复推送:回合结束后把 agent 的回复主动推给发起者(对话体验)。
       // 重启后恢复的对话会话可能没有归属记录,这里补登记。
       if (owner === undefined) {
         owner = { ...this.ownerFromKey(key), pushTarget, kind: 'chat' }
-        this.sessionOwners.set(ctx.sessionId, owner)
+        this.session(ctx.sessionId).owner = owner
       } else {
         // 每次消息都刷新推送目标:QQ 群/私聊回复的 msg_id 会过期,必须用最近一条。
         if (pushTarget !== undefined) owner.pushTarget = pushTarget
         else if (owner.pushTarget === undefined) owner.pushTarget = pushTarget
       }
       // 纯对话与工作区助手对话都注册回复推送;队列任务不注册(走任务完成汇报)。
-      const isQueueTask = this.taskDescriptions.has(ctx.sessionId)
+      const isQueueTask = this.sessions.get(ctx.sessionId)?.taskDescription !== undefined
       if (!isQueueTask) {
-        this.chatReplies.set(ctx.sessionId, {
+        this.session(ctx.sessionId).chatReply = {
           channel: owner.channel,
           userId: owner.userId,
           pushTarget: owner.pushTarget,
           ts: Date.now(),
-        })
+        }
         // 每次都刷新跟随:进入会话(私聊)即自动关注,回合推送目标保持最新(msg_id 会过期)。
         this.followSession(ctx.sessionId, owner.channel, owner.userId, owner.pushTarget)
       }
@@ -2584,22 +2589,20 @@ export class RemoteCommandProcessor {
   /** 会话事件:任务汇报 + 对话回复(流式/整段)+ Token 累计 + 模型记录。 */
   private handleSessionEvent(payload: Record<string, unknown>): void {
     const sessionId = String(payload.sessionId ?? '')
-    const owner = this.sessionOwners.get(sessionId)
+    const owner = this.sessions.get(sessionId)?.owner
     if (!isRecord(payload.event)) return
     // 模型记录(request/header 事件携带本次请求的 provider/model,用于按模型统计)。
     if (payload.event.type === 'request/header' && isRecord(payload.event.data) && isRecord(payload.event.data.header)) {
       const config = payload.event.data.header.config
       if (isRecord(config) && typeof config.provider === 'string' && typeof config.model === 'string') {
         const model = { provider: config.provider, model: config.model }
-        this.sessionModels.set(sessionId, model)
-        evictOldest(this.sessionModels, 500)
-        const models = this.tokenUsage.get(sessionId) ?? new Map()
+        this.session(sessionId).currentModel = model
+        const models = this.sessions.get(sessionId)?.tokenUsage ?? new Map()
         const key = `${model.provider}/${model.model}`
         const usage = models.get(key) ?? { ...model, input: 0, output: 0, cache: 0, calls: 0 }
         usage.calls += 1
         models.set(key, usage)
-        this.tokenUsage.set(sessionId, models)
-        evictOldest(this.tokenUsage, 500)
+        this.session(sessionId).tokenUsage = models
       }
     }
     // Token 累计:usage 到达时归入当前 request/header 的模型桶。
@@ -2607,22 +2610,21 @@ export class RemoteCommandProcessor {
       const chunk = payload.event.data.chunk
       if (chunk.type === 'usage' && isRecord(chunk.usage)) {
         const u = chunk.usage
-        const model = this.sessionModels.get(sessionId) ?? { provider: '未知', model: '未知' }
-        const models = this.tokenUsage.get(sessionId) ?? new Map()
+        const model = this.sessions.get(sessionId)?.currentModel ?? { provider: '未知', model: '未知' }
+        const models = this.sessions.get(sessionId)?.tokenUsage ?? new Map()
         const key = `${model.provider}/${model.model}`
         const usage = models.get(key) ?? { ...model, input: 0, output: 0, cache: 0, calls: 0 }
         usage.input += typeof u.inputTokens === 'number' ? u.inputTokens : 0
         usage.output += typeof u.outputTokens === 'number' ? u.outputTokens : 0
         usage.cache += typeof u.cacheReadTokens === 'number' ? u.cacheReadTokens : 0
         models.set(key, usage)
-        this.tokenUsage.set(sessionId, models)
-        evictOldest(this.tokenUsage, 500)
+        this.session(sessionId).tokenUsage = models
       }
     }
     if (owner === undefined) return
     // 纯对话(kind chat)与「工作区助手对话」(kind task 但非队列任务)统一按聊天回合处理:
     // chunk 流式/整段缓冲,回合结束推送回复;队列任务走任务汇报与队列同步。
-    const isQueueTask = this.taskDescriptions.has(sessionId)
+    const isQueueTask = this.sessions.get(sessionId)?.taskDescription !== undefined
     if (owner.kind === 'chat' || !isQueueTask) {
       if (!this.handleChatTransport(sessionId, owner, payload.event)) {
         this.handleChatEvent(sessionId, owner, payload.event)
@@ -2637,9 +2639,9 @@ export class RemoteCommandProcessor {
     const message = failure?.message ?? ''
     const isTransport = failure?.isTransport ?? false
     // TRANSPORT 中断(模型流错误,如中转站读取超时/流式通道不稳):同会话自动重试一次。
-    if (isTransport && !this.retriedTransports.has(sessionId)) {
-      this.retriedTransports.add(sessionId)
-      const description = this.taskDescriptions.get(sessionId)
+    if (isTransport && this.sessions.get(sessionId)?.retriedTransport !== true) {
+      this.session(sessionId).retriedTransport = true
+      const description = this.sessions.get(sessionId)?.taskDescription
       if (description !== undefined && this.push !== null) {
         this.push(owner.channel, owner.userId, '⚠️ 任务因模型流中断,正在自动重试一次…(仍失败常见于中转站:上游读取超时/流式不稳/风控截断)', undefined, owner.pushTarget)
         void this.harness.client().rpc('session.prompt', {
@@ -2651,7 +2653,7 @@ export class RemoteCommandProcessor {
       }
     }
     // 队列状态同步:成功完成也必须落库并放行队列(否则队列会一直卡「运行中」,后续任务全部积压)。
-    const queueDescription = this.taskDescriptions.get(sessionId)
+    const queueDescription = this.sessions.get(sessionId)?.taskDescription
     if (queueDescription !== undefined) {
       const queueNow = Date.now()
       const prevHistory = (this.config?.get().taskHistory ?? []).find((item) => item.sessionId === sessionId)
@@ -2701,27 +2703,27 @@ export class RemoteCommandProcessor {
 
   /** 对话回合事件:chunk 增量实时流出(QQ 私聊流式)或缓冲;turn/end 收尾。 */
   private handleChatEvent(sessionId: string, owner: SessionOwner, ev: Record<string, unknown>): void {
-    let pending = this.chatReplies.get(sessionId)
+    let pending = this.sessions.get(sessionId)?.chatReply
     if (pending === undefined) {
       // 会话跟随:用户没发消息但会话在输出(桌面/网页/定时触发的回合)也要推给关注者。
-      const follow = this.chatFollows.get(sessionId)
+      const follow = this.sessions.get(sessionId)?.follow
       if (follow === undefined || this.push === null) return
       pending = { channel: follow.channel, userId: follow.userId, pushTarget: follow.pushTarget, ts: Date.now() }
-      this.chatReplies.set(sessionId, pending)
+      this.session(sessionId).chatReply = pending
     }
     const streamable = this.chatStream !== null && owner.channel === 'qq' && owner.pushTarget?.scope === 'c2c'
     if (ev.type === 'assistant/chunk') {
       const chunk = isRecord(ev.data) && isRecord(ev.data.chunk) ? ev.data.chunk : null
       if (chunk !== null && chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text !== '') {
         if (streamable) this.chatStream!.onDelta(owner.channel, pending.userId, chunk.text, owner.pushTarget)
-        else this.chatReplyBuffer.set(sessionId, (this.chatReplyBuffer.get(sessionId) ?? '') + chunk.text)
+        else this.session(sessionId).replyBuffer = (this.sessions.get(sessionId)?.replyBuffer ?? '') + chunk.text
       }
       return
     }
     if (ev.type === 'turn/end') {
       if (streamable) {
         this.chatStream!.onEnd(owner.channel, pending.userId, owner.pushTarget)
-        this.chatReplies.delete(sessionId)
+        this.clearSessionField(sessionId, 'chatReply')
         return
       }
       this.pushChatReply(sessionId)
@@ -2733,22 +2735,22 @@ export class RemoteCommandProcessor {
   private handleChatTransport(sessionId: string, owner: SessionOwner, ev: Record<string, unknown>): boolean {
     const failure = turnEndFailure(ev)
     if (failure === null || !failure.isTransport) return false
-    if (this.retriedTransports.has(sessionId)) return false
-    const prompt = this.chatPrompts.get(sessionId)
+    if (this.sessions.get(sessionId)?.retriedTransport === true) return false
+    const prompt = this.sessions.get(sessionId)?.chatPrompt
     if (prompt === undefined) return false
-    this.retriedTransports.add(sessionId)
+    this.session(sessionId).retriedTransport = true
     // 定稿旧流:已显示的部分不再追加,重试产生新流(QQ 侧为新消息)。
-    const pending = this.chatReplies.get(sessionId)
+    const pending = this.sessions.get(sessionId)?.chatReply
     if (pending !== undefined && this.chatStream !== null) {
       this.chatStream.onEnd(owner.channel, pending.userId, owner.pushTarget)
     }
-    this.chatReplyBuffer.delete(sessionId)
-    this.chatReplies.set(sessionId, {
+    this.clearSessionField(sessionId, 'replyBuffer')
+    this.session(sessionId).chatReply = {
       channel: owner.channel,
       userId: owner.userId,
       pushTarget: owner.pushTarget,
       ts: Date.now(),
-    })
+    }
     if (this.push !== null) {
       this.push(owner.channel, owner.userId, '⚠️ 模型流中断,正在自动重试一次…(仍失败常见于中转站:上游读取超时/流式不稳/风控截断)', undefined, owner.pushTarget)
     }
@@ -2766,13 +2768,13 @@ export class RemoteCommandProcessor {
   /** 对话回合结束:推送给发起者(非流式通道);优先用回合缓冲,兜底拉历史。
    *  时效窗口 20 分钟:对话上下文里的回复永远有意义,避免模型想久了静默丢失。 */
   private pushChatReply(sessionId: string): void {
-    const pending = this.chatReplies.get(sessionId)
+    const pending = this.sessions.get(sessionId)?.chatReply
     if (pending === undefined || this.push === null) return
-    this.chatReplies.delete(sessionId)
+    this.clearSessionField(sessionId, 'chatReply')
     // 跟随中的会话不设时效窗口(用户明确要跟到底);普通回复 20 分钟内有效。
-    if (!this.chatFollows.has(sessionId) && Date.now() - pending.ts > 20 * 60 * 1000) return
-    const buffered = this.chatReplyBuffer.get(sessionId) ?? ''
-    this.chatReplyBuffer.delete(sessionId)
+    if (this.sessions.get(sessionId)?.follow === undefined && Date.now() - pending.ts > 20 * 60 * 1000) return
+    const buffered = this.sessions.get(sessionId)?.replyBuffer ?? ''
+    this.clearSessionField(sessionId, 'replyBuffer')
     if (buffered.trim() !== '') {
       this.push(pending.channel, pending.userId, buffered.trim().slice(0, 1500), undefined, pending.pushTarget)
       return
@@ -2933,12 +2935,38 @@ export class RemoteCommandProcessor {
       : { channel: key.slice(0, sep), userId: key.slice(sep + 1) }
   }
 
+  /** 取(必要时创建)某会话的状态对象;新建时统一执行有界淘汰。 */
+  private session(id: string): SessionState {
+    let s = this.sessions.get(id)
+    if (s === undefined) {
+      s = {}
+      this.sessions.set(id, s)
+      evictOldest(this.sessions, 500)
+    }
+    return s
+  }
+
+  /** 清除会话的跟随状态,返回之前是否存在(与 Map.delete 同语义)。 */
+  private deleteFollow(id: string): boolean {
+    const s = this.sessions.get(id)
+    if (s === undefined || s.follow === undefined) return false
+    s.follow = undefined
+    return true
+  }
+
+  /** 清除会话的某个状态字段(与 Map.delete 同语义,但不新建条目)。 */
+  private clearSessionField(id: string, field: keyof SessionState): void {
+    const s = this.sessions.get(id)
+    if (s === undefined) return
+    delete s[field]
+  }
+
   /**
    * 会话归属校验:按 sessionId 操作的指令统一入口。
    * 非属主(含桌面端自身产生的无归属会话)返回拒绝文案;属主返回 null。
    */
   private assertOwnership(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId: string): string | null {
-    const existing = this.sessionOwners.get(sessionId)
+    const existing = this.sessions.get(sessionId)?.owner
     if (existing === undefined || existing.channel !== owner.channel || normUserId(existing.userId) !== normUserId(owner.userId)) {
       return '该会话不是由你发起,无权操作。'
     }
@@ -2947,7 +2975,7 @@ export class RemoteCommandProcessor {
 
   /** 该会话是否由 owner 发起(全局列表/统计按调用者过滤用)。 */
   private ownedByOwner(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId: string): boolean {
-    const existing = this.sessionOwners.get(sessionId)
+    const existing = this.sessions.get(sessionId)?.owner
     return existing !== undefined && existing.channel === owner.channel && normUserId(existing.userId) === normUserId(owner.userId)
   }
 
@@ -2956,7 +2984,7 @@ export class RemoteCommandProcessor {
     for (const pending of this.pendingApprovals.values()) {
       if (sessionId !== '' && pending.sessionId !== sessionId) continue
       if (approvalId !== '' && pending.approvalId !== approvalId) continue
-      const o = this.sessionOwners.get(pending.sessionId)
+      const o = this.sessions.get(pending.sessionId)?.owner
       if (o !== undefined && o.channel === owner.channel && normUserId(o.userId) === normUserId(owner.userId)) return pending
     }
     return null
@@ -2966,7 +2994,7 @@ export class RemoteCommandProcessor {
   private findPendingQuestion(owner: Pick<SessionOwner, 'channel' | 'userId'>, sessionId?: string): PendingQuestion | null {
     for (const pending of this.pendingQuestions.values()) {
       if (sessionId !== undefined && sessionId !== '' && pending.sessionId !== sessionId) continue
-      const o = this.sessionOwners.get(pending.sessionId)
+      const o = this.sessions.get(pending.sessionId)?.owner
       if (o !== undefined && o.channel === owner.channel && normUserId(o.userId) === normUserId(owner.userId)) return pending
     }
     return null
@@ -2979,7 +3007,7 @@ export class RemoteCommandProcessor {
     meta?: { kind: 'approval'; sessionId: string; approvalId: string } | { kind: 'question'; sessionId: string; question: { id: string; question: string; options: string[] } },
   ): void {
     if (this.push === null) return
-    const owner = this.sessionOwners.get(sessionId)
+    const owner = this.sessions.get(sessionId)?.owner
     if (owner !== undefined) this.push(owner.channel, owner.userId, text, meta, owner.pushTarget)
   }
 
@@ -3046,7 +3074,7 @@ export class RemoteCommandProcessor {
   private pendingSuffix(channel: string, userId: string, isGroup: boolean): string {
     const lines: string[] = []
     for (const pending of this.pendingApprovals.values()) {
-      const o = this.sessionOwners.get(pending.sessionId)
+      const o = this.sessions.get(pending.sessionId)?.owner
       if (o === undefined || o.channel !== channel || normUserId(o.userId) !== normUserId(userId)) continue
       const reason = pending.reason !== undefined && pending.reason !== '' ? `(${pending.reason.slice(0, 50)})` : ''
       if (pending.risk === 'high') {
@@ -3058,7 +3086,7 @@ export class RemoteCommandProcessor {
       }
     }
     for (const pending of this.pendingQuestions.values()) {
-      const o = this.sessionOwners.get(pending.sessionId)
+      const o = this.sessions.get(pending.sessionId)?.owner
       if (o === undefined || o.channel !== channel || normUserId(o.userId) !== normUserId(userId)) continue
       lines.push(isGroup
         ? `❓ 待回答:${pending.questions.length} 个问题(会话 ${pending.sessionId}) — 请在私聊中处理`
