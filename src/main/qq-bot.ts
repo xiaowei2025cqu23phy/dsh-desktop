@@ -462,27 +462,39 @@ export class QQBotAdapter {
       if (target.scope === 'group') {
         const sent = await this.tryPush(bot, target, text, meta)
         if (!sent) {
-          // 群主动消息被拒(如未开通群内主动发言权限):回退发起者私聊。
-          const entry = this.userTargets.get(userId)
-          if (entry !== undefined && entry.target.scope === 'c2c') {
-            await this.pushText(bot, entry.target, text, meta)
+          // 群主动消息被拒(如未开通群内主动发言权限):回退发起者私聊(同样过 48h 窗口检查)。
+          if (this.withinPushWindow(userId)) {
+            const entry = this.userTargets.get(userId)
+            if (entry !== undefined && entry.target.scope === 'c2c') {
+              await this.pushText(bot, entry.target, text, meta)
+            }
           }
         }
       } else {
+        // c2c 指定目标也过 48h 主动推送窗口检查(此前在 target 分支提前 return,跳过了时效判定)。
+        if (!this.withinPushWindow(userId)) {
+          this.noteError('主动推送跳过', new Error('该用户已超过 48 小时主动推送窗口'))
+          return
+        }
         await this.pushText(bot, target, text, meta)
       }
       return
     }
     const entry = this.userTargets.get(userId)
     if (entry === undefined) return
-    const fresh = Date.now() - entry.ts <= PUSH_WINDOW_MS
-    if (!fresh) {
+    if (!this.withinPushWindow(userId)) {
       // 超窗:QQ 只允许在交互后 48h 内主动推送;记录下来,「状态」里可见。
       this.userTargets.delete(userId)
       this.noteError('主动推送跳过', new Error('该用户已超过 48 小时主动推送窗口'))
       return
     }
     await this.pushText(bot, entry.target, text, meta)
+  }
+
+  /** 该用户是否仍在 48 小时主动推送窗口内(以最近一次交互时间计)。 */
+  private withinPushWindow(userId: string): boolean {
+    const entry = this.userTargets.get(userId)
+    return entry !== undefined && Date.now() - entry.ts <= PUSH_WINDOW_MS
   }
 
   /** 分段发送(群走回复式 sendGroup;私聊直发)。 */

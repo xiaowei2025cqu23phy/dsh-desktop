@@ -21,10 +21,13 @@ export interface TrayDeps {
 
 export class AppTray {
   private tray: Tray | null = null
+  /** 绑定后的刷新回调(与 on 时同一引用,dispose 时据此移除监听)。 */
+  private onStatus = (): void => this.refresh()
+  private onLog = (): void => this.refresh()
 
   constructor(private deps: TrayDeps) {
-    this.deps.harness.on('status', () => this.refresh())
-    this.deps.harness.on('log', () => this.refresh())
+    this.deps.harness.on('status', this.onStatus)
+    this.deps.harness.on('log', this.onLog)
   }
 
   create(): void {
@@ -110,6 +113,9 @@ export class AppTray {
   }
 
   dispose(): void {
+    // 移除 harness 事件监听(否则每条 stdout 仍会触发 refresh,且 this 无法被回收)。
+    this.deps.harness.off('status', this.onStatus)
+    this.deps.harness.off('log', this.onLog)
     this.tray?.destroy()
     this.tray = null
   }

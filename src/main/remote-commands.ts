@@ -25,6 +25,9 @@ export const MAX_REPLY_LENGTH = 1500
 /** 现场播报间隔:摘要式节奏,避开 QQ 主动消息频控与刷屏。 */
 const LIVE_VIEW_INTERVAL_MS = 25_000
 
+/** 任务队列失败重试的基础退避时长(第 1 次失败退避该值,之后每次翻倍)。 */
+const TASK_RETRY_BASE_DELAY_MS = 30_000
+
 function fmtDuration(ms: number): string {
   const seconds = Math.max(1, Math.round(ms / 1000))
   const minutes = Math.floor(seconds / 60)
@@ -34,6 +37,15 @@ function fmtDuration(ms: number): string {
 /** 归一化用户标识:按钮事件给裸 openid,消息侧可能带 t: 前缀(回复目标回退),比较时统一。 */
 function normUserId(id: string): string {
   return id.startsWith('t:') ? id.slice(2) : id
+}
+
+/** 有界 Map 淘汰:超过 cap 时删除最早插入的键,防止按会话索引的 Map 随会话数长期无限增长。 */
+function evictOldest<K, V>(map: Map<K, V>, cap: number): void {
+  while (map.size > cap) {
+    const oldest = map.keys().next().value as K | undefined
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
 }
 
 /** 相对时间描述(会话列表用)。 */
@@ -604,7 +616,9 @@ export class RemoteCommandProcessor {
             createdId = created.sessionId
           }
           this.sessionOwners.set(createdId, { ...this.ownerFromKey(key), pushTarget: next.pushTarget ?? undefined, kind: 'task' })
+          evictOldest(this.sessionOwners, 500)
           this.taskDescriptions.set(createdId, next.description)
+          evictOldest(this.taskDescriptions, 500)
           if (next.pushTarget !== null && next.pushTarget !== undefined) this.startLiveView(createdId, false)
           this.recordTask({ description: next.description, sessionId: createdId, workspace: next.workspace, status: 'running' })
           target.upsertTaskQueueEntry({ ...next, sessionId: createdId, status: 'running', attempts: 1, updatedAt: Date.now() })
@@ -629,7 +643,7 @@ export class RemoteCommandProcessor {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        target.upsertTaskQueueEntry({ ...next, status: 'failed', error: message.slice(0, 500), attempts: next.attempts + 1, nextAttemptAt: Date.now() + 30_000, updatedAt: Date.now() })
+        target.upsertTaskQueueEntry({ ...next, status: 'failed', error: message.slice(0, 500), attempts: next.attempts + 1, nextAttemptAt: Date.now() + TASK_RETRY_BASE_DELAY_MS, updatedAt: Date.now() })
         if (this.push !== null && next.pushTarget !== undefined && next.pushTarget !== null) {
           this.push(next.channel, next.userId, `❌ 排队任务启动失败:${message.slice(0, 120)}`, undefined, next.pushTarget)
         }
@@ -682,8 +696,8 @@ export class RemoteCommandProcessor {
       const attempts = existing.attempts + 1
       // 最多自动重试 maxAttempts 次(第 1~maxAttempts 次失败后各自退避一次;超过后不再自动重试)。
       const exhausted = attempts > existing.maxAttempts
-      // 指数退避:第 1 次失败后 30s,第 2 次 60s,第 3 次 120s。
-      const nextAttemptAt = exhausted ? null : now + 30_000 * 2 ** (attempts - 2)
+      // 指数退避:第 1 次失败后 30s、第 2 次 60s(第 3 次已超过 maxAttempts,不再退避)。
+      const nextAttemptAt = exhausted ? null : now + TASK_RETRY_BASE_DELAY_MS * 2 ** (attempts - 2)
       target.upsertTaskQueueEntry({
         ...existing,
         status: 'failed',
@@ -942,6 +956,8 @@ export class RemoteCommandProcessor {
       '  例:导出 session-xxxxxxxx',
       '恢复 <会话id> — 把归档(隐藏)的会话恢复显示',
       '  例:恢复 session-xxxxxxxx',
+      '清队列 — 清空你本人未结束的任务队列(解除卡死的运行项,恢复串行执行)',
+      '  例:清队列',
       '播报 / 静音 — 任务过程现场播报开关(默认静默,需要时开启)',
       '  例:播报',
       '  例:静音',
@@ -1034,6 +1050,8 @@ export class RemoteCommandProcessor {
         return this.cmdFollow(key, command.sessionId, pushTarget)
       case 'nofollow':
         return this.cmdNofollow(key, command.sessionId)
+      case 'clearqueue':
+        return this.cmdClearQueue(owner)
       case 'run': {
         const denied = this.taskScopeGuard(pushTarget)
         if (denied !== null) return denied
@@ -1824,6 +1842,24 @@ export class RemoteCommandProcessor {
     return `已取消:${entry.description.slice(0, 60)}`
   }
 
+  /** 清空调用者自己的未结束队列项(运行中/排队/失败):解除卡死的 running 行,恢复串行执行。 */
+  private cmdClearQueue(owner: Pick<SessionOwner, 'channel' | 'userId'>): string {
+    const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue']; upsertTaskQueueEntry?: ConfigStore['upsertTaskQueueEntry'] }
+    if (typeof target?.taskQueue !== 'function' || typeof target?.upsertTaskQueueEntry !== 'function') return '队列不可用'
+    const entries = target.taskQueue().filter((e) =>
+      (e.status === 'running' || e.status === 'queued' || e.status === 'failed') &&
+      e.channel === owner.channel && normUserId(e.userId) === normUserId(owner.userId))
+    if (entries.length === 0) return '没有待清理的队列项(仅清理你本人未结束的任务)。'
+    for (const entry of entries) {
+      if (entry.sessionId !== null) {
+        void this.harness.client().rpc('session.cancel', { sessionId: entry.sessionId }).catch(() => {})
+      }
+      target.upsertTaskQueueEntry({ ...entry, status: 'cancelled', nextAttemptAt: null, updatedAt: Date.now() })
+    }
+    void this.drainQueue().catch(() => {})
+    return `已清空 ${entries.length} 个队列项(运行中/排队/失败的任务已取消),队列恢复可继续。`
+  }
+
   /** 立即重试队列项(手动或自动)。 */
   async retryQueueEntry(id: string): Promise<string> {
     const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue']; upsertTaskQueueEntry?: ConfigStore['upsertTaskQueueEntry'] }
@@ -2246,19 +2282,33 @@ export class RemoteCommandProcessor {
       }
       if (!this.sessionOwners.has(sessionId)) {
         this.sessionOwners.set(sessionId, { ...this.ownerFromKey(key), pushTarget, kind: 'task' })
+        evictOldest(this.sessionOwners, 500)
       } else {
         const owner = this.sessionOwners.get(sessionId)!
         if (pushTarget !== undefined) owner.pushTarget = pushTarget
       }
       this.taskDescriptions.set(sessionId, taskText)
+      evictOldest(this.taskDescriptions, 500)
       if (pushTarget !== undefined) this.startLiveView(sessionId, false)
       this.recordTask({ description: taskText, sessionId, workspace: cwd ?? workspaceId, status: 'running' })
       this.enqueueTaskRun(taskText, sessionId, cwd ?? workspaceId)
-      await client.rpc('session.prompt', {
-        sessionId,
-        mode: 'queue',
-        content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(cwd, taskText)) }],
-      })
+      try {
+        await client.rpc('session.prompt', {
+          sessionId,
+          mode: 'queue',
+          content: [{ type: 'text', text: this.withModePrompt('task', this.withWorkspaceMemory(cwd, taskText)) }],
+        })
+      } catch (error) {
+        // prompt 抛错:队列项已置 running,必须回写 failed——否则 drainQueue 见 running 即返回、
+        // tickQueue 只重试 failed,一次 harness 抖动就永久卡死后续排队任务。
+        const message = error instanceof Error ? error.message : String(error)
+        this.syncQueueFromTask(
+          { id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, description: taskText, sessionId, status: 'failed', attempts: 1, error: message },
+          { sessionId, status: 'failed', error: message },
+          Date.now(),
+        )
+        throw error
+      }
       this.autoRenameSession(sessionId, taskText)
       const mergedPath = workspaceId === null && cwd === null
       const extra = mergedPath
@@ -2388,6 +2438,7 @@ export class RemoteCommandProcessor {
       // 工作区 = 助手模式;纯对话 = 朋友模式。
       const kind = target === '' ? 'chat' : 'task'
       this.sessionOwners.set(created.sessionId, { ...this.ownerFromKey(key), pushTarget, kind })
+      evictOldest(this.sessionOwners, 500)
       this.chatContexts.set(ctxKey, { sessionId: created.sessionId, label, workspace: cwd ?? workspaceId })
       this.persistChat(ctxKey)
       this.followSession(created.sessionId, this.ownerFromKey(key).channel, this.ownerFromKey(key).userId, pushTarget)
@@ -2659,12 +2710,14 @@ export class RemoteCommandProcessor {
       if (isRecord(config) && typeof config.provider === 'string' && typeof config.model === 'string') {
         const model = { provider: config.provider, model: config.model }
         this.sessionModels.set(sessionId, model)
+        evictOldest(this.sessionModels, 500)
         const models = this.tokenUsage.get(sessionId) ?? new Map()
         const key = `${model.provider}/${model.model}`
         const usage = models.get(key) ?? { ...model, input: 0, output: 0, cache: 0, calls: 0 }
         usage.calls += 1
         models.set(key, usage)
         this.tokenUsage.set(sessionId, models)
+        evictOldest(this.tokenUsage, 500)
       }
     }
     // Token 累计:usage 到达时归入当前 request/header 的模型桶。
@@ -2681,6 +2734,7 @@ export class RemoteCommandProcessor {
         usage.cache += typeof u.cacheReadTokens === 'number' ? u.cacheReadTokens : 0
         models.set(key, usage)
         this.tokenUsage.set(sessionId, models)
+        evictOldest(this.tokenUsage, 500)
       }
     }
     if (owner === undefined) return

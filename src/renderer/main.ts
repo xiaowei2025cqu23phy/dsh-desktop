@@ -408,17 +408,21 @@ async function clearMemory(): Promise<void> {
 }
 
 async function loadNotificationConfig(): Promise<void> {
-  const config = await API.notifications.getConfig()
-  input('notify-enabled').checked = config.enabled
-  input('notify-approval').checked = config.approval
-  input('notify-question').checked = config.question
-  input('notify-task-done').checked = config.taskDone
-  input('notify-task-fail').checked = config.taskFail
-  input('notify-update').checked = config.update === true
-  input('notify-quiet').checked = config.quietHoursEnabled
-  input('notify-quiet-start').value = String(config.quietStart)
-  input('notify-quiet-end').value = String(config.quietEnd)
-  input('notify-urgent-bypass').checked = config.urgentBypassQuiet
+  try {
+    const config = await API.notifications.getConfig()
+    input('notify-enabled').checked = config.enabled
+    input('notify-approval').checked = config.approval
+    input('notify-question').checked = config.question
+    input('notify-task-done').checked = config.taskDone
+    input('notify-task-fail').checked = config.taskFail
+    input('notify-update').checked = config.update === true
+    input('notify-quiet').checked = config.quietHoursEnabled
+    input('notify-quiet-start').value = String(config.quietStart)
+    input('notify-quiet-end').value = String(config.quietEnd)
+    input('notify-urgent-bypass').checked = config.urgentBypassQuiet
+  } catch {
+    // 加载失败不影响其它面板(openDrawer 用 Promise.all 聚合,单面板失败不应拖垮整体)。
+  }
 }
 
 async function saveNotificationConfig(patch: object): Promise<void> {
@@ -452,18 +456,48 @@ async function loadInteractions(): Promise<void> {
         const allow = document.createElement('button')
         allow.className = 'btn btn-sm'
         allow.textContent = '允许'
-        allow.addEventListener('click', async () => { allow.disabled = true; allow.textContent = await API.interactions.respondApproval(item.sessionId, item.approvalId!, 'allowed-once'); await loadInteractions() })
+        allow.addEventListener('click', async () => {
+          allow.disabled = true
+          try {
+            allow.textContent = await API.interactions.respondApproval(item.sessionId, item.approvalId!, 'allowed-once')
+            await loadInteractions()
+          } catch (error) {
+            allow.disabled = false
+            allow.textContent = '允许'
+            S.toast(`应答失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+          }
+        })
         const reject = document.createElement('button')
         reject.className = 'btn btn-sm btn-danger'
         reject.textContent = '拒绝'
-        reject.addEventListener('click', async () => { reject.disabled = true; reject.textContent = await API.interactions.respondApproval(item.sessionId, item.approvalId!, 'rejected'); await loadInteractions() })
+        reject.addEventListener('click', async () => {
+          reject.disabled = true
+          try {
+            reject.textContent = await API.interactions.respondApproval(item.sessionId, item.approvalId!, 'rejected')
+            await loadInteractions()
+          } catch (error) {
+            reject.disabled = false
+            reject.textContent = '拒绝'
+            S.toast(`应答失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+          }
+        })
         row.append(allow, reject)
       } else if (item.kind === 'question' && item.questionId && item.options) {
         item.options.forEach((label, index) => {
           const button = document.createElement('button')
           button.className = 'btn btn-sm'
           button.textContent = `${index + 1}. ${label}`
-          button.addEventListener('click', async () => { button.disabled = true; button.textContent = await API.interactions.respondQuestion(item.sessionId, item.questionId!, index); await loadInteractions() })
+          button.addEventListener('click', async () => {
+            button.disabled = true
+            try {
+              button.textContent = await API.interactions.respondQuestion(item.sessionId, item.questionId!, index)
+              await loadInteractions()
+            } catch (error) {
+              button.disabled = false
+              button.textContent = `${index + 1}. ${label}`
+              S.toast(`回答失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+            }
+          })
           row.appendChild(button)
         })
       }
@@ -633,7 +667,9 @@ async function loadQueue(): Promise<void> {
         cancel.textContent = '取消'
         cancel.addEventListener('click', (event) => {
           event.stopPropagation()
+          cancel.disabled = true
           void API.queue.cancel(item.id).then((result) => { S.toast(result, 'ok'); void loadQueue() })
+            .catch((error: unknown) => { cancel.disabled = false; S.toast(`取消失败:${error instanceof Error ? error.message : String(error)}`, 'error') })
         })
         row.appendChild(cancel)
       } else if (item.status === 'failed' || item.status === 'cancelled') {
@@ -642,7 +678,9 @@ async function loadQueue(): Promise<void> {
         retry.textContent = '重试'
         retry.addEventListener('click', (event) => {
           event.stopPropagation()
+          retry.disabled = true
           void API.queue.retry(item.id).then((result) => { S.toast(result, 'ok'); void loadQueue() })
+            .catch((error: unknown) => { retry.disabled = false; S.toast(`重试失败:${error instanceof Error ? error.message : String(error)}`, 'error') })
         })
         row.appendChild(retry)
       }
@@ -1887,8 +1925,8 @@ async function refreshWebhookEndpoint(): Promise<void> {
 async function loadUpdateInfo(): Promise<void> {
   try {
     const info = await API.updater.getInfo()
-    const hasUpdate = info.latest !== null &&
-      info.latest.split('.').map(Number).join('.') > info.current.split('.').map(Number).join('.')
+    // 是否有新版本由主进程 compareVersions 判定(修复此前字符串比较把 0.1.10 判成不高于 0.1.9)。
+    const hasUpdate = info.hasUpdate === true
     $id('update-info').textContent = hasUpdate
       ? `当前 v${info.current} → 发现新版本 v${info.latest}`
       : `当前版本 v${info.current}${info.checkedAt > 0 ? ' · 已是最新' : ''}`
@@ -2089,29 +2127,39 @@ function bind(): void {
   })
 
   // QQ 机器人
+  const qqConfigFail = (error: unknown): void => {
+    S.toast(`QQ 设置保存失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+    void loadQQConfig()
+  }
   input('qq-enabled').addEventListener('change', async () => {
-    await API.qq.setConfig({ enabled: input('qq-enabled').checked })
-    await loadQQConfig()
+    try {
+      await API.qq.setConfig({ enabled: input('qq-enabled').checked })
+      await loadQQConfig()
+    } catch (error) { qqConfigFail(error) }
   })
   input('qq-appid').addEventListener('change', async () => {
-    await API.qq.setConfig({ appId: input('qq-appid').value.trim() })
+    try { await API.qq.setConfig({ appId: input('qq-appid').value.trim() }) } catch (error) { qqConfigFail(error) }
   })
   input('qq-secret').addEventListener('change', async () => {
-    await API.qq.setConfig({ appSecret: input('qq-secret').value.trim() })
+    try { await API.qq.setConfig({ appSecret: input('qq-secret').value.trim() }) } catch (error) { qqConfigFail(error) }
   })
   input('qq-users').addEventListener('change', async () => {
-    await API.qq.setConfig({ allowedUserIds: input('qq-users').value.trim() })
-    await loadQQConfig()
+    try {
+      await API.qq.setConfig({ allowedUserIds: input('qq-users').value.trim() })
+      await loadQQConfig()
+    } catch (error) { qqConfigFail(error) }
   })
   input('qq-target').addEventListener('change', async () => {
-    await API.qq.setConfig({ defaultTarget: input('qq-target').value.trim() })
+    try { await API.qq.setConfig({ defaultTarget: input('qq-target').value.trim() }) } catch (error) { qqConfigFail(error) }
   })
   input('qq-autochat').addEventListener('change', async () => {
-    await API.qq.setConfig({ autoChat: input('qq-autochat').checked })
+    try { await API.qq.setConfig({ autoChat: input('qq-autochat').checked }) } catch (error) { qqConfigFail(error) }
   })
   input('qq-report').addEventListener('change', async () => {
-    await API.qq.setConfig({ report: input('qq-report').checked })
-    S.toast(input('qq-report').checked ? '已开启主动汇报(完成/失败/审批/提问)' : '已关闭主动汇报', 'ok')
+    try {
+      await API.qq.setConfig({ report: input('qq-report').checked })
+      S.toast(input('qq-report').checked ? '已开启主动汇报(完成/失败/审批/提问)' : '已关闭主动汇报', 'ok')
+    } catch (error) { qqConfigFail(error) }
   })
   $id('usage-multiplier').addEventListener('change', async () => {
     const value = Number(($id('usage-multiplier') as HTMLInputElement).value)
@@ -2308,25 +2356,37 @@ function bind(): void {
   })
 
   // Telegram 机器人
+  const tgConfigFail = (error: unknown): void => {
+    S.toast(`Telegram 设置保存失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+    void loadTelegramConfig()
+  }
   input('tg-enabled').addEventListener('change', async () => {
-    await API.telegram.setConfig({ enabled: input('tg-enabled').checked })
-    await loadTelegramConfig()
+    try {
+      await API.telegram.setConfig({ enabled: input('tg-enabled').checked })
+      await loadTelegramConfig()
+    } catch (error) { tgConfigFail(error) }
   })
   input('tg-token').addEventListener('change', async () => {
-    await API.telegram.setConfig({ token: input('tg-token').value.trim() })
-    await loadTelegramConfig()
+    try {
+      await API.telegram.setConfig({ token: input('tg-token').value.trim() })
+      await loadTelegramConfig()
+    } catch (error) { tgConfigFail(error) }
   })
   input('tg-users').addEventListener('change', async () => {
-    await API.telegram.setConfig({ allowedUserIds: input('tg-users').value.trim() })
-    clearTgBindTimer()
-    await loadTelegramConfig()
+    try {
+      await API.telegram.setConfig({ allowedUserIds: input('tg-users').value.trim() })
+      clearTgBindTimer()
+      await loadTelegramConfig()
+    } catch (error) { tgConfigFail(error) }
   })
   input('tg-autochat').addEventListener('change', async () => {
-    await API.telegram.setConfig({ autoChat: input('tg-autochat').checked })
+    try { await API.telegram.setConfig({ autoChat: input('tg-autochat').checked }) } catch (error) { tgConfigFail(error) }
   })
   input('tg-report').addEventListener('change', async () => {
-    await API.telegram.setConfig({ report: input('tg-report').checked })
-    S.toast(input('tg-report').checked ? '已开启主动汇报(完成/失败/审批/提问)' : '已关闭主动汇报', 'ok')
+    try {
+      await API.telegram.setConfig({ report: input('tg-report').checked })
+      S.toast(input('tg-report').checked ? '已开启主动汇报(完成/失败/审批/提问)' : '已关闭主动汇报', 'ok')
+    } catch (error) { tgConfigFail(error) }
   })
   $id('btn-tg-bind').addEventListener('click', async () => {
     const result = await API.telegram.bindStart()
@@ -2361,8 +2421,7 @@ function bind(): void {
     $id('update-info').textContent = '正在检查更新…'
     try {
       const info = await API.updater.check()
-      const hasUpdate = info.latest !== null &&
-        info.latest.split('.').map(Number).join('.') > info.current.split('.').map(Number).join('.')
+      const hasUpdate = info.hasUpdate === true
       $id('update-info').textContent = hasUpdate
         ? `发现新版本 v${info.latest}(当前 v${info.current})`
         : `已是最新版本 v${info.current}`

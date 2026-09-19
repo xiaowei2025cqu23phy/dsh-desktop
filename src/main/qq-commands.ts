@@ -32,6 +32,7 @@ export type QQCommand =
   | { kind: 'follow'; sessionId: string }
   | { kind: 'nofollow'; sessionId: string }
   | { kind: 'newchat' }
+  | { kind: 'clearqueue' }
   | { kind: 'unknown'; text: string }
 
 /** 定时任务的调度表达(解析结果)。 */
@@ -130,6 +131,9 @@ export function parseCommand(content: string): QQCommand {
   }
   if (parts[0] === '不跟随' || parts[0] === '取消跟随' || parts[0] === 'nofollow' || parts[0] === 'unfollow') {
     return { kind: 'nofollow', sessionId: parts[1] ?? '' }
+  }
+  if (parts[0] === '清队列' || parts[0] === '清理队列' || parts[0] === 'clearqueue') {
+    return { kind: 'clearqueue' }
   }
   if (parts[0] === '停止' || parts[0] === 'cancel') {
     return { kind: 'cancel', sessionId: parts[1] ?? '' }

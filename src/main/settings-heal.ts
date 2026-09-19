@@ -3,23 +3,26 @@
  *
  * 用户在模型设置里新增 provider 时常漏默认字段(streamIdleTimeoutMs /
  * defaultMaxTokens 等),导致「流式超时/链接问题」这类隐形故障。应用启动时
- * 对 llm-pi-ai 下已存在的 provider 补齐缺省值、规范化 baseURL:
+ * 对 llm-pi-ai 下已存在的 openai-completions provider 补齐缺省值、规范化 baseURL:
+ * - 只处理 api === 'openai-completions' 的 provider(不碰其它 api 类型,避免给
+ *   多模态等接口注入不适用字段,如 defaultInput 会破坏多模态能力);
  * - 只补缺失字段,绝不覆盖用户显式配置;
- * - openai-completions 兼容接口的 baseURL 缺 /v1 时自动补上;
+ * - baseURL 缺 /v1 时自动补上;
+ * - ⚠️ 会重写 settings.yaml(js-yaml dump,注释与手写格式会丢失);改写前先备份为
+ *   settings.yaml.bak 以便回滚;
  * - 解析/写入失败静默跳过,不影响应用启动。
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { dump, load } from 'js-yaml'
 
-/** Provider 常用缺省值(与其它 provider 的显式配置对齐)。 */
+/** Provider 常用缺省值(仅用于 openai-completions;与其它 provider 的显式配置对齐)。 */
 const PROVIDER_DEFAULTS: Record<string, { value: unknown; label: string }> = {
   defaultContextWindow: { value: 262144, label: 'defaultContextWindow' },
   defaultMaxTokens: { value: 32768, label: 'defaultMaxTokens' },
   streamIdleTimeoutMs: { value: 300000, label: 'streamIdleTimeoutMs' },
-  defaultInput: { value: ['text'], label: 'defaultInput' },
 }
 
 /** settings.yaml 路径:配置了 DSH 家目录时用它,否则默认 ~/.dsh。 */
@@ -62,8 +65,10 @@ export function healProviderSettings(path: string): { changed: number; messages:
   for (const [name, raw] of Object.entries(providers as Record<string, unknown>)) {
     if (typeof raw !== 'object' || raw === null) continue
     const provider = raw as Record<string, unknown>
-    // 只处理 openai-completions 形态(有 baseURL 的 provider),跳过内部厂家。
+    // 只处理 openai-completions 形态(有 baseURL 的 provider),跳过其它 api 类型——
+    // 其它 api(如多模态接口)不适用 defaultContextWindow/defaultMaxTokens 等字段。
     const api = provider['api'] ?? 'openai-completions'
+    if (api !== 'openai-completions') continue
     const fixes: string[] = []
     for (const [key, def] of Object.entries(PROVIDER_DEFAULTS)) {
       if (provider[key] === undefined) {
@@ -82,6 +87,12 @@ export function healProviderSettings(path: string): { changed: number; messages:
     }
   }
   if (changed === 0) return { changed: 0, messages: [] }
+  try {
+    // 改写前先备份:js-yaml dump 会丢失注释与手写格式,留一份 settings.yaml.bak 供回滚。
+    copyFileSync(path, `${path}.bak`)
+  } catch {
+    // 备份失败(如只读目录)仍继续改写,不阻塞启动。
+  }
   try {
     writeFileSync(path, dump(root, { lineWidth: 120, noRefs: true }), 'utf8')
   } catch (error) {

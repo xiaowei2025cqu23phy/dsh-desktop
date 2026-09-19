@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
 import { createReadStream, readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, statSync, accessSync, constants, statfsSync } from 'node:fs'
-import { dirname, extname, join, resolve, sep, basename } from 'node:path'
+import { dirname, extname, join, resolve, basename } from 'node:path'
 import { app, nativeImage } from 'electron'
 import type { ConfigStore } from './config'
 import type { EventHub } from './event-hub'
@@ -515,7 +515,12 @@ export class RemoteGateway {
     if (!config.pendingDevices.some((device) => device.id === deviceId)) {
       const labelHeader = req.headers['x-dsh-device-label']
       const label = typeof labelHeader === 'string' && labelHeader !== '' ? labelHeader.slice(0, 80) : '未命名设备'
-      this.config.update('remote', { pendingDevices: [...config.pendingDevices, { id: deviceId, label, address, requestedAt: Date.now(), lastSeenAt: Date.now() }] })
+      // 待批准设备列表设上限:防止恶意/反复连接无限累积;超出时按时间戳淘汰最旧。
+      const MAX_PENDING_DEVICES = 32
+      const nextPending = [...config.pendingDevices, { id: deviceId, label, address, requestedAt: Date.now(), lastSeenAt: Date.now() }]
+        .sort((a, b) => b.requestedAt - a.requestedAt)
+        .slice(0, MAX_PENDING_DEVICES)
+      this.config.update('remote', { pendingDevices: nextPending })
       this.auditRemote(req, `新设备请求批准:${label}`)
       this.onPendingDevice?.({ id: deviceId, label, address })
     }
@@ -615,8 +620,28 @@ export class RemoteGateway {
       return
     }
     const ticket = randomBytes(24).toString('hex')
+    this.pruneExpiredTickets()
     this.sseTickets.set(ticket, { deviceId: device.slice(0, 120), expiresAt: Date.now() + 60_000 })
     this.json(res, 200, { ok: true, ticket })
+  }
+
+  /** 清理过期的 SSE/媒体 ticket,并给 ticket 表设上限(防止未使用的 ticket 无限累积)。 */
+  private pruneExpiredTickets(): void {
+    const now = Date.now()
+    for (const [key, value] of this.sseTickets) {
+      if (now >= value.expiresAt) this.sseTickets.delete(key)
+    }
+    for (const [key, value] of this.mediaTickets) {
+      if (now >= value.expiresAt) this.mediaTickets.delete(key)
+    }
+    const cap = 1000
+    for (const map of [this.sseTickets, this.mediaTickets]) {
+      while (map.size > cap) {
+        const oldest = map.keys().next().value as string | undefined
+        if (oldest === undefined) break
+        map.delete(oldest)
+      }
+    }
   }
 
   private async handleRpc(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -977,10 +1002,17 @@ export class RemoteGateway {
 
   // ---- 手机端文件夹浏览与预设根管理(只读白名单:工作区路径 + 预设根) ----
 
+  /** 路径规范化:Windows 大小写不敏感 + 统一分隔符(与 remote-commands 的 norm 一致)。 */
+  private normPath(p: string): string {
+    return process.platform === 'win32' ? p.replace(/\\/g, '/').toLowerCase() : p.replace(/\\/g, '/')
+  }
+
   /** 目标路径是否在某个工作区路径或预设根目录之下。 */
   private async fsAllowed(target: string): Promise<boolean> {
     if (target === '') return false
-    const normalized = resolve(target)
+    // 大小写不敏感归一化:Windows 上 C:\Users\ME\PROJ\x 与 C:\Users\me\proj 应视为同一路径,
+    // 否则会把合法的大小写差异误判为越权拒绝。
+    const normalized = this.normPath(resolve(target))
     let roots = this.presetRoots()
     try {
       const client = this.harness.client()
@@ -990,8 +1022,8 @@ export class RemoteGateway {
       // workspace.list 失败时仍允许预设根下的路径。
     }
     for (const root of roots) {
-      const r = resolve(root)
-      if (normalized === r || normalized.startsWith(r + sep)) return true
+      const r = this.normPath(resolve(root))
+      if (normalized === r || normalized.startsWith(r + '/')) return true
     }
     return false
   }
@@ -1220,6 +1252,7 @@ export class RemoteGateway {
     const device = req.headers['x-dsh-device']
     const deviceId = typeof device === 'string' && device !== '' ? device.slice(0, 120) : ''
     const ticket = randomBytes(24).toString('hex')
+    this.pruneExpiredTickets()
     this.mediaTickets.set(ticket, { deviceId, path, expiresAt: Date.now() + RemoteGateway.MEDIA_TICKET_TTL_MS })
     this.json(res, 200, { ok: true, ticket })
   }
@@ -1344,8 +1377,8 @@ export class RemoteGateway {
       this.json(res, 400, { error: 'root and name required' })
       return
     }
-    const normalizedRoot = resolve(root)
-    if (!this.presetRoots().includes(normalizedRoot)) {
+    const normalizedRoot = this.normPath(resolve(root))
+    if (!this.presetRoots().some((r) => this.normPath(resolve(r)) === normalizedRoot)) {
       this.json(res, 403, { error: 'root is not in preset workspace roots' })
       return
     }
@@ -1353,22 +1386,23 @@ export class RemoteGateway {
       this.json(res, 400, { error: 'invalid folder name' })
       return
     }
-    const target = resolve(join(normalizedRoot, name))
-    // 双重校验:解析后的目标必须仍在预设根目录之下。
-    if (target !== normalizedRoot && !target.startsWith(normalizedRoot + sep)) {
+    const realTarget = resolve(join(resolve(root), name))
+    // 双重校验:解析后的目标必须仍在预设根目录之下(大小写不敏感)。
+    const targetNorm = this.normPath(realTarget)
+    if (targetNorm !== normalizedRoot && !targetNorm.startsWith(normalizedRoot + '/')) {
       this.json(res, 403, { error: 'path escapes preset root' })
       return
     }
     try {
-      mkdirSync(target, { recursive: true })
+      mkdirSync(realTarget, { recursive: true })
     } catch (error) {
       this.json(res, 500, { error: `mkdir failed: ${error instanceof Error ? error.message : String(error)}` })
       return
     }
     const client = this.harness.client()
     try {
-      const created = await client.rpc<{ workspaceId: string }>('workspace.create', { path: target }, 30000)
-      this.json(res, 200, { ok: true, workspaceId: created.workspaceId, path: target })
+      const created = await client.rpc<{ workspaceId: string }>('workspace.create', { path: realTarget }, 30000)
+      this.json(res, 200, { ok: true, workspaceId: created.workspaceId, path: realTarget })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       // 目录已建但注册失败:保留目录,报错由前端提示。
@@ -1547,8 +1581,12 @@ export class RemoteGateway {
       if (res.destroyed) return
       res.write(`data: ${JSON.stringify(frame)}\n\n`)
     })
+    // SSE 心跳:每 15s 发一行注释 ping,防止中间代理/手机休眠静默关闭半开连接(客户端据此判断连接存活)。
+    const heartbeat = setInterval(() => {
+      if (!res.destroyed) res.write(': ping\n\n')
+    }, 15_000)
     // entry.unsubscribe 是幂等的收尾函数:连接自然关闭(req close/error)与主动断开(disconnectAllSse)
-    // 都会调用它,保证 EventHub 订阅只退订一次、activeSse 不残留。
+    // 都会调用它,保证 EventHub 订阅只退订一次、activeSse 不残留、心跳定时器被清除。
     const entry: { res: ServerResponse; unsubscribe: () => void; deviceId: string } = {
       res,
       deviceId,
@@ -1558,6 +1596,7 @@ export class RemoteGateway {
     entry.unsubscribe = (): void => {
       if (cleaned) return
       cleaned = true
+      clearInterval(heartbeat)
       unsubscribe()
       this.activeSse.delete(entry)
     }

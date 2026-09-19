@@ -306,8 +306,8 @@ interface DesktopApi {
     quit(): Promise<void>
   }
   updater: {
-    getInfo(): Promise<{ current: string; latest: string | null; url: string | null; checkedAt: number }>
-    check(): Promise<{ current: string; latest: string | null; url: string | null; checkedAt: number }>
+    getInfo(): Promise<{ current: string; latest: string | null; url: string | null; checkedAt: number; hasUpdate: boolean }>
+    check(): Promise<{ current: string; latest: string | null; url: string | null; checkedAt: number; hasUpdate: boolean }>
     getConfig(): Promise<{ autoCheck: boolean }>
     setConfig(patch: { autoCheck?: boolean }): Promise<{ autoCheck: boolean }>
     openRelease(): Promise<void>

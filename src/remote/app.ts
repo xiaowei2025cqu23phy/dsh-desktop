@@ -258,6 +258,18 @@
     })
   }
 
+  /** 把 msgLog 与 DOM 同时窗口化到 CACHE_MAX_MSGS 条,防止长对话内存/DOM 无限增长。 */
+  function trimMsgWindow() {
+    if (state.msgLog.length <= CACHE_MAX_MSGS) return
+    var excess = state.msgLog.length - CACHE_MAX_MSGS
+    state.msgLog = state.msgLog.slice(excess)
+    var els = $('chat-stream').querySelectorAll('.msg')
+    for (var i = 0; i < excess && i < els.length; i++) {
+      var parent = els[i].parentNode
+      if (parent) parent.removeChild(els[i])
+    }
+  }
+
   function appendMessage(kind, text, images) {
     var stream = $('chat-stream')
     hideEmpty(true)
@@ -275,6 +287,7 @@
       renderImagesInto(el, images, stream)
     }
     state.msgLog.push(entry)
+    trimMsgWindow()
     scrollToBottom()
     return el
   }
@@ -298,6 +311,7 @@
     })
     stream.appendChild(el)
     state.msgLog.push({ kind: 'tool', text: name + ' 调用中' })
+    trimMsgWindow()
     scrollToBottom()
     return el
   }
@@ -332,7 +346,8 @@
     last.text += delta
     var el = lastAssistantEl()
     if (el) {
-      ;(el as any)._textNode.textContent = last.text
+      // 只追加新增 delta(appendData),而非重写整个文本节点——否则每个 token 都 O(n) 重写全文。
+      ;(el as any)._textNode.appendData(delta)
       el.classList.add('cursor-blink')
     }
     scrollToBottom()
@@ -413,8 +428,10 @@
   var esDelay = 1000
   var esAttempts = 0
   var reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  var esWatchdog: ReturnType<typeof setTimeout> | null = null
   var eventsGeneration = 0
   var eventsWasDisconnected = false
+  var historyGeneration = 0
   function scheduleEventsReconnect(generation) {
     if (generation !== eventsGeneration || reconnectTimer !== null) return
     setConnDot(false)
@@ -437,6 +454,10 @@
       clearTimeout(reconnectTimer)
       reconnectTimer = null
     }
+    if (esWatchdog !== null) {
+      clearTimeout(esWatchdog)
+      esWatchdog = null
+    }
     if (state.es) {
       try { state.es.close() } catch (e) { /* 忽略 */ }
       state.es = null
@@ -453,6 +474,20 @@
       }
       var es = new EventSource(state.server + '/api/events?ticket=' + encodeURIComponent(data.ticket))
       state.es = es
+      // 看门狗:45 秒无任何 data 帧即强制重连——手机休眠会造成半开连接(不触发 onerror,
+      // 绿灯常亮却收不到数据);服务端每 15s 发心跳注释行,但注释行不触发 onmessage,故用时长兜底。
+      var armWatchdog = function () {
+        if (esWatchdog !== null) clearTimeout(esWatchdog)
+        esWatchdog = setTimeout(function () {
+          esWatchdog = null
+          if (generation !== eventsGeneration) return
+          eventsWasDisconnected = true
+          try { es.close() } catch (e) { /* 忽略 */ }
+          if (state.es === es) state.es = null
+          scheduleEventsReconnect(generation)
+        }, 45000)
+      }
+      armWatchdog()
       es.onopen = function () {
         if (generation !== eventsGeneration) return
         setConnDot(true)
@@ -468,6 +503,7 @@
       }
       es.onerror = function () {
         if (generation !== eventsGeneration) return
+        if (esWatchdog !== null) { clearTimeout(esWatchdog); esWatchdog = null }
         eventsWasDisconnected = true
         try { es.close() } catch (e) { /* 忽略 */ }
         if (state.es === es) state.es = null
@@ -477,6 +513,7 @@
         if (generation !== eventsGeneration) return
         var frame
         try { frame = JSON.parse(event.data) } catch (e) { return }
+        armWatchdog()
         handleFrame(frame)
       }
     }).catch(function () {
@@ -766,6 +803,8 @@
   function openSession(sessionId, cwd) {
     // 切换会话前,把上一个会话的缓存立即落盘(防抖窗口内的增量不丢、不串会话)。
     if (state.sessionId !== null && state.sessionId !== sessionId) flushCacheNow()
+    // 会话代数:连点会话时,先发后到的历史响应会清空新会话;用代数守卫丢弃过期响应。
+    var myGen = ++historyGeneration
     state.sessionId = sessionId
     state.currentWsPath = cwd || state.currentWsPath
     state.currentWsId = findWorkspaceId(state.currentWsPath)
@@ -791,6 +830,7 @@
     // 历史加载带重试:桌面端服务重启/网关瞬时不可达时自动再试,避免一失败就停留在错误态。
     var loadHistory = function (attempt: number): void {
       apiRpc('session.history', { sessionId: sessionId, maxMessages: 40 }).then(function (data) {
+        if (myGen !== historyGeneration) return
         state.lastSeq = 0
         state.msgLog = []
         $('chat-stream').querySelectorAll('.msg').forEach(function (el) { el.remove() })
@@ -806,6 +846,7 @@
         // 恢复该会话未决的审批/提问卡片(切回会话时仍可应答)
         renderPendingCards(sessionId)
       }).catch(function (err) {
+        if (myGen !== historyGeneration) return
         // 诊断上报:把浏览器侧的真实错误送回桌面端审计(本地排查用,不打扰用户)。
         try {
           fetch(state.server + '/api/diag', {
@@ -1994,7 +2035,7 @@
       .replace(/^## (.+)$/gm, '<h3>$1</h3>')
       .replace(/^# (.+)$/gm, '<h2>$1</h2>')
       .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
-      .replace(/```([\\s\\S]*?)```/g, '<pre class="md-code">$1</pre>')
+      .replace(/```([\s\S]*?)```/g, '<pre class="md-code">$1</pre>')
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/(?:\r?\n){2,}/g, '<br /><br />')
