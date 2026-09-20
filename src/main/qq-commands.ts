@@ -42,7 +42,7 @@ export type SchedDelay =
 
 /**
  * 解析 QQ 白名单(逗号分隔 openid)为规范化集合。
- * 与 Telegram 的 allowedUserIds 同语义:留空 = 锁定。
+ * 留空 = 不限制(见 qqUserAllowed)。
  */
 export function parseAllowedUserIds(raw: string): Set<string> {
   return new Set(
@@ -54,12 +54,21 @@ export function parseAllowedUserIds(raw: string): Set<string> {
 }
 
 /**
- * 判断某 openid 是否在白名单内;白名单为空 = 锁定(拒绝所有人)。
- * 私聊消息与按钮点击的入口守卫共用此判定,保证「留空即锁定」与「只服务白名单」一致。
+ * 判断某 openid 是否被允许使用机器人。
+ *
+ * - 无身份(`userId` 为空,如群内按钮回调只带 group_openid)→ 一律拒绝:
+ *   无法确认点击者是谁时绝不猜测归属。
+ * - 白名单留空 → 放行。QQ 开放平台的 openid 识别需要企业主体,个人主体拿不到自己的
+ *   openid,若留空即锁死则机器人对普通用户永远不可用;此时的访问控制落在平台侧
+ *   (关闭机器人「允许被添加为好友」,见 QQBotConfig.acknowledgedFriendSetting)。
+ * - 白名单已配置 → 只放行名单内的 openid。
+ *
+ * 私聊消息与按钮点击的入口守卫共用此判定。
  */
 export function qqUserAllowed(allowedUserIds: string, userId: string): boolean {
+  if (userId === '') return false
   const list = parseAllowedUserIds(allowedUserIds)
-  if (list.size === 0) return false
+  if (list.size === 0) return true
   return list.has(userId)
 }
 

@@ -1724,9 +1724,16 @@ async function renderQr(): Promise<void> {
 
 // ---- QQ 机器人 ----
 
+/**
+ * 是否已确认在 QQ 开放平台关闭机器人的「允许被添加为好友」。
+ * 未确认时不允许开启 QQ 通道:白名单留空 = 不限制任何人,平台侧开关是唯一访问控制。
+ */
+let qqFriendSettingAcknowledged = false
+
 async function loadQQConfig(): Promise<void> {
   try {
     const config = await API.qq.getConfig()
+    qqFriendSettingAcknowledged = config.acknowledgedFriendSetting === true
     input('qq-enabled').checked = config.enabled
     input('qq-appid').value = config.appId
     input('qq-secret').value = config.appSecret
@@ -1743,9 +1750,10 @@ async function loadQQConfig(): Promise<void> {
     if (!config.enabled || !config.appId) {
       lines.push(config.enabled && !config.appId ? '⚠️ 已启用但凭据为空:请填写 AppID/AppSecret' : '')
     } else if (diag.locked) {
-      lines.push('🔒 锁定:未配置「允许的用户 openid」,机器人不服务任何聊天。填入本人 openid 后自动解锁')
+      lines.push('🔒 门禁未就绪:尚未确认 QQ 开放平台已关闭「允许被添加为好友」,机器人不启动。点上面的开关重新确认')
     } else if (diag.connected) {
-      lines.push(`✓ 已连接 QQ${time !== '' ? `(${time})` : ''}(仅服务白名单用户)`)
+      const scope = diag.restricted ? '仅服务白名单用户' : '白名单留空:所有能发消息给机器人的人都会被服务'
+      lines.push(`✓ 已连接 QQ${time !== '' ? `(${time})` : ''}(${scope})`)
     } else {
       lines.push('⚠️ QQ 未连接(凭据错误、网络不通或连接断开;看服务日志)')
     }
@@ -2146,9 +2154,31 @@ function bindQQ(): void {
     void loadQQConfig()
   }
   input('qq-enabled').addEventListener('change', async () => {
+    const wanted = input('qq-enabled').checked
+    // 首次开启:先强制确认平台侧已关闭「允许被添加为好友」——白名单留空时这是唯一的访问控制。
+    if (wanted && !qqFriendSettingAcknowledged) {
+      input('qq-enabled').checked = false
+      $id('qq-gate').classList.remove('hidden')
+      return
+    }
     try {
-      await API.qq.setConfig({ enabled: input('qq-enabled').checked })
+      await API.qq.setConfig({ enabled: wanted })
       await loadQQConfig()
+    } catch (error) { qqConfigFail(error) }
+  })
+  const closeQQGate = (): void => $id('qq-gate').classList.add('hidden')
+  $id('qg-close').addEventListener('click', closeQQGate)
+  $id('qg-cancel').addEventListener('click', closeQQGate)
+  $id('qq-gate').addEventListener('click', (event) => {
+    if (event.target === $id('qq-gate')) closeQQGate()
+  })
+  $id('qg-confirm').addEventListener('click', async () => {
+    closeQQGate()
+    try {
+      await API.qq.setConfig({ enabled: true, acknowledgedFriendSetting: true })
+      qqFriendSettingAcknowledged = true
+      await loadQQConfig()
+      S.toast('QQ 机器人已启用', 'ok')
     } catch (error) { qqConfigFail(error) }
   })
   input('qq-appid').addEventListener('change', async () => {
@@ -2240,6 +2270,7 @@ function bindWorkbench(): void {
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return
     if (!$id('device-approve').classList.contains('hidden')) { $id('device-approve').classList.add('hidden'); return }
+    if (!$id('qq-gate').classList.contains('hidden')) { $id('qq-gate').classList.add('hidden'); return }
     if (!$id('activity-detail').classList.contains('hidden')) { $id('activity-detail').classList.add('hidden'); return }
     if (!$id('drawer').classList.contains('hidden')) closeDrawer()
   })

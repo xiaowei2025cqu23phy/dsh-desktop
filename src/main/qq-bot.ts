@@ -57,8 +57,16 @@ export interface QQDiagState {
   connected: boolean
   /** 连接就绪时间(ms);从未连上为 null。 */
   readyAt: number | null
-  /** 锁定中:已配置凭据但「允许的用户 openid」为空,不服务任何人。 */
+  /**
+   * 门禁未就绪:已配置凭据,但尚未确认在 QQ 开放平台关闭了「允许被添加为好友」,
+   * 机器人不启动、不服务任何聊天。
+   */
   locked: boolean
+  /**
+   * 白名单是否已配置。false = 不限制(放行所有能发消息的人),此时平台侧好友开关
+   * 是唯一访问控制;true = 只服务名单内 openid。
+   */
+  restricted: boolean
   /** 最近一次失败(发送成功后清除);null = 最近无失败。 */
   lastError: { at: number; action: string; detail: string; hint: string } | null
   /** 最近被拒绝的 openid(未在白名单;桌面端设置里可看到,方便把本人 openid 加入白名单)。 */
@@ -123,12 +131,13 @@ export class QQBotAdapter {
   diag(): QQDiagState {
     const config = this.getConfig()
     const configured = config.enabled && config.appId.trim() !== '' && config.appSecret.trim() !== ''
-    const unlocked = (config.allowedUserIds ?? '').trim() !== ''
     return {
       configured,
       connected: this.started,
       readyAt: this.readyAt,
-      locked: configured && !unlocked,
+      // 留空 = 不限,门禁落在平台侧的好友开关上;未确认即不服务。
+      locked: configured && config.acknowledgedFriendSetting !== true,
+      restricted: (config.allowedUserIds ?? '').trim() !== '',
       lastError: this.lastError,
       deniedUsers: [...this.deniedUsers],
     }
@@ -214,10 +223,11 @@ export class QQBotAdapter {
       console.log('[qq-bot] 未配置或未启用,跳过')
       return
     }
-    if ((config.allowedUserIds ?? '').trim() === '') {
-      // 安全锁定:凭据已配置但「允许的用户 openid」为空,保持连接但拒绝服务任何消息
-      // (不解析指令、不创建会话),仅记录被拒 openid 供桌面端主人填入白名单。
-      console.log('[qq-bot] 安全锁定:未配置「允许的用户 openid」,机器人不服务任何聊天。请在桌面端设置中填入本人 openid(被拒消息会在设置页显示)')
+    if (config.acknowledgedFriendSetting !== true) {
+      // 门禁未就绪:凭据已配置但尚未确认平台侧已关闭「允许被添加为好友」。
+      // 白名单留空时这是唯一可用的访问控制,没确认就不启动(桌面端首次启用会强制确认)。
+      console.log('[qq-bot] 门禁未就绪:尚未确认 QQ 开放平台已关闭「允许被添加为好友」,机器人不启动。请在桌面端 设置 → QQ 机器人 中确认')
+      return
     }
     this.started = false
     this.readyAt = null
@@ -632,7 +642,7 @@ export class QQBotAdapter {
     }
   }
 
-  /** 该 openid 是否被允许使用机器人(私聊 = 完整指令集,必须白名单)。 */
+  /** 该 openid 是否被允许使用机器人(私聊 = 完整指令集,受白名单门禁约束)。 */
   private userAllowed(userId: string): boolean {
     return qqUserAllowed(this.getConfig().allowedUserIds ?? '', userId)
   }
@@ -643,7 +653,7 @@ export class QQBotAdapter {
     const record = msg as { content?: unknown; replyTarget?: unknown; author?: unknown; attachments?: unknown }
     const content = typeof record.content === 'string' ? record.content.trim() : ''
     const userId = this.senderId(record)
-    // 白名单门禁:留空 = 锁定(不服务任何聊天);已配置 = 只服务白名单内 openid。
+    // 白名单门禁:留空 = 不限制;已配置 = 只服务白名单内 openid。
     // 未授权用户静默忽略,不解析指令、不创建会话,只写入审计与自检(便于主人把本人 openid 加入白名单)。
     if (!this.userAllowed(userId)) {
       this.rememberDenied(userId)

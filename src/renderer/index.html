@@ -416,13 +416,15 @@
           <input id="qq-secret" type="password" placeholder="机器人密钥" />
         </div>
         <div class="field">
-          <label for="qq-users">允许的用户 openid(必填,只填你自己的;留空 = 锁定,机器人不服务任何人)</label>
-          <input id="qq-users" type="text" placeholder="例如 1A2B3C…(被拒消息的 openid 会在下方状态显示)" />
+          <label for="qq-users">允许的用户 openid(可选;留空 = 不限制,填了就只服务名单内的人)</label>
+          <input id="qq-users" type="text" placeholder="例如 1A2B3C…(自己发一条消息,被拒的 openid 会显示在下方状态里)" />
+          <span class="hint">openid 识别需要 QQ 开放平台企业主体;个人主体留空即可,访问控制由平台侧的「允许被添加为好友」开关承担。</span>
         </div>
         <div class="field-row">
           <button id="btn-qq-onboard" class="btn">扫码登录(自动获取凭据)</button>
           <button id="btn-qq-onboard-cancel" class="btn hidden">取消</button>
         </div>
+        <span class="hint">扫码绑定走的是 QQ 开放平台的企业主体能力,个人主体可能提示不支持或拿不到 openid——此时直接在 q.qq.com 复制 AppID/AppSecret 填入上方两项即可,不影响使用。</span>
         <div id="qq-onboard-area" class="hidden">
           <img id="qq-onboard-qr" alt="QQ 扫码" style="width:200px;height:200px;border-radius:10px;background:#fff;padding:6px;" />
           <p id="qq-onboard-status" class="hint">请用手机 QQ 扫描二维码,并在手机端确认绑定</p>
@@ -628,6 +630,26 @@
       <div class="field-row">
         <button id="da-allow" class="btn btn-primary">允许连接</button>
         <button id="da-reject" class="btn btn-danger">拒绝</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- QQ 机器人访问控制确认(首次启用时强制) -->
+  <div id="qq-gate" class="modal hidden">
+    <div class="modal-box">
+      <div class="we-head">
+        <h3>🔒 启用前请确认平台侧设置</h3>
+        <button id="qg-close" class="btn btn-ghost">✕</button>
+      </div>
+      <div class="hint" style="margin:12px 0;font-size:13px;line-height:1.9">
+        <p>QQ 机器人私聊等于<b>用 QQ 远程操控这台电脑</b>(跑任务、读写工作区、应答审批)。</p>
+        <p style="margin-top:8px">QQ 开放平台的 openid 识别需要<b>企业主体</b>,个人主体拿不到自己的 openid,所以「允许的用户 openid」留空时<b>不限制任何人</b>。此时唯一的访问控制是平台侧:</p>
+        <p style="margin-top:8px">请先到 <b>q.qq.com → 你的机器人 → 功能配置</b>,关闭 <b>「允许被添加为好友」</b>,只保留由你本人把机器人加为好友 / 拉进群。</p>
+        <p style="margin-top:8px">确认后再启用;没做这一步,任何能加上这个机器人的人都能指挥你的电脑。</p>
+      </div>
+      <div class="field-row">
+        <button id="qg-confirm" class="btn btn-primary">我已在平台侧关闭「允许被添加为好友」,启用</button>
+        <button id="qg-cancel" class="btn">取消</button>
       </div>
     </div>
   </div>

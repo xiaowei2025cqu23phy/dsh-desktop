@@ -102,9 +102,10 @@ function botHealthLines(qqBot: QQBotAdapter | null, telegramBot: TelegramBotAdap
     if (!q.configured) {
       lines.push('🤖 QQ 机器人:未启用(设置 → QQ 机器人填入凭据)')
     } else if (q.locked) {
-      lines.push('🤖 QQ 机器人:🔒 锁定(未填「允许的用户 openid」,不服务任何聊天;设置页可查看被拒 openid 并填入)')
+      lines.push('🤖 QQ 机器人:🔒 门禁未就绪(尚未确认 QQ 开放平台已关闭「允许被添加为好友」,不启动;设置页重新确认)')
     } else if (q.connected) {
-      lines.push(`🤖 QQ 机器人:✓ 已连接${q.readyAt !== null ? `(${fmt(q.readyAt)})` : ''}(仅服务白名单用户)`)
+      const scope = q.restricted ? '仅服务白名单用户' : '白名单留空:所有能发消息给机器人的人都会被服务'
+      lines.push(`🤖 QQ 机器人:✓ 已连接${q.readyAt !== null ? `(${fmt(q.readyAt)})` : ''}(${scope})`)
     } else {
       lines.push('🤖 QQ 机器人:⚠️ 未连接(见下方最近失败;仍无头绪看服务日志)')
     }

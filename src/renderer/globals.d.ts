@@ -80,6 +80,7 @@ interface QQConfigView {
   appId: string
   appSecret: string
   allowedUserIds: string
+  acknowledgedFriendSetting: boolean
   defaultTarget: string
   autoChat: boolean
   report: boolean
@@ -89,7 +90,10 @@ interface QQDiagView {
   configured: boolean
   connected: boolean
   readyAt: number | null
+  /** 门禁未就绪:尚未确认平台侧已关闭「允许被添加为好友」,机器人不启动。 */
   locked: boolean
+  /** 白名单是否已配置;false = 留空不限制。 */
+  restricted: boolean
   lastError: { at: number; action: string; detail: string; hint: string } | null
   deniedUsers: Array<{ id: string; at: number }>
 }

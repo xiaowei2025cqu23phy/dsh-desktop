@@ -146,13 +146,17 @@ check('扮演-设定', parseCommand('扮演 你是温柔的英语老师'), { kin
 check('character-设定', parseCommand('character 你是侦探'), { kind: 'character', text: '你是侦探' })
 check('角色-空', parseCommand('角色'), { kind: 'character', text: '' })
 
-// QQ 白名单门禁(留空 = 锁定,不服务任何人;与 Telegram 同语义)
-check('QQ白名单-空即锁定', qqUserAllowed('', 'OPENID_1'), false)
-check('QQ白名单-空串空格即锁定', qqUserAllowed('  , , ', 'OPENID_1'), false)
+// QQ 白名单门禁:留空 = 不限制(QQ 开放平台的 openid 识别需企业主体,个人主体拿不到
+// 自己的 openid;留空时的访问控制落在平台侧「允许被添加为好友」开关上),已配置 = 只放行名单内。
+check('QQ白名单-留空不限制', qqUserAllowed('', 'OPENID_1'), true)
+check('QQ白名单-空串空格不限制', qqUserAllowed('  , , ', 'OPENID_1'), true)
 check('QQ白名单-命中', qqUserAllowed('OPENID_1,OPENID_2', 'OPENID_1'), true)
 check('QQ白名单-未命中', qqUserAllowed('OPENID_1,OPENID_2', 'OPENID_9'), false)
 check('QQ白名单-去空格', qqUserAllowed(' OPENID_1 , OPENID_2 ', 'OPENID_2'), true)
 check('QQ白名单-群共享身份不越权', qqUserAllowed('OPENID_1', 'g:GROUP_9'), false)
+// 无身份一律拒绝:留空不限制也不放行「不知道是谁」的点击(群按钮回调不携带 user_openid)。
+check('QQ白名单-无身份且留空仍拒绝', qqUserAllowed('', ''), false)
+check('QQ白名单-无身份且已配置仍拒绝', qqUserAllowed('OPENID_1', ''), false)
 
 // 群按钮回调身份解析:只带 group_openid 时不猜测私聊身份(否则会误归给无关私聊用户)。
 check('群按钮-不猜测私聊身份', resolveInteractionIdentity({ group_openid: 'GROUP_9', data: { resolved: { button_data: 'dsh-approve|s1|a1|allowed-once' } } }), { userId: '', groupOpenid: 'GROUP_9' })

@@ -144,10 +144,22 @@ export interface QQBotConfig {
   /** QQ 开放平台机器人 AppSecret。 */
   appSecret: string
   /**
-   * 允许的用户 openid(逗号分隔)。**留空 = 锁定**:机器人不服务任何聊天、不执行任何指令
-   * (私聊等于远程操控电脑,只允许桌面端主人自己的 openid;与 Telegram 同语义)。
+   * 允许的用户 openid(逗号分隔)。**留空 = 不限制**(放行所有能发消息给机器人的人)。
+   *
+   * QQ 开放平台的 openid 识别需要企业主体,个人主体拿不到自己的 openid,若留空即锁死
+   * 则机器人对普通用户永远不可用。因此留空时的访问控制落在平台侧——必须关闭机器人的
+   * 「允许被添加为好友」,见 acknowledgedFriendSetting。
+   * 已配置 = 只放行名单内的 openid,其余静默忽略并记入审计/自检。
    */
   allowedUserIds: string
+  /**
+   * 是否已确认在 QQ 开放平台关闭了机器人的「允许被添加为好友」。
+   *
+   * 这是 QQ 通道对普通用户(个人主体)唯一可用的访问控制:只有电脑主人能把机器人
+   * 加入好友/群,陌生人无法主动私聊。未确认时机器人不启动服务,桌面端首次启用 QQ
+   * 时会强制确认一次。
+   */
+  acknowledgedFriendSetting: boolean
   /**
    * QQ 任务默认工作区/目录:任务命令未指定 @工作区 或 目录: 时使用。
    * 填目录路径(含 / 或 \)按 cwd 处理,否则按工作区标题/ID 匹配。
@@ -376,6 +388,7 @@ const DEFAULTS: AppConfig = {
     appId: '',
     appSecret: '',
     allowedUserIds: '',
+    acknowledgedFriendSetting: false,
     defaultTarget: '',
     autoChat: false,
     report: false,
@@ -457,6 +470,12 @@ export class ConfigStore {
       }
       if (config.appearance.screensaver.path === null && typeof legacy.screensaverWallpaper === 'string') {
         config.appearance.screensaver.path = legacy.screensaverWallpaper
+      }
+      // 兼容新增的 QQ 平台侧确认标记:老配置文件没有该字段时,已启用 QQ 的视为已确认
+      // (此前启用必须自行配置白名单,属已做过的显式决策),未启用的留 false —— 等其首次
+      // 启用时走强制确认引导。老配置写回后该字段即固化,不再走本分支。
+      if (!('acknowledgedFriendSetting' in (raw.qq ?? {}))) {
+        config.qq.acknowledgedFriendSetting = raw.qq?.enabled === true
       }
       // 兼容损坏的数组分区(旧 bug 把数组存成 {0:...} 对象)。
       if (config.scheduledTasks !== null && typeof config.scheduledTasks === 'object' && !Array.isArray(config.scheduledTasks)) {
