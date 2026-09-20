@@ -20,9 +20,9 @@
         "smoke": "node scripts/smoke.mjs",
         "lint": "eslint .",
         "test": "node scripts/qq-commands-test.mjs && node scripts/rpc-protocol-test.mjs && node scripts/approval-flow-test.mjs && node scripts/task-queue-test.mjs && node scripts/db-test.mjs && node scripts/gateway-stop-test.mjs",
-        "pack": "npm run build && electron-builder --win nsis zip",
-        "pack:portable": "npm run build && electron-builder --win portable",
-        "pack:zip": "npm run build && electron-builder --win zip"
+        "pack": "npm run build && node scripts/prune-electron-dist.mjs && electron-builder --win nsis zip",
+        "pack:portable": "npm run build && node scripts/prune-electron-dist.mjs && electron-builder --win portable",
+        "pack:zip": "npm run build && node scripts/prune-electron-dist.mjs && electron-builder --win zip"
     },
     "build": {
         "appId": "ai.deepseek.harness.desktop",
