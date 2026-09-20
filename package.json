@@ -27,6 +27,7 @@
     "build": {
         "appId": "ai.deepseek.harness.desktop",
         "productName": "DeepSeek Harness Desktop",
+        "electronDist": "node_modules/electron/dist",
         "directories": {
             "output": "release"
         },
