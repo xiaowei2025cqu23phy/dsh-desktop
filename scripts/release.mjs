@@ -42,7 +42,8 @@ function run(cmd, opts = {}) {
 
   // 4. 上传资产(electron-builder 输出到 release/ 目录)。
   const setup = `release/DeepSeek-Harness-Desktop-Setup-${version}.exe`
-  const zip = `release/DeepSeek Harness Desktop-${version}-win.zip`
+  // 免安装版资产名与 README / 既有 Release 资产保持一致(点号,非 electron-builder 默认空格名)
+  const zip = `release/DeepSeek.Harness.Desktop-${version}-win.zip`
   run(`gh release upload ${tag} -R ${REPO} "${setup}" "${zip}" --clobber`)
 
   console.log(`

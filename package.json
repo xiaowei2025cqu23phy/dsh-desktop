@@ -63,7 +63,8 @@
                 "nsis",
                 "zip"
             ],
-            "icon": "assets/icon.png"
+            "icon": "assets/icon.png",
+            "artifactName": "DeepSeek.Harness.Desktop-${version}-win.${ext}"
         },
         "nsis": {
             "oneClick": false,
