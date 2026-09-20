@@ -175,12 +175,16 @@ Then use it in automations/scripts: `service: rest_command.dsh_command` with `co
 
 **中文**
 - 令牌等同于电脑控制权,请勿泄露;在「设置 → 远程访问」可随时重新生成(旧令牌立即失效)。
-- 控制权在桌面端:可一键**暂停**全部连接、对单个设备**暂停/拉黑**(被拉黑设备令牌正确也拒绝),锁屏/睡眠自动暂停(可在设置关闭)。
+- **`/api/command` 只校验令牌,不走设备审批**:脚本/钉钉/飞书等拿到令牌即可直接发指令,不会进入「待批准设备」队列。设备审批针对的是手机 PWA 的浏览器会话;换句话说,**任何拿到令牌的人都能远程操控这台电脑**——不要把令牌写进会泄露的脚本、CI 变量或公开仓库。
+- 控制权在桌面端:可一键**暂停**全部连接(立即断开已建立的连接)、对单个设备**暂停/拉黑**(被拉黑设备令牌正确也拒绝),锁屏/睡眠自动暂停(可在设置关闭)。
 - **监听地址**:默认 0.0.0.0 会同时监听 VPN/虚拟网卡等所有接口;只用一张网卡时建议改为「仅当前局域网 IP」(换网络后需重新启用)。
 - 建议仅在可信局域网使用;如需公网接入,请通过 VPN/隧道并保持令牌强度。
 - Webhook 端点与手机 PWA 共用同一端口与令牌,关闭「远程访问」即同时关闭。
 
 **English**
-- The token is full control of your PC — never share it; regenerate it anytime in **Settings → Remote Access** (the old one stops working immediately).
+- The token equals control of your PC — never leak it; regenerate it anytime in **Settings → Remote Access** (the old one stops working immediately).
+- **`/api/command` authenticates by token only and does not go through device approval**: a script / DingTalk / Feishu bridge holding the token can send commands directly and never appears in the "pending devices" queue. Device approval covers the phone PWA's browser session. In other words, **anyone holding the token can drive this PC** — never put it in a script, CI variable or public repo that might leak.
+- Control stays on the desktop: **pause every connection** at once (established connections drop immediately), pause/blacklist an individual device (a blacklisted device is rejected even with a valid token), auto-pause on lock/sleep (can be disabled in settings).
+- **Bind address**: the default 0.0.0.0 also listens on VPN and virtual adapters; on a single-NIC machine, bind to the current LAN IP instead (re-enable after switching networks).
 - Use it on trusted LANs only; for internet access, go through a VPN/tunnel and keep the token strong.
 - The Webhook endpoint shares the port and token with the phone PWA; disabling "Remote Access" disables both.
