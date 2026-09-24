@@ -61,6 +61,7 @@ const api = {
     getConfig: () => ipcRenderer.invoke('remote:getConfig'),
     setConfig: (patch: object) => ipcRenderer.invoke('remote:setConfig', patch),
     lanAddresses: () => ipcRenderer.invoke('remote:lanAddresses'),
+    httpsCertInfo: () => ipcRenderer.invoke('remote:httpsCertInfo'),
     pairUrl: () => ipcRenderer.invoke('remote:pairUrl'),
     qrDataUrl: () => ipcRenderer.invoke('remote:qrDataUrl'),
     qrDataUrls: () => ipcRenderer.invoke('remote:qrDataUrls'),

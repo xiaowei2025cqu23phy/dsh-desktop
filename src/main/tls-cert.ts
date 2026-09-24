@@ -8,9 +8,36 @@
  * 仅用最小编码手拼 X.509 证书(ASN.1 DER)。RSA-2048 + SHA256 签名,有效期约 10 年。
  */
 
-import { generateKeyPairSync, createSign, randomBytes } from 'node:crypto'
+import { generateKeyPairSync, createSign, randomBytes, createHash, X509Certificate } from 'node:crypto'
+import { isIP } from 'node:net'
+
+// ---- 证书指纹(SHA-256,用于界面显示与校验所信任的对象) ----
+
+/** 把 PEM 证书转成 SHA-256 指纹,形如 `AB:CD:EF:…`(与浏览器/系统证书界面一致)。 */
+export function certFingerprint(pem: string): string {
+  const der = new X509Certificate(pem).raw
+  return createHash('sha256').update(der).digest('hex').toUpperCase().replace(/(.{2})(?=.)/g, '$1:')
+}
+
 
 // ---- 最小 DER(ASN.1)编码 ----
+
+/**
+ * 缓存证书是否仍覆盖当前所有地址。
+ *
+ * 换网络 / DHCP 续租后局域网 IP 会变,旧证书的 SAN 不再匹配,手机访问新地址会直接
+ * TLS 失败(并连带让 Service Worker 注册不上)。因此只有当当前每个地址都已被
+ * 已签发证书覆盖时,才可以复用缓存;少一个就必须重新签发。
+ *
+ * @param cachedIps 已签发证书覆盖的地址。
+ * @param currentIps 当前需要用到的地址(含 127.0.0.1)。
+ * @returns 全部覆盖时 true;`currentIps` 为空时 false(无法判定,选择重新签发更安全)。
+ */
+export function certCoversHosts(cachedIps: readonly string[], currentIps: readonly string[]): boolean {
+  if (currentIps.length === 0) return false
+  const cached = new Set(cachedIps.map((ip) => ip.trim().toLowerCase()))
+  return currentIps.every((ip) => cached.has(ip.trim().toLowerCase()))
+}
 
 function derLength(len: number): Buffer {
   if (len < 0x80) return Buffer.from([len])
@@ -102,16 +129,38 @@ function derName(cn: string): Buffer {
   return derSequence([set])
 }
 
+/**
+ * 把 IPv4/IPv6 字面量编码为 SAN 所需的 4/16 字节。
+ *
+ * 之前压缩形式的 IPv6(`fe80::1`)会落到兜底分支被写成 `0.0.0.0`——一个能签出
+ * 却完全不匹配的 SAN。这里改为:支持的地址精确编码,不支持的抛出并中止生成,
+ * 避免产出"看起来正常但永远匹配不上"的证书。
+ */
+function ipToBytes(value: string): Buffer {
+  if (!isIP(value)) throw new Error(`SAN 需要 IPv4/IPv6 字面量,收到:${JSON.stringify(value)}`)
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(value)) {
+    const bytes = Buffer.from(value.split('.').map(Number))
+    if (bytes.length !== 4) throw new Error(`IPv4 解析失败:${JSON.stringify(value)}`)
+    return bytes
+  }
+  // IPv6:展开压缩形式(::)为 8 组 16 位,再拼成 16 字节。
+  const [headRaw, tailRaw] = value.split('::')
+  const head = headRaw === '' ? [] : headRaw.split(':')
+  const tail = tailRaw === undefined || tailRaw === '' ? [] : tailRaw.split(':')
+  const groups = tailRaw === undefined ? head : [...head, ...Array(8 - head.length - tail.length).fill('0'), ...tail]
+  if (groups.length !== 8 || groups.some((g) => !/^[0-9a-fA-F]{1,4}$/.test(g))) {
+    throw new Error(`IPv6 展开失败:${JSON.stringify(value)}`)
+  }
+  const bytes = Buffer.alloc(16)
+  groups.forEach((g, i) => bytes.writeUInt16BE(parseInt(g, 16), i * 2))
+  return bytes
+}
+
 /** subjectAltName 扩展值(未包含 OCTET STRING 外壳)。 */
 function derSanExt(hosts: Array<{ kind: 'ip' | 'dns'; value: string }>): Buffer {
   const names = hosts.map((h) => {
     if (h.kind === 'dns') return derContextImplicit(2, Buffer.from(h.value, 'utf8'))
-    // IPv4 → 4 字节;IPv6 用简单展开(此处只预期 IPv4 与 ::1)。
-    const parts = h.value.split('.').map(Number)
-    const body = parts.length === 4 && parts.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)
-      ? Buffer.from(parts)
-      : Buffer.from(h.value.replace(/:/g, ''), 'hex').length === 16 ? Buffer.from(h.value.replace(/:/g, ''), 'hex') : Buffer.from([0, 0, 0, 0])
-    return derContextImplicit(7, body)
+    return derContextImplicit(7, ipToBytes(h.value))
   })
   return derSequence(names)
 }

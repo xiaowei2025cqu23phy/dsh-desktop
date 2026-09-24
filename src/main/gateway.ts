@@ -23,7 +23,7 @@ import type { HarnessManager } from './harness'
 import { parseSchedDelay } from './qq-commands'
 import type { RemoteCommandProcessor } from './remote-commands'
 import { dshHomeOf, unarchiveInRegistry } from './workspace-registry'
-import { generateSelfSignedCert } from './tls-cert'
+import { generateSelfSignedCert, certFingerprint, certCoversHosts } from './tls-cert'
 
 /** 远程访问配置:直接复用 ConfigStore 的完整结构(监听地址/暂停/黑名单等)。 */
 export type RemoteConfig = ReturnType<ConfigStore['get']>['remote']
@@ -288,32 +288,79 @@ export class RemoteGateway {
     }
   }
 
-  /** 生成/读取 HTTPS 自签证书(缓存到 userData,手机只需信任一次)。 */
-  private httpsCert(): { key: string; cert: string } {
+  /**
+   * 生成/读取 HTTPS 自签证书(缓存到 userData,手机只需信任一次)。
+   *
+   * 缓存必须按「当前局域网地址是否仍被 SAN 覆盖」校验:换网络/DHCP 续租后 IP 变了,
+   * 旧证书的 SAN 不再匹配,手机访问新地址会直接 TLS 失败,而且会连带让 Service Worker
+   * (离线外壳)注册不上——界面上的开关却仍显示已启用。因此 SAN 不覆盖当前地址时重新签发。
+   */
+  private httpsCert(): { key: string; cert: string; fingerprint: string; hosts: string[]; regenerated: boolean } {
     const dir = app.getPath('userData')
     const keyPath = join(dir, 'https-key.pem')
     const certPath = join(dir, 'https-cert.pem')
-    try {
-      if (existsSync(keyPath) && existsSync(certPath)) {
-        return { key: readFileSync(keyPath, 'utf8'), cert: readFileSync(certPath, 'utf8') }
-      }
-    } catch {
-      /* 读取失败则重新生成。 */
-    }
+    const metaPath = join(dir, 'https-cert.json')
     const hosts: Array<{ kind: 'ip' | 'dns'; value: string }> = [
       { kind: 'ip', value: '127.0.0.1' },
       { kind: 'dns', value: 'localhost' },
       ...this.lanAddresses().map((ip) => ({ kind: 'ip' as const, value: ip })),
     ]
+    const currentIps = hosts.filter((h) => h.kind === 'ip').map((h) => h.value)
+
+    try {
+      if (existsSync(keyPath) && existsSync(certPath) && existsSync(metaPath)) {
+        const key = readFileSync(keyPath, 'utf8')
+        const cert = readFileSync(certPath, 'utf8')
+        const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as { ips?: unknown }
+        const cached = Array.isArray(meta.ips) ? meta.ips.filter((v): v is string => typeof v === 'string') : []
+        if (certCoversHosts(cached, currentIps)) {
+          return { key, cert, fingerprint: certFingerprint(cert), hosts: cached, regenerated: false }
+        }
+        console.log(`[gateway] 局域网地址变化,重新签发 HTTPS 证书(原覆盖 ${cached.join(',') || '无'};现需 ${currentIps.join(',')})`)
+      }
+    } catch {
+      /* 读取/解析失败则重新生成。 */
+    }
+
     const { key, cert } = generateSelfSignedCert(hosts)
     try {
       mkdirSync(dir, { recursive: true })
       writeFileSync(keyPath, key, 'utf8')
       writeFileSync(certPath, cert, 'utf8')
+      writeFileSync(metaPath, JSON.stringify({ ips: currentIps, generatedAt: Date.now() }), 'utf8')
     } catch (error) {
       console.warn('[gateway] HTTPS 证书写盘失败(下次仍会重新生成):', error instanceof Error ? error.message : String(error))
     }
-    return { key, cert }
+    return { key, cert, fingerprint: certFingerprint(cert), hosts: currentIps, regenerated: true }
+  }
+
+  /**
+   * 供设置面板显示:当前证书覆盖哪些地址、指纹是什么(手机侧据此核对所信任的证书)。
+   *
+   * 只读——需要时由 `start()` 签发。这样查看设置面板(含未真正监听时,如已暂停)
+   * 不会触发 RSA 生成或写盘。
+   */
+  httpsCertInfo(): { enabled: boolean; fingerprint: string | null; hosts: string[] } {
+    const config = this.getConfig()
+    if (config.https !== true) return { enabled: false, fingerprint: null, hosts: [] }
+    const dir = app.getPath('userData')
+    try {
+      const certPath = join(dir, 'https-cert.pem')
+      const metaPath = join(dir, 'https-cert.json')
+      if (!existsSync(certPath)) return { enabled: true, fingerprint: null, hosts: [] }
+      const cert = readFileSync(certPath, 'utf8')
+      let hosts: string[] = []
+      try {
+        const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as { ips?: unknown }
+        hosts = Array.isArray(meta.ips) ? meta.ips.filter((v): v is string => typeof v === 'string') : []
+      } catch {
+        hosts = []
+      }
+      return { enabled: true, fingerprint: certFingerprint(cert), hosts }
+    } catch (error) {
+      console.warn('[gateway] 读取 HTTPS 证书信息失败:', error instanceof Error ? error.message : String(error))
+      return { enabled: true, fingerprint: null, hosts: [] }
+    }
   }
 
   start(): void {

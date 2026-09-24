@@ -108,6 +108,7 @@ export function registerIpc(deps: IpcDeps): void {
       return next
     })
     ipcMain.handle('remote:lanAddresses', () => gateway.lanAddresses())
+    ipcMain.handle('remote:httpsCertInfo', () => gateway.httpsCertInfo())
     ipcMain.handle('remote:pairUrl', () => gateway.pairUrl())
     ipcMain.handle('remote:qrDataUrl', () => gateway.qrDataUrl())
     ipcMain.handle('remote:qrDataUrls', () => gateway.qrDataUrls())

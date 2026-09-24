@@ -59,17 +59,19 @@ mkdirSync(join(root, 'dist', 'main'), { recursive: true })
 
 // 构建信息(版本 + commit + 时间):随 dist/main 打进 asar,界面可显示当前构建,
 // 避免「源码改了但 exe 是旧包」这类版本漂移问题难以发现。
+let buildVersion = '0.0.0'
+let buildCommit = ''
 try {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-  let commit = ''
+  buildVersion = pkg.version ?? '0.0.0'
   try {
-    commit = execSync('git rev-parse --short HEAD', { cwd: root, encoding: 'utf8', timeout: 3000 }).trim()
+    buildCommit = execSync('git rev-parse --short HEAD', { cwd: root, encoding: 'utf8', timeout: 3000 }).trim()
   } catch {
-    commit = ''
+    buildCommit = ''
   }
   writeFileSync(
     join(root, 'dist', 'main', 'build-info.json'),
-    JSON.stringify({ version: pkg.version ?? '0.0.0', commit, builtAt: Date.now() }),
+    JSON.stringify({ version: buildVersion, commit: buildCommit, builtAt: Date.now() }),
     'utf8',
   )
 } catch {
@@ -84,11 +86,25 @@ for (const name of readdirSync(sourceDir)) {
   copyFileSync(source, join(targetDir, name))
   copied += 1
 }
+const swTarget = join(remoteTargetDir, 'sw.js')
+
 for (const name of readdirSync(remoteSourceDir)) {
   const source = join(remoteSourceDir, name)
   if (!statSync(source).isFile()) continue
   // PWA 脚本由 esbuild 从 app.ts 构建,这里只复制 html/css 等静态资源。
   if (name.endsWith('.ts') || name === 'app.js') continue
+  // Service Worker:注入构建版本,使缓存名随每次构建变化(否则手机端外壳永不更新)。
+  if (name === 'sw.js') {
+    const cacheVersion = buildCommit === '' ? buildVersion : `${buildVersion}-${buildCommit}`
+    const text = readFileSync(source, 'utf8')
+    if (!text.includes('__DSH_CACHE_VERSION__')) {
+      throw new Error('src/remote/sw.js 缺少 __DSH_CACHE_VERSION__ 占位符,缓存将无法随版本失效')
+    }
+    writeFileSync(swTarget, text.replaceAll('__DSH_CACHE_VERSION__', cacheVersion), 'utf8')
+    console.log(`copy-assets: sw.js 缓存版本 -> dsh-remote-${cacheVersion}`)
+    copied += 1
+    continue
+  }
   copyFileSync(source, join(remoteTargetDir, name))
   copied += 1
 }

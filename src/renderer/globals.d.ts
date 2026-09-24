@@ -251,6 +251,7 @@ interface DesktopApi {
     getConfig(): Promise<RemoteConfigView>
     setConfig(patch: object): Promise<RemoteConfigView>
     lanAddresses(): Promise<string[]>
+    httpsCertInfo(): Promise<{ enabled: boolean; fingerprint: string | null; hosts: string[] }>
     pairUrl(): Promise<string>
     qrDataUrl(): Promise<string | null>
     qrDataUrls(): Promise<Array<{ address: string; url: string; dataUrl: string | null }>>

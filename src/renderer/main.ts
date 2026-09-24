@@ -1570,6 +1570,7 @@ async function loadRemoteConfig(): Promise<void> {
     input('remote-token').value = '' + config.token
     input('remote-pause-on-lock').checked = config.pauseOnLock !== false
     input('remote-https').checked = config.https === true
+    void renderHttpsCert(config.https === true)
     const bindSelect = $id('remote-bind') as HTMLSelectElement
     bindSelect.value = config.bindHost === '0.0.0.0' || !config.bindHost ? '0.0.0.0' : 'lan'
     renderRemoteBindStatus(config.bindHost || '0.0.0.0')
@@ -1599,8 +1600,32 @@ function renderRemoteBindStatus(bindHost: string): void {
   }
 }
 
-function renderRemotePause(paused: boolean): void {
-  const pauseBtn = $id('btn-remote-pause')
+/**
+ * HTTPS 证书信息:显示指纹与覆盖地址,便于手机侧核对所信任的证书;
+ * 未启用 HTTPS 时整块隐藏。
+ */
+async function renderHttpsCert(enabled: boolean): Promise<void> {
+  const box = $id('https-cert-box')
+  const host = $id('https-cert-info')
+  if (!enabled) {
+    box.classList.add('hidden')
+    return
+  }
+  box.classList.remove('hidden')
+  try {
+    const info = await API.remote.httpsCertInfo()
+    if (info.fingerprint === null) {
+      host.textContent = '证书读取失败(启用 HTTPS 后重启远程访问可重新签发)'
+      return
+    }
+    const hosts = info.hosts.length > 0 ? info.hosts.join('、') : '(无局域网地址)'
+    host.textContent = `SHA-256:\n${info.fingerprint}\n\n覆盖地址:${hosts}`
+  } catch (error) {
+    host.textContent = `读取失败:${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+function renderRemotePause(paused: boolean): void {  const pauseBtn = $id('btn-remote-pause')
   const resumeBtn = $id('btn-remote-resume')
   const status = $id('remote-pause-status')
   pauseBtn.classList.toggle('hidden', paused)

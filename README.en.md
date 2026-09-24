@@ -179,7 +179,7 @@ Enabling **Settings → Remote Access** starts a LAN gateway (default port 3082,
 **Installing it as an app (PWA)**:
 
 - By default it runs over plain HTTP. A phone browser treats `http://192.168.x.x` as a non-secure context and **will not register a Service Worker** — the PWA still works as an ordinary tab (messaging/tasks/approvals online), it just doesn't cache the app shell.
-- For the full offline shell and "Add to Home Screen": **Settings → Remote Access → Enable HTTPS** (self-signed certificate covering every local LAN IP, cached in userData). The phone warns about the untrusted certificate on first visit — trust it once and the Service Worker registers automatically afterwards. Changing network/adapter changes the IP, and the certificate must be trusted again.
+- For the full offline shell and "Add to Home Screen": **Settings → Remote Access → Enable HTTPS** (self-signed certificate covering every local LAN IP, cached in userData). The phone warns about the untrusted certificate on first visit — trust it once and the Service Worker registers automatically afterwards. The settings panel shows the **certificate SHA-256 fingerprint and the addresses it covers** so you can verify it before trusting. When the LAN IP changes, the certificate is re-issued automatically and needs to be trusted once more under the new fingerprint.
 - See [docs/PWA.md](docs/PWA.md).
 
 > Security: remote access auto-disables 2 hours after enabling (expiry policy adjustable in settings); LAN only — **never expose it via tunneling/port-forwarding**.

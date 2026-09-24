@@ -357,6 +357,11 @@
           <input id="remote-https" type="checkbox" />
           启用 HTTPS(自签证书,手机需信任证书后才能注册 PWA 离线外壳)
         </label>
+        <div id="https-cert-box" class="field hidden">
+          <label>证书指纹(手机首次信任时核对)</label>
+          <pre id="https-cert-info" class="help-pre">读取中…</pre>
+          <p class="hint">局域网地址变化(换网络、DHCP 续租)后证书会自动重新签发,届时手机需重新信任一次。</p>
+        </div>
         <div class="field">
           <label>访问令牌</label>
           <div class="field-row">

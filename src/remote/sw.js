@@ -4,7 +4,12 @@
  * 注意:SW 只能在「安全上下文」注册——网关走明文 HTTP 时(http://192.168.x.x)
  * 浏览器会拒绝注册,此时 PWA 自动退化为「浏览器标签页使用」(见 docs/PWA.md)。
  */
-const CACHE = 'dsh-remote-v1'
+/**
+ * 缓存名带构建版本(构建期由 scripts/copy-assets.mjs 替换 __DSH_CACHE_VERSION__)。
+ * 版本变化 → 新缓存名 → install 重新拉取外壳、activate 删除旧缓存,
+ * 手机端才会拿到新版 app.js / app.css。
+ */
+const CACHE = 'dsh-remote-__DSH_CACHE_VERSION__'
 const SHELL = ['./', './index.html', './app.js', './app.css', './manifest.webmanifest', './icon.png', './icon-192.png', './icon-512.png', './icon-maskable.png']
 
 self.addEventListener('install', (event) => {
