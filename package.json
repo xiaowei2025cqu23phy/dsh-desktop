@@ -22,7 +22,10 @@
         "test": "node scripts/qq-commands-test.mjs && node scripts/rpc-protocol-test.mjs && node scripts/approval-flow-test.mjs && node scripts/task-queue-test.mjs && node scripts/db-test.mjs && node scripts/tls-cert-test.mjs && node scripts/gateway-stop-test.mjs",
         "pack": "npm run build && node scripts/prune-electron-dist.mjs && electron-builder --win nsis zip",
         "pack:portable": "npm run build && node scripts/prune-electron-dist.mjs && electron-builder --win portable",
-        "pack:zip": "npm run build && node scripts/prune-electron-dist.mjs && electron-builder --win zip"
+        "pack:zip": "npm run build && node scripts/prune-electron-dist.mjs && electron-builder --win zip",
+        "verify": "node scripts/verify.mjs",
+        "verify:fast": "node scripts/verify.mjs --fast",
+        "hooks:install": "git config core.hooksPath .githooks && echo hooks 已启用(.githooks)"
     },
     "build": {
         "appId": "ai.deepseek.harness.desktop",

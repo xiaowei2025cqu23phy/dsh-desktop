@@ -1,0 +1,18 @@
+# Git hooks 必须保持 LF:Windows 上 core.autocrlf=true 会把它们转成 CRLF,
+# 导致 sh 报 "bad interpreter"。见 .githooks/pre-push。
+.githooks/** text eol=lf
+
+# 脚本与源码统一 LF,避免跨平台协作时整文件行尾差异。
+*.mjs text eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+
+# 二进制资源不做行尾转换。
+*.png binary
+*.gif binary
+*.jpg binary
+*.ico binary
+*.zstd binary

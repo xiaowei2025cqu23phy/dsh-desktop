@@ -1,0 +1,30 @@
+#!/bin/sh
+# 推送前本地门禁:与 CI 的 test job 检查项一致。
+#
+# 生效方式(克隆后执行一次,或由 npm run hooks:install 代劳):
+#   git config core.hooksPath .githooks
+#
+# 紧急情况跳过(例如只想推文档):
+#   DSH_SKIP_VERIFY=1 git push
+#   或 git push --no-verify
+
+if [ "$DSH_SKIP_VERIFY" = "1" ]; then
+  echo "pre-push: DSH_SKIP_VERIFY=1,跳过交付门禁"
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-push: 未找到 node,跳过交付门禁(请手动跑 npm run verify)"
+  exit 0
+fi
+
+echo "pre-push: 运行交付门禁 npm run verify …"
+node scripts/verify.mjs
+status=$?
+if [ $status -ne 0 ]; then
+  echo ""
+  echo "pre-push: 交付门禁未通过,已阻止推送。"
+  echo "  修复后重试;确需跳过:DSH_SKIP_VERIFY=1 git push"
+  exit 1
+fi
+exit 0
