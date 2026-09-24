@@ -29,6 +29,21 @@ const LIVE_VIEW_INTERVAL_MS = 25_000
 /** 任务队列失败重试的基础退避时长(第 1 次失败退避该值,之后每次翻倍)。 */
 const TASK_RETRY_BASE_DELAY_MS = 30_000
 
+/**
+ * 任务队列失败后的退避时长:30s → 60s → 120s(每次翻倍)。
+ *
+ * 队列行的 `attempts` 统一表示"已消耗的执行尝试次数":入队即 1,此后每次失败 +1。
+ * 因此第 1 次失败后 `attempts === 2`,退避 30s;第 2 次后 3,退避 60s……
+ *
+ * @param attempts 本次失败后记录的尝试次数(即"已消耗次数")。
+ * @param maxAttempts 允许的总尝试次数(含首次)。`attempts` 达到该值即不再重试。
+ * @returns 距下次可重试的毫秒数;已耗尽则返回 `null`。
+ */
+function taskRetryDelay(attempts: number, maxAttempts: number): number | null {
+  if (attempts < 2 || attempts > maxAttempts) return null
+  return TASK_RETRY_BASE_DELAY_MS * 2 ** (attempts - 2)
+}
+
 /** 命令分发上下文(由 executeCommand 统一构造后传给各 handler)。 */
 interface DispatchContext {
   /** `${channel}:${userId}` 发起者键。 */
@@ -538,7 +553,10 @@ export class RemoteCommandProcessor {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        target.upsertTaskQueueEntry({ ...next, status: 'failed', error: message.slice(0, 500), attempts: next.attempts + 1, nextAttemptAt: Date.now() + TASK_RETRY_BASE_DELAY_MS, updatedAt: Date.now() })
+        // 排队行启动失败:与另外两条失败路径统一为「attempts = 已消耗尝试次数 + 1」。
+        const attempts = Math.max(next.attempts, 1) + 1
+        const delay = taskRetryDelay(attempts, next.maxAttempts)
+        target.upsertTaskQueueEntry({ ...next, status: 'failed', error: message.slice(0, 500), attempts, nextAttemptAt: delay === null ? null : Date.now() + delay, updatedAt: Date.now() })
         if (this.push !== null && next.pushTarget !== undefined && next.pushTarget !== null) {
           this.push(next.channel, next.userId, `❌ 排队任务启动失败:${message.slice(0, 120)}`, undefined, next.pushTarget)
         }
@@ -589,10 +607,9 @@ export class RemoteCommandProcessor {
     }
     if (next.status === 'failed') {
       const attempts = existing.attempts + 1
-      // 最多自动重试 maxAttempts 次(第 1~maxAttempts 次失败后各自退避一次;超过后不再自动重试)。
-      const exhausted = attempts > existing.maxAttempts
-      // 指数退避:第 1 次失败后 30s、第 2 次 60s(第 3 次已超过 maxAttempts,不再退避)。
-      const nextAttemptAt = exhausted ? null : now + TASK_RETRY_BASE_DELAY_MS * 2 ** (attempts - 2)
+      // 指数退避:第 1 次失败后 30s、第 2 次 60s;达到 maxAttempts 后不再重试。
+      const delay = taskRetryDelay(attempts, existing.maxAttempts)
+      const nextAttemptAt = delay === null ? null : now + delay
       target.upsertTaskQueueEntry({
         ...existing,
         status: 'failed',
@@ -1759,7 +1776,13 @@ export class RemoteCommandProcessor {
     if (entry === undefined) return '未找到该队列项。'
     if (entry.status !== 'failed' && entry.status !== 'cancelled') return '只有失败或已取消的任务可以重试。'
     if (entry.sessionId === null) return '该队列项没有关联会话,无法重试。'
-    if (entry.attempts >= entry.maxAttempts && entry.status === 'failed') return `已达到最大重试次数(${entry.maxAttempts}),不再自动重试。`
+    if (entry.attempts >= entry.maxAttempts && entry.status === 'failed') {
+      // 已达上限:清掉待重试时间,避免 tickQueue 每轮都把它当"到期项"重复取出。
+      if (entry.nextAttemptAt !== null) {
+        target.upsertTaskQueueEntry({ ...entry, nextAttemptAt: null, updatedAt: Date.now() })
+      }
+      return `已达到最大重试次数(${entry.maxAttempts}),不再自动重试。`
+    }
     // 串行执行:已有任务运行中时,重试也进入排队。
     if (target.taskQueue().some((item) => item.status === 'running' && item.id !== id)) {
       target.upsertTaskQueueEntry({ ...entry, status: 'queued', nextAttemptAt: null, updatedAt: Date.now() })
@@ -1776,7 +1799,18 @@ export class RemoteCommandProcessor {
       return `已重新执行:${entry.description.slice(0, 60)}`
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      target.upsertTaskQueueEntry({ ...entry, status: 'failed', error: message.slice(0, 500), nextAttemptAt: null, updatedAt: Date.now() })
+      // 重试启动本身也失败:与另外两条失败路径同一节奏累计尝试次数并排下一次退避,
+      // 否则该行的 nextAttemptAt 恒为 null,自动重试从此不再触发。
+      const attempts = entry.attempts + 1
+      const delay = taskRetryDelay(attempts, entry.maxAttempts)
+      target.upsertTaskQueueEntry({
+        ...entry,
+        status: 'failed',
+        attempts,
+        error: message.slice(0, 500),
+        nextAttemptAt: delay === null ? null : Date.now() + delay,
+        updatedAt: Date.now(),
+      })
       return `重试失败:${message}`
     }
   }

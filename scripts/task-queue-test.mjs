@@ -282,6 +282,78 @@ function turnEnd(processor, sessionId, kind, extra = {}) {
   check('重试项 queued 且保留会话', queued.status, 'queued')
 }
 
+// ---- 排队任务启动失败:同样走指数退避 ----
+{
+  let n = 0
+  const log = []
+  const config = makeQueueConfig()
+  // session.create 成功但 session.prompt 一律失败:模拟「harness 重启中,任务起不来」。
+  const harness = {
+    client() {
+      return {
+        async rpc(method, payload) {
+          log.push(['rpc', method, payload])
+          if (method === 'workspace.list') return { items: [{ workspaceId: 'w1', title: 'ws1', path: 'D:/x' }] }
+          if (method === 'session.create') return { sessionId: `session-drain-${++n}` }
+          if (method === 'session.prompt') throw new Error('harness 重启中')
+          return {}
+        },
+        async respond() {
+          return { accepted: true }
+        },
+      }
+    },
+  }
+  const processor = new RemoteCommandProcessor(harness, config)
+  processor.setReport('telegram', true)
+
+  // 直接排一条待执行项(无人占用运行位、已带会话),再让它到期由 drainQueue 启动。
+  // 已带 sessionId 时 drainQueue 跳过 session.create 直接 prompt,才能命中 prompt 失败分支。
+  const now = Date.now()
+  config.upsertTaskQueueEntry({
+    id: 'queue-drain-1',
+    description: '排队的任务',
+    sessionId: 'session-drain-1',
+    status: 'queued',
+    attempts: 1,
+    maxAttempts: 3,
+    nextAttemptAt: now - 1000,
+    error: null,
+    workspace: null,
+    source: 'telegram',
+    channel: 'telegram',
+    userId: '42',
+    pushTarget: null,
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  const before = Date.now()
+  await processor.tickQueue()
+  let row = config.taskQueue().find((item) => item.id === 'queue-drain-1')
+  check('启动失败记为 failed', row.status, 'failed')
+  check('启动失败记录原因', row.error, 'harness 重启中')
+  check('启动失败累计尝试次数', row.attempts, 2)
+  check('启动失败首次退避 30s', row.nextAttemptAt - before >= 30_000, true)
+  check('启动失败首次退避不足 2 倍', row.nextAttemptAt - before < 60_000, true)
+
+  // 第二轮:经 tickQueue → retryQueueEntry 再启动一次;prompt 仍失败 → 退避翻倍。
+  config.upsertTaskQueueEntry({ ...row, status: 'failed', nextAttemptAt: Date.now() - 1000 })
+  const before2 = Date.now()
+  await processor.tickQueue()
+  row = config.taskQueue().find((item) => item.id === 'queue-drain-1')
+  check('启动失败二次尝试次数', row.attempts, 3)
+  check('启动失败二次退避 60s', row.nextAttemptAt - before2 >= 60_000, true)
+  check('启动失败二次退避不足 3 倍', row.nextAttemptAt - before2 < 90_000, true)
+
+  // 第三轮:已达 maxAttempts,不再排退避,且待重试时间被清空。
+  config.upsertTaskQueueEntry({ ...row, status: 'failed', nextAttemptAt: Date.now() - 1000 })
+  await processor.tickQueue()
+  row = config.taskQueue().find((item) => item.id === 'queue-drain-1')
+  check('超过上限后尝试次数不再增长', row.attempts, 3)
+  check('超过上限后清空待重试时间', row.nextAttemptAt, null)
+}
+
 if (failures > 0) {
   console.error(`\n${failures} 项失败`)
   process.exit(1)
