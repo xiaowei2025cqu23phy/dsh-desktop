@@ -73,7 +73,7 @@ try {
 try {
   const token = process.env.GATEWAY_TOKEN || ''
   const pwaUrl = 'http://127.0.0.1:3082/?token=' + token
-  const targetId = await openTarget(desktopWs, pwaUrl)
+  await openTarget(desktopWs, pwaUrl)
   await new Promise((r) => setTimeout(r, 2500))
   const targets = await listTargets(desktopWs)
   const pwa = targets.find((t) => t.url.indexOf('3082') !== -1 && t.type === 'page')

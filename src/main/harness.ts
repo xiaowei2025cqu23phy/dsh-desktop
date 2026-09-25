@@ -7,8 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { EventEmitter } from 'node:events'
-import { HarnessClient } from './client'
-import type { RpcProtocolBox } from './client'
+import { HarnessClient, type RpcProtocolBox } from './client'
 import type { HarnessConfig } from './config'
 
 export type HarnessState =

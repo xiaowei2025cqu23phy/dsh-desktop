@@ -5,7 +5,7 @@
  */
 
 import { createRequire } from 'node:module'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -109,6 +109,39 @@ try {
     db2.close()
   } finally {
     rmSync(dir2, { recursive: true, force: true })
+  }
+
+  // ---- 损坏库自动隔离重建 ----
+  // SQLite 打开损坏文件是惰性的(new 成功、exec 才报错),且 Windows 下句柄未释放会让
+  // 删除 EPERM —— 这两点都曾让「隔离重建」形同虚设,因此这里固化住。
+  {
+    const dir3 = mkdtempSync(join(tmpdir(), 'dsh-db-corrupt-'))
+    try {
+      writeFileSync(join(dir3, 'local.db'), Buffer.from('not a sqlite file, padded long enough to look plausible ......................'))
+      const db3 = new LocalDb(dir3)
+      check('损坏库触发隔离重建', db3.recoveredFrom() !== null, true)
+      check('隔离备份留在原目录', existsSync(db3.recoveredFrom()), true)
+      db3.upsertActivity({
+        id: 'after-rebuild', type: 'task', source: 'system', workspace: null, sessionId: null,
+        status: 'completed', title: 't', lastEvent: 'e', createdAt: 1, updatedAt: 1,
+      })
+      check('重建后可正常写入', db3.activities().length, 1)
+      db3.close()
+    } finally {
+      rmSync(dir3, { recursive: true, force: true })
+    }
+  }
+
+  // 正常库不应报告恢复(避免每次启动都误提示用户)
+  {
+    const dir4 = mkdtempSync(join(tmpdir(), 'dsh-db-clean-'))
+    try {
+      const db4 = new LocalDb(dir4)
+      check('正常库不报告恢复', db4.recoveredFrom(), null)
+      db4.close()
+    } finally {
+      rmSync(dir4, { recursive: true, force: true })
+    }
   }
 
   db.close()

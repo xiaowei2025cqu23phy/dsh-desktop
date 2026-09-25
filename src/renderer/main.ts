@@ -298,7 +298,32 @@ async function loadActivities(): Promise<void> {
     items.slice(0, 30).forEach((item) => {
       const row = document.createElement('div')
       row.className = 'queue-row'
-      row.textContent = `${new Date(item.updatedAt).toLocaleString()} | ${item.status} | ${item.source}/${item.type} | ${item.title}\n${item.lastEvent}${item.workspace === null ? '' : `\n工作区:${item.workspace}`}`
+      const label = document.createElement('div')
+      label.className = 'queue-label'
+      label.textContent = `${new Date(item.updatedAt).toLocaleString()} | ${item.status} | ${item.source}/${item.type} | ${item.title}\n${item.lastEvent}${item.workspace === null ? '' : `\n工作区:${item.workspace}`}`
+      row.appendChild(label)
+      // 停止入口:只有「还在跑」且有会话的活动可停(其余没有可取消的对象);走 session.cancel。
+      if (item.sessionId !== null && (item.status === 'running' || item.status === 'queued' || item.status === 'waiting')) {
+        const sessionId = item.sessionId
+        const stop = document.createElement('button')
+        stop.className = 'btn btn-sm btn-danger queue-act'
+        stop.textContent = '停止'
+        stop.title = `停止该会话(取消正在执行的回合):${sessionId}`
+        stop.addEventListener('click', (event) => {
+          event.stopPropagation()
+          stop.disabled = true
+          void API.activity.stop(sessionId).then((result) => {
+            // 成功/失败都要看得见:失败时按钮恢复可点,便于重试。
+            S.toast(result.message, result.ok ? 'ok' : 'error')
+            if (!result.ok) stop.disabled = false
+            void loadActivities()
+          }).catch((error: unknown) => {
+            stop.disabled = false
+            S.toast(`停止失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+          })
+        })
+        row.appendChild(stop)
+      }
       row.title = '点击查看详情'
       row.addEventListener('click', () => void showActivityDetail(item))
       host.appendChild(row)
@@ -306,6 +331,20 @@ async function loadActivities(): Promise<void> {
   } catch (error) {
     host.textContent = `加载失败:${error instanceof Error ? error.message : String(error)}`
   }
+}
+
+/** 停止所有运行中的会话(与单行「停止」同一路径);结果无论成败都提示。 */
+async function stopAllActivities(): Promise<void> {
+  const button = $id('btn-activity-stop-all') as HTMLButtonElement
+  button.disabled = true
+  try {
+    const result = await API.activity.stopAll()
+    S.toast(result.message, result.ok ? 'ok' : 'error')
+  } catch (error) {
+    S.toast(`全部停止失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+  }
+  button.disabled = false
+  await loadActivities()
 }
 
 async function showActivityDetail(item: { id: string; type: string; source: string; workspace: string | null; sessionId: string | null; status: string; title: string; lastEvent: string; createdAt: number; updatedAt: number }): Promise<void> {
@@ -1847,9 +1886,46 @@ async function loadUsageConfig(): Promise<void> {
   try {
     const config = await API.usage.getConfig()
     input('usage-multiplier').value = String(config.multiplier ?? 1)
+    // 0 = 不限额:输入框留空更直观,避免用户以为"预算 0 元"。
+    input('usage-daily-budget').value = config.dailyBudget > 0 ? String(config.dailyBudget) : ''
+    input('usage-monthly-budget').value = config.monthlyBudget > 0 ? String(config.monthlyBudget) : ''
+    select('usage-on-exceed').value = config.onExceed === 'block' ? 'block' : 'notify'
   } catch {
     // 忽略
   }
+}
+
+/**
+ * 保存用量设置(倍率 / 预算 / 超限动作)。
+ * 失败必须让用户看见并回读真实配置——预算是钱的口径,静默失败会让人以为已经设上了。
+ * @returns 是否保存成功(调用方据此决定要不要报成功提示)。
+ */
+async function saveUsageConfig(patch: { multiplier?: number; dailyBudget?: number; monthlyBudget?: number; onExceed?: 'notify' | 'block' }): Promise<boolean> {
+  try {
+    await API.usage.setConfig(patch)
+    return true
+  } catch (error) {
+    S.toast(`用量设置保存失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+    await loadUsageConfig()
+    return false
+  }
+}
+
+/** 每日 / 每月预算输入框:留空 = 不限额(0);负数视为非法并回读配置。 */
+function bindBudgetInput(id: string, key: 'dailyBudget' | 'monthlyBudget'): void {
+  const label = key === 'dailyBudget' ? '每日' : '每月'
+  $id(id).addEventListener('change', async () => {
+    const value = Number(input(id).value)
+    if (!Number.isFinite(value) || value < 0) {
+      S.toast(`${label}预算必须是不小于 0 的数字(留空 = 不限额)`, 'error')
+      await loadUsageConfig()
+      return
+    }
+    if (await saveUsageConfig({ [key]: value })) {
+      S.toast(value > 0 ? `${label}预算已设为 ¥${value}(达到 80% 提醒,超限按「超限动作」处理)` : `已取消${label}预算限额(不限额)`, 'ok')
+    }
+    await loadUsageReport()
+  })
 }
 
 /** 今日用量报告(按模型分开统计 + 费用估算;与 QQ/PWA 同一数据源)。 */
@@ -1868,6 +1944,17 @@ async function loadUsageReport(): Promise<void> {
     if (r.tokens.total > 0) {
       lines.push(`Token:${(r.tokens.total / 1000).toFixed(1)}K(输入 ${(r.tokens.input / 1000).toFixed(1)}K / 输出 ${(r.tokens.output / 1000).toFixed(1)}K${r.tokens.cache > 0 ? ` / 缓存 ${(r.tokens.cache / 1000).toFixed(1)}K` : ''})`)
       lines.push(`💰 费用估算:¥${r.cost.total.toFixed(3)}(倍率 ${r.prices.multiplier})`)
+    }
+    // 预算:已设上限时给出进度与超限状态(未设预算时该行为空,界面不变化)。
+    if (r.budget !== null && r.budget !== undefined) {
+      const scopeLine = (name: string, scope: { limit: number; spent: number; ratio: number; exceeded: boolean } | null): void => {
+        if (scope === null) return
+        const state = scope.exceeded ? '已超限' : `${Math.round(scope.ratio * 100)}%`
+        lines.push(`预算(${name}):¥${scope.spent.toFixed(2)} / ¥${scope.limit.toFixed(2)} — ${state}`)
+      }
+      scopeLine('今日', r.budget.daily)
+      scopeLine('本月', r.budget.monthly)
+      if (r.budget.message !== '') lines.push(`⚠️ ${r.budget.message}`)
     }
     if (r.byModel.length > 0) {
       lines.push('')
@@ -2025,6 +2112,25 @@ function bindHarness(): void {
     })
   })
   $id('btn-open-webui').addEventListener('click', () => void API.harness.openWebUi())
+  // 数据目录与日志导出:不依赖 harness。「打开 settings.yaml」走 harness RPC,harness 挂掉时
+  // 必然失败,而那正是最需要看日志的时刻,所以这两个入口独立存在。
+  $id('btn-open-data').addEventListener('click', () => {
+    void API.app.openDataFolder().then((result) => {
+      if (result.opened) S.toast(`已打开 ${result.path}`, 'ok')
+      else S.toast(`打开失败:${result.error}`, 'error')
+    }).catch((error: unknown) => {
+      S.toast(`打开失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+    })
+  })
+  $id('btn-export-logs').addEventListener('click', () => {
+    void API.app.exportLogs().then((result) => {
+      if (result === null) return // 用户取消
+      if (result.ok) S.toast(`已导出 ${result.copied.join('、') || '(无日志文件)'} 到 ${result.target}`, 'ok')
+      else S.toast(`导出失败:${result.error ?? '未知错误'}`, 'error')
+    }).catch((error: unknown) => {
+      S.toast(`导出失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+    })
+  })
 }
 
 function bindRemote(): void {
@@ -2186,8 +2292,17 @@ function bindWorkbench(): void {
       await loadUsageConfig()
       return
     }
-    await API.usage.setConfig({ multiplier: value })
-    S.toast(`费用倍率已设为 ${value}(官方价 × ${value})`, 'ok')
+    if (await saveUsageConfig({ multiplier: value })) S.toast(`费用倍率已设为 ${value}(官方价 × ${value})`, 'ok')
+    await loadUsageReport()
+  })
+  // 预算:留空/0 = 不限额(默认),负数直接拒绝并回读。
+  bindBudgetInput('usage-daily-budget', 'dailyBudget')
+  bindBudgetInput('usage-monthly-budget', 'monthlyBudget')
+  $id('usage-on-exceed').addEventListener('change', async () => {
+    const value = select('usage-on-exceed').value === 'block' ? 'block' : 'notify'
+    if (await saveUsageConfig({ onExceed: value })) {
+      S.toast(value === 'block' ? '已选择:超限后拒绝新的任务启动(机器人 / 队列 / 定时)' : '已选择:超限后只提醒,任务照常执行', 'ok')
+    }
     await loadUsageReport()
   })
   $id('btn-usage-refresh').addEventListener('click', () => void loadUsageReport())
@@ -2219,6 +2334,7 @@ function bindWorkbench(): void {
   })
   $id('btn-interactions-refresh').addEventListener('click', () => void loadInteractions())
   $id('btn-activity-refresh').addEventListener('click', () => void loadActivities())
+  $id('btn-activity-stop-all').addEventListener('click', () => void stopAllActivities())
   $id('btn-audit-refresh').addEventListener('click', () => void loadAudit())
   $id('btn-audit-export').addEventListener('click', async () => { const path = await API.audit.export(); if (path !== null) S.toast(`审计记录已导出:${path}`, 'ok') })
   $id('btn-audit-clear').addEventListener('click', async () => { await API.audit.clear(); await loadAudit(); S.toast('审计记录已清空', 'ok') })

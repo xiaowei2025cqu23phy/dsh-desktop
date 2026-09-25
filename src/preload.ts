@@ -95,7 +95,8 @@ const api = {
   },
   usage: {
     getConfig: () => ipcRenderer.invoke('usage:getConfig'),
-    setConfig: (patch: { multiplier?: number }) => ipcRenderer.invoke('usage:setConfig', patch),
+    setConfig: (patch: { multiplier?: number; dailyBudget?: number; monthlyBudget?: number; onExceed?: 'notify' | 'block' }) =>
+      ipcRenderer.invoke('usage:setConfig', patch),
     report: () => ipcRenderer.invoke('usage:report'),
   },
   interactions: {
@@ -113,6 +114,9 @@ const api = {
   },
   activity: {
     list: () => ipcRenderer.invoke('activity:list'),
+    // 停止会话(session.cancel):返回 { ok, message },成功失败都反馈给用户。
+    stop: (sessionId: string) => ipcRenderer.invoke('activity:stop', sessionId),
+    stopAll: () => ipcRenderer.invoke('activity:stopAll'),
   },
   workspace: {
     health: () => ipcRenderer.invoke('workspace:health'),
@@ -156,7 +160,9 @@ const api = {
     info: () => ipcRenderer.invoke('app:info'),
     recoveryNotice: () => ipcRenderer.invoke('app:recoveryNotice'),
     openSettingsFolder: () => ipcRenderer.invoke('app:openSettingsFolder'),
-    quit: () => ipcRenderer.invoke('app:quit'),
+    // 应用自己的数据目录与日志导出:不依赖 harness,harness 挂掉时仍可用。
+    openDataFolder: () => ipcRenderer.invoke('app:openDataFolder'),
+    exportLogs: () => ipcRenderer.invoke('app:exportLogs'),
   },
   onboarding: {
     get: () => ipcRenderer.invoke('onboarding:get'),

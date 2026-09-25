@@ -4,6 +4,7 @@
  * userData/local.db,仅存本地摘要,不包含模型请求正文或密钥。
  */
 import { DatabaseSync } from 'node:sqlite'
+import { copyFileSync, existsSync, renameSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ActivityRecord, AuditEntry, TaskQueueEntry } from './config'
 
@@ -11,55 +12,132 @@ function toNullable(value: string | null | undefined): string | null {
   return value === undefined ? null : value
 }
 
+const SCHEMA = `
+  PRAGMA journal_mode = WAL;
+  CREATE TABLE IF NOT EXISTS activities (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    workspace TEXT,
+    session_id TEXT,
+    status TEXT NOT NULL,
+    title TEXT NOT NULL,
+    last_event TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS audit_log (
+    id TEXT PRIMARY KEY,
+    time INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    session_id TEXT,
+    activity_id TEXT,
+    detail TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS task_queue (
+    id TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    session_id TEXT,
+    status TEXT NOT NULL,
+    attempts INTEGER NOT NULL,
+    max_attempts INTEGER NOT NULL,
+    next_attempt_at INTEGER,
+    error TEXT,
+    workspace TEXT,
+    source TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    push_target TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_activities_updated ON activities(updated_at);
+  CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(time);
+  CREATE INDEX IF NOT EXISTS idx_queue_status ON task_queue(status);
+  CREATE INDEX IF NOT EXISTS idx_queue_session ON task_queue(session_id);
+`
+
+/**
+ * 打开 SQLite,失败则把损坏文件隔离后重建。
+ *
+ * 原本这里是裸的 `new DatabaseSync(...)`:文件被截断/被杀软或另一实例占用时直接抛,
+ * 而调用链在 `app.whenReady()` 里且没有捕获,结果是**没有窗口、没有对话框**,用户只
+ * 能看到一行没人找得到的日志。本地库只存活动/审计/队列摘要,重建的代价远小于打不开。
+ *
+ * @param onRebuilt 隔离成功时回调备份路径(供界面提示"历史已重置,备份在哪")。
+ * @throws 隔离后仍无法打开时抛出(调用方应给出可见提示后退出)。
+ */
+function openOrRebuild(dbPath: string, onRebuilt: (backupPath: string) => void): DatabaseSync {
+  try {
+    // 关键:SQLite 打开损坏文件是**惰性**的 —— `new DatabaseSync` 会成功,
+    // 直到执行语句才抛 "file is not a database"。因此建表必须落在同一个 try 里,
+    // 否则坏文件根本走不到隔离分支。
+    const db = new DatabaseSync(dbPath)
+    try {
+      db.exec(SCHEMA)
+      return db
+    } catch (schemaError) {
+      // 句柄必须显式关闭,否则 Windows 下文件被占用,后续 remove/rename 一律 EPERM。
+      try { db.close() } catch { /* 已损坏的连接关闭失败可忽略 */ }
+      throw schemaError
+    }
+  } catch (first) {
+    const message = first instanceof Error ? first.message : String(first)
+    console.error('[db] 打开或初始化失败,尝试隔离并重建:', message)
+    return rebuild(dbPath, onRebuilt)
+  }
+}
+
+/** 把损坏的库隔离走(含 WAL 附属文件),然后尽力在**原路径**重建;原路径不可用时换新文件名。 */
+function rebuild(dbPath: string, onRebuilt: (backupPath: string) => void): DatabaseSync {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const backup = `${dbPath}.corrupt-${stamp}`
+  try {
+    copyFileSync(dbPath, backup)
+    rmSync(dbPath, { force: true })
+  } catch (error) {
+    // 仍有句柄占用时删除会失败:副本已留下,原文件留着不影响后续换名重建。
+    console.warn('[db] 移除损坏主库失败(可能有其它实例占用):', error instanceof Error ? error.message : String(error))
+  }
+  for (const suffix of ['-wal', '-shm']) {
+    try {
+      renameSync(`${dbPath}${suffix}`, `${backup}${suffix}`)
+    } catch {
+      // 附属文件不存在:正常情况(WAL 已被检查点清理)。
+    }
+  }
+
+  // 优先沿用原路径,保持「一个 userData 一个 local.db」的整洁。
+  const candidates = existsSync(dbPath) ? [`${dbPath}.rebuilt-${stamp}`] : [dbPath, `${dbPath}.rebuilt-${stamp}`]
+  let lastError: unknown = null
+  for (const candidate of candidates) {
+    try {
+      const fresh = new DatabaseSync(candidate)
+      fresh.exec(SCHEMA)
+      onRebuilt(backup)
+      console.warn(`[db] 已重建本地库(${candidate}),原文件隔离到 ${backup}`)
+      return fresh
+    } catch (error) {
+      lastError = error
+    }
+  }
+  const reason = lastError instanceof Error ? lastError.message : String(lastError)
+  throw new Error(`本地数据库无法打开且重建失败(${reason});原文件已隔离到 ${backup},可删除后重试`)
+}
+
 export class LocalDb {
   private readonly db: DatabaseSync
+  /** 本次启动是否因数据库损坏而重建(隔离了原文件),供界面提示用户。 */
+  private corruptBackupPath: string | null = null
 
   constructor(userDataPath: string) {
-    this.db = new DatabaseSync(join(userDataPath, 'local.db'))
-    this.db.exec(`
-      PRAGMA journal_mode = WAL;
-      CREATE TABLE IF NOT EXISTS activities (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
-        source TEXT NOT NULL,
-        workspace TEXT,
-        session_id TEXT,
-        status TEXT NOT NULL,
-        title TEXT NOT NULL,
-        last_event TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS audit_log (
-        id TEXT PRIMARY KEY,
-        time INTEGER NOT NULL,
-        type TEXT NOT NULL,
-        session_id TEXT,
-        activity_id TEXT,
-        detail TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS task_queue (
-        id TEXT PRIMARY KEY,
-        description TEXT NOT NULL,
-        session_id TEXT,
-        status TEXT NOT NULL,
-        attempts INTEGER NOT NULL,
-        max_attempts INTEGER NOT NULL,
-        next_attempt_at INTEGER,
-        error TEXT,
-        workspace TEXT,
-        source TEXT NOT NULL,
-        channel TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        push_target TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_activities_updated ON activities(updated_at);
-      CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(time);
-      CREATE INDEX IF NOT EXISTS idx_queue_status ON task_queue(status);
-      CREATE INDEX IF NOT EXISTS idx_queue_session ON task_queue(session_id);
-    `)
+    const dbPath = join(userDataPath, 'local.db')
+    this.db = openOrRebuild(dbPath, (backup) => { this.corruptBackupPath = backup })
+  }
+
+  /** 数据库损坏被隔离时的备份路径(null = 本次未发生重建)。 */
+  recoveredFrom(): string | null {
+    return this.corruptBackupPath
   }
 
   // ---- 活动记录 ----

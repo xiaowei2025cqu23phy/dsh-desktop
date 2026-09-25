@@ -10,8 +10,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { toWireMethod, toWirePayload } from './rpc-protocol'
-import type { RpcProtocol } from './rpc-protocol'
+import { toWireMethod, toWirePayload, type RpcProtocol } from './rpc-protocol'
 
 export type RpcResult<T> = { ok: true; value: T } | { ok: false; error: RpcError }
 

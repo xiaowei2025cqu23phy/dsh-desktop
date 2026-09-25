@@ -90,7 +90,7 @@
           <section class="panel">
             <h3>📋 AI 活动中心</h3>
             <pre id="activity-list" class="help-pre">加载中…</pre>
-            <button id="btn-activity-refresh" class="btn btn-sm">刷新活动</button>
+            <div class="field-row"><button id="btn-activity-refresh" class="btn btn-sm">刷新活动</button><button id="btn-activity-stop-all" class="btn btn-sm btn-danger">全部停止</button></div>
           </section>
 
           <section class="panel">
@@ -202,6 +202,18 @@
           <label for="usage-multiplier">费用倍率(1 = 官方价;中转站可按实际价格调整)</label>
           <input id="usage-multiplier" type="number" step="0.1" min="0.1" placeholder="1" />
           <p class="hint">官方参考价:输入 ¥2/百万 token、输出 ¥8/百万、缓存命中 ¥0.5/百万(DeepSeek)。今日用量在工作台查看。</p>
+        </div>
+        <div class="field-row">
+          <label>每日预算 ¥<input id="usage-daily-budget" type="number" step="1" min="0" placeholder="0" /></label>
+          <label>每月预算 ¥<input id="usage-monthly-budget" type="number" step="1" min="0" placeholder="0" /></label>
+        </div>
+        <div class="field">
+          <label for="usage-on-exceed">超限动作</label>
+          <select id="usage-on-exceed">
+            <option value="notify">只提醒(任务照常执行)</option>
+            <option value="block">拒绝新的任务启动(机器人 / 队列 / 定时)</option>
+          </select>
+          <p class="hint">单位:元(与上方单价同口径);留空或 0 = 不限额,默认不限额。按本地日期 / 月份重置,达到 80% 提醒一次;桌面通知沿用「通知与勿扰」里的分级设置。</p>
         </div>
       </section>
 
@@ -601,6 +613,11 @@
       <section class="panel" data-drawer-group="maintenance">
         <h3>服务日志</h3>
         <pre id="log-view" class="log-view"></pre>
+        <div class="field-row">
+          <button id="btn-open-data" class="btn btn-sm">📂 打开数据目录</button>
+          <button id="btn-export-logs" class="btn btn-sm">导出日志</button>
+        </div>
+        <p class="hint">数据目录里有 <code>config.json</code>、<code>local.db</code>、<code>desktop.log</code> 与壁纸;这两项不依赖 harness,harness 挂掉时仍可用。</p>
       </section>
     </aside>
   </div>

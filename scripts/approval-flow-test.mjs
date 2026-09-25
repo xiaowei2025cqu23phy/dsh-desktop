@@ -104,20 +104,21 @@ function makeHarness(log) {
   const denyHigh = await processor.handleText('telegram', '42', '允许 session-test-1')
   check('高风险-聊天允许无效', denyHigh.includes('高风险'), true)
 
-  // 应答被拒(回执 accepted:false)
+  // 应答被拒(回执 accepted:false):harness 拒绝时应把真实原因带回给用户,
+  // 而不是让「允许」看起来生效了。先进入工作区确立会话属主,归属校验才放行。
   const log2 = []
-  const p2 = new RemoteCommandProcessor({
-    client: () => ({
-      async rpc() {
-        return {}
-      },
-      async respond() {
-        return { accepted: false, reason: 'expired' }
-      },
-    }),
+  const p2 = new RemoteCommandProcessor(makeHarness(log2))
+  p2.handleInteractionFrame({
+    type: 'server-request',
+    rpcId: 'r-rej',
+    method: 'approval/requested',
+    payload: { sessionId: 'session-rejected', approvalId: 'a-rej', toolName: 'read_file', reason: '读取文件' },
   })
-  log2.push('x')
-  void log2
+  const p2Owner = await p2.handleText('telegram', '42', '进入 ws1')
+  check('回执被拒-先确立会话属主', p2Owner.startsWith('已进入工作区'), true)
+  const rejected = await p2.handleText('telegram', '42', '允许 session-rejected')
+  check('回执被拒-不谎报成功', rejected.includes('已允许') || rejected.includes('✓'), false)
+  check('回执被拒-给出可读回复', rejected.length > 0, true)
 }
 
 // ---- 提问流 ----

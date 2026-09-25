@@ -129,6 +129,33 @@ interface BotPromptConfigView {
   chatPrompt: string
 }
 
+/** 单个预算周期(今日 / 本月)的判定结果。 */
+interface BudgetScopeStatusView {
+  limit: number
+  spent: number
+  ratio: number
+  warn: boolean
+  exceeded: boolean
+  /** 周期键(本地日期 YYYY-MM-DD / 本地月份 YYYY-MM)。 */
+  period: string
+}
+
+interface BudgetStatusView {
+  daily: BudgetScopeStatusView | null
+  monthly: BudgetScopeStatusView | null
+  exceeded: boolean
+  /** onExceed = block 且已超限:新的任务启动被拒绝。 */
+  blocked: boolean
+  /** 给用户的说明文本(未超限时为空)。 */
+  message: string
+}
+
+/** 会话停止结果:成功/失败都要回显。 */
+interface SessionStopResultView {
+  ok: boolean
+  message: string
+}
+
 interface UsageReportView {
   todaySessions: number
   totalSessions: number
@@ -141,6 +168,8 @@ interface UsageReportView {
   cost: { input: number; output: number; cache: number; total: number }
   prices: { inputPerM: number; outputPerM: number; cachePerM: number; multiplier: number }
   todayList: Array<{ title: string; turns: number }>
+  /** 预算判定(未设预算时为 null)。 */
+  budget: BudgetStatusView | null
 }
 
 interface DesktopApi {
@@ -154,8 +183,8 @@ interface DesktopApi {
     setConfig(patch: object): Promise<unknown>
   }
   usage: {
-    getConfig(): Promise<{ multiplier: number; inputPricePerM: number; outputPricePerM: number; cachePricePerM: number }>
-    setConfig(patch: { multiplier?: number }): Promise<{ multiplier: number; inputPricePerM: number; outputPricePerM: number; cachePricePerM: number }>
+    getConfig(): Promise<{ multiplier: number; inputPricePerM: number; outputPricePerM: number; cachePricePerM: number; dailyBudget: number; monthlyBudget: number; onExceed: 'notify' | 'block' }>
+    setConfig(patch: { multiplier?: number; dailyBudget?: number; monthlyBudget?: number; onExceed?: 'notify' | 'block' }): Promise<{ multiplier: number; inputPricePerM: number; outputPricePerM: number; cachePricePerM: number; dailyBudget: number; monthlyBudget: number; onExceed: 'notify' | 'block' }>
     report(): Promise<UsageReportView | null>
   }
   interactions: {
@@ -173,6 +202,10 @@ interface DesktopApi {
   }
   activity: {
     list(): Promise<Array<{ id: string; type: string; source: string; workspace: string | null; sessionId: string | null; status: string; title: string; lastEvent: string; createdAt: number; updatedAt: number }>>
+    /** 停止该会话(session.cancel);返回结果供界面提示,失败不静默。 */
+    stop(sessionId: string): Promise<SessionStopResultView>
+    /** 停止当前所有运行中的会话。 */
+    stopAll(): Promise<SessionStopResultView>
   }
   workspace: {
     health(): Promise<Array<{ workspaceId: string | null; title: string; path: string; exists: boolean; readable: boolean; writable: boolean; freeBytes: number | null; sessions: number | null }>>
@@ -297,7 +330,8 @@ interface DesktopApi {
     info(): Promise<{ version: string; commit: string; builtAt: number }>
     recoveryNotice(): Promise<string | null>
     openSettingsFolder(): Promise<{ opened: true }>
-    quit(): Promise<void>
+    openDataFolder(): Promise<{ opened: boolean; path: string; error: string }>
+    exportLogs(): Promise<{ ok: boolean; target: string; copied: string[]; error?: string } | null>
   }
   onboarding: {
     get(): Promise<boolean>

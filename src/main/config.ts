@@ -198,12 +198,27 @@ export interface UsageConfig {
   outputPricePerM: number
   /** 缓存命中单价 ¥/百万 token(默认 DeepSeek 官方价)。 */
   cachePricePerM: number
+  /**
+   * 每日预算上限(元,与上面的单价同口径;**0 = 不限额**,默认不限额,不锁住现有用户)。
+   * 按**本地日期**跨天重置(不是固定 86400 秒累加);达到 80% 提醒一次,超限按 onExceed 处理。
+   */
+  dailyBudget: number
+  /** 每月预算上限(元;0 = 不限额),按**本地月份**跨月重置。 */
+  monthlyBudget: number
+  /** 超限动作:notify = 只提醒;block = 提醒并拒绝新的任务启动(机器人 / 队列 / 定时)。 */
+  onExceed: 'notify' | 'block'
 }
 
 export interface ActivityRecord {
   id: string
   type: 'task' | 'chat' | 'scheduled' | 'screensaver' | 'workflow'
-  source: 'desktop' | 'pwa' | 'qq' | 'telegram' | 'system'
+  /**
+   * 来源:desktop = 桌面端发起的任务;pwa = 手机 PWA;qq / telegram = 机器人通道;
+   * system = 无归属任务;**web = 内嵌 Web UI / 手机网页里直接发起的会话**——这类会话不经过
+   * 命令处理器,活动行由事件中枢(见 event-hub.ts)派生,事件流区分不出内嵌页与手机页,
+   * 故合并为一种来源。
+   */
+  source: 'desktop' | 'pwa' | 'qq' | 'telegram' | 'system' | 'web'
   workspace: string | null
   sessionId: string | null
   status: 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled'
@@ -399,6 +414,10 @@ const DEFAULTS: AppConfig = {
     inputPricePerM: 2,
     outputPricePerM: 8,
     cachePricePerM: 0.5,
+    // 默认不限额:预算闸门只对显式设置了上限的用户生效(见 remote-commands 的预算评估)。
+    dailyBudget: 0,
+    monthlyBudget: 0,
+    onExceed: 'notify',
   },
   taskHistory: [],
   notifications: { enabled: true, approval: true, question: true, taskDone: true, taskFail: true, update: true, quietHoursEnabled: false, quietStart: 22, quietEnd: 8, urgentBypassQuiet: true },
@@ -407,6 +426,20 @@ const DEFAULTS: AppConfig = {
   workspaceMemories: {},
   auditLog: [],
   onboarding: { done: false },
+}
+
+/**
+ * 进程内当前配置仓库。
+ *
+ * 不持有配置的转发层(如 EventHub)需要读写活动表,而它们的构造点在入口文件里、只拿到
+ * harness;这里由 ConfigStore 在构造时登记自己,让这类层按需取用,不必为了一个引用去改
+ * 入口的装配顺序。同一进程只会创建一个 ConfigStore(入口 whenReady 里一次)。
+ */
+let activeStore: ConfigStore | null = null
+
+/** 当前进程的配置仓库(尚未创建时返回 null)。 */
+export function activeConfigStore(): ConfigStore | null {
+  return activeStore
 }
 
 export class ConfigStore {
@@ -420,7 +453,18 @@ export class ConfigStore {
     this.path = join(app.getPath('userData'), 'config.json')
     this.config = this.load()
     this.db = new LocalDb(app.getPath('userData'))
+    // 登记为进程内当前实例(见文件末尾 activeConfigStore 的说明)。入口现在会显式把
+    // config 注入 EventHub,这条是给"只拿到 harness 的转发层"兜底用的;漏掉赋值会让
+    // activeConfigStore() 恒为 null,派生活动静默不落库。
+    activeStore = this
+    // 本地库损坏被隔离重建时,把两处提示合并——用户需要知道"历史记录被重置了、原文件在哪"。
+    const dbRecovered = this.db.recoveredFrom()
+    if (dbRecovered !== null) {
+      const dbNotice = `本地数据库损坏,已隔离到 ${dbRecovered} 并重建(活动记录、审计与任务队列历史已重置)。`
+      this.recoveryNotice = this.recoveryNotice === null ? dbNotice : `${this.recoveryNotice}\n${dbNotice}`
+    }
     this.migrateLegacyData()
+    activeStore = this
   }
 
   /** 配置恢复提示(无恢复时返回 null)。界面据此告知用户文件已隔离、旧文件在哪。 */

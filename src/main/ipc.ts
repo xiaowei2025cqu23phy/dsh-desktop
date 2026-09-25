@@ -2,13 +2,12 @@
  * IPC 装配:把 harness / models / screensaver 的能力暴露给渲染进程。
  */
 
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { existsSync, readFileSync } from 'node:fs'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import type { AppearanceManager } from './appearance'
 import { probeCapabilities } from './capabilities'
-import type { ConfigStore, PreviewConfig } from './config'
-import { previewHarnessConfig } from './config'
+import { previewHarnessConfig, type ConfigStore, type PreviewConfig, type UsageConfig } from './config'
 import type { RemoteGateway } from './gateway'
 import type { HarnessManager } from './harness'
 import type { ModelManager } from './models'
@@ -182,10 +181,10 @@ export function registerIpc(deps: IpcDeps): void {
     deps.config.update('bot', patch)
     return deps.config.get().bot
   })
-  // ---- 用量费用配置(倍率;默认官方价) ----
+  // ---- 用量费用配置(倍率 / 每日·每月预算;默认官方价、默认不限额) ----
   ipcMain.handle('usage:getConfig', () => deps.config.get().usage)
-  ipcMain.handle('usage:setConfig', (_event, patch: { multiplier?: number }) => {
-    deps.config.update('usage', patch)
+  ipcMain.handle('usage:setConfig', (_event, patch: Record<string, unknown>) => {
+    deps.config.update('usage', sanitizeUsagePatch(patch))
     return deps.config.get().usage
   })
   ipcMain.handle('notifications:getConfig', () => deps.config.get().notifications)
@@ -203,6 +202,11 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('queue:cancel', (_event, id: string) => deps.commands?.cancelQueueEntry(id) ?? '队列不可用')
   ipcMain.handle('queue:retry', (_event, id: string) => deps.commands?.retryQueueEntry(id) ?? '队列不可用')
   ipcMain.handle('activity:list', () => deps.config.activities())
+  // 活动中心「停止」/「全部停止」:走 session.cancel,成功与失败都回一个结果对象供界面提示。
+  ipcMain.handle('activity:stop', (_event, sessionId: string) =>
+    deps.commands?.stopSession(sessionId) ?? { ok: false, message: '操作不可用' })
+  ipcMain.handle('activity:stopAll', () =>
+    deps.commands?.stopAllSessions() ?? { ok: false, message: '操作不可用' })
   ipcMain.handle('workspace:health', () => {
     if (!harnessReady()) return Promise.resolve([])
     return deps.gateway?.healthReport() ?? Promise.resolve([])
@@ -429,17 +433,62 @@ export function registerIpc(deps: IpcDeps): void {
       return { version: '', commit: '', builtAt: 0 }
     }
   })
+  // 打开 settings.yaml:走 harness 自身的能力(它知道 DSH_HOME 在哪)。
   ipcMain.handle('app:openSettingsFolder', async () => {
     const result = await deps.harness.client().rpc<{ opened: true }>('settings.openDocument')
     return result
   })
-  ipcMain.handle('app:quit', () => {
-    deps.harness.stop()
-    setTimeout(() => process.exit(0), 500)
+  // 应用自己的数据目录(config.json / local.db / desktop.log / 壁纸 / 证书)。
+  // 单独一个入口的意义:harness 挂掉时上面那个必然失败,而"harness 挂了"恰恰是最需要
+  // 看日志的时刻。这条不依赖 harness。
+  ipcMain.handle('app:openDataFolder', async () => {
+    const dir = app.getPath('userData')
+    const error = await shell.openPath(dir)
+    return { opened: error === '' ? true : false, path: dir, error }
   })
-  ipcMain.handle('app:getWindowCount', () => BrowserWindow.getAllWindows().length)
+  // 导出日志:把轮转后的两份 desktop.log 复制到用户选定位置,便于发给他人排查。
+  ipcMain.handle('app:exportLogs', async () => {
+    const dir = app.getPath('userData')
+    const result = await dialog.showOpenDialog({ title: '选择日志导出到的文件夹', properties: ['openDirectory', 'createDirectory'] })
+    if (result.canceled || result.filePaths[0] === undefined) return null
+    const target = join(result.filePaths[0], `dsh-logs-${new Date().toISOString().replace(/[:.]/g, '-')}`)
+    try {
+      mkdirSync(target, { recursive: true })
+      const copied: string[] = []
+      for (const name of ['desktop.log', 'desktop.log.1']) {
+        const from = join(dir, name)
+        if (existsSync(from)) {
+          copyFileSync(from, join(target, name))
+          copied.push(name)
+        }
+      }
+      return { ok: true, target, copied }
+    } catch (error) {
+      return { ok: false, target, copied: [], error: error instanceof Error ? error.message : String(error) }
+    }
+  })
 }
 
 function isWallpaperKind(kind: string): kind is 'window' | 'phone' | 'screensaver' {
   return kind === 'window' || kind === 'phone' || kind === 'screensaver'
+}
+
+/**
+ * 用量配置补丁白名单:只接受已知字段并归一化。
+ *
+ * 预算是钱的口径,不能把渲染进程送来的任意值合并进配置——负数/NaN 会让闸门永远判不出超限,
+ * 未知的 onExceed 会让行为不可预期。未知字段直接丢弃,负预算按 0(= 不限额)处理。
+ */
+function sanitizeUsagePatch(patch: Record<string, unknown>): Partial<UsageConfig> {
+  const next: Partial<UsageConfig> = {}
+  const positive = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+  const multiplier = positive(patch.multiplier)
+  if (multiplier !== undefined) next.multiplier = multiplier
+  for (const key of ['dailyBudget', 'monthlyBudget'] as const) {
+    const value = patch[key]
+    if (typeof value === 'number' && Number.isFinite(value)) next[key] = Math.max(0, value)
+  }
+  if (patch.onExceed === 'notify' || patch.onExceed === 'block') next.onExceed = patch.onExceed
+  return next
 }

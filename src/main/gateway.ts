@@ -257,7 +257,6 @@ export class RemoteGateway {
     const config = this.getConfig()
     if (!config.enabled || config.token === '') return null
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const QRCode = require('qrcode') as { toDataURL: (text: string, opts?: object) => Promise<string> }
       return await QRCode.toDataURL(this.pairUrl(), { width: 180, margin: 1 })
     } catch (error) {
@@ -271,7 +270,6 @@ export class RemoteGateway {
     const config = this.getConfig()
     if (!config.enabled || config.token === '') return []
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const QRCode = require('qrcode') as { toDataURL: (text: string, opts?: object) => Promise<string> }
       const addresses = this.lanAddresses()
       const scheme = config.https === true ? 'https' : 'http'

@@ -6,11 +6,11 @@
  * - 无参数:正常模式(主窗口 + 托盘 + 空闲检测)。
  */
 
-import { app, BrowserWindow, powerMonitor, shell } from 'electron'
+import { app, BrowserWindow, dialog, powerMonitor, shell } from 'electron'
 import { createWriteStream, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { AppearanceManager } from './appearance'
-import { ConfigStore } from './config'
+import { ConfigStore, previewHarnessConfig } from './config'
 import { EventHub } from './event-hub'
 import { RemoteGateway } from './gateway'
 import { HarnessManager } from './harness'
@@ -26,7 +26,6 @@ import { AppTray } from './tray'
 import { registerIpc } from './ipc'
 import { createMainWindow } from './windows'
 import { healProviderSettings, settingsPath } from './settings-heal'
-import { previewHarnessConfig } from './config'
 
 // 开发模式(未打包,electron .)使用独立 userData:避免与打包版共享 config.json、
 // 单实例锁与日志,防止「开发实例把正式版顶掉 / 正式版被开发实例占锁」这类互踢。
@@ -88,6 +87,45 @@ app.on('render-process-gone', (_event, _webContents, details) => {
 app.on('child-process-gone', (_event, details) => {
   console.error(`[child-process-gone] type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`)
 })
+
+// 主进程未捕获异常/未处理 rejection:只记日志,不让进程直接死掉。
+// 桌面端是常驻托盘应用,一次未捕获的 rejection 就退出会让用户以为"它自己关了";
+// 记下来 + 保持运行,比静默崩溃更有用(启动期的致命错误由 reportFatalStartupError 负责)。
+process.on('uncaughtException', (error) => {
+  console.error('[main] uncaughtException:', error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error))
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] unhandledRejection:', reason instanceof Error ? `${reason.message}\n${reason.stack ?? ''}` : String(reason))
+})
+
+/**
+ * 启动失败/未捕获异常的可见兜底:写日志 + 弹对话框给出可执行的下一步。
+ *
+ * 打包版没有控制台,不弹窗就等于"双击没反应"。对话框提供三个出路:打开数据目录
+ * (看/删 config.json、local.db)、打开日志、退出。
+ */
+async function reportFatalStartupError(error: unknown): Promise<void> {
+  const message = error instanceof Error ? `${error.message}\n\n${error.stack ?? ''}` : String(error)
+  console.error('[main] 致命启动错误:', message)
+  try {
+    const userData = app.getPath('userData')
+    const choice = await dialog.showMessageBox({
+      type: 'error',
+      title: 'DeepSeek Harness Desktop 启动失败',
+      message: '应用启动时出错,无法继续。',
+      detail: `${error instanceof Error ? error.message : String(error)}\n\n` +
+        `数据目录:${userData}\n日志:${join(userData, 'desktop.log')}`,
+      buttons: ['打开数据目录', '打开日志', '退出'],
+      defaultId: 0,
+      cancelId: 2,
+    })
+    if (choice.response === 0) await shell.openPath(userData)
+    else if (choice.response === 1) await shell.openPath(join(userData, 'desktop.log'))
+  } catch (dialogError) {
+    console.error('[main] 错误对话框也失败了:', dialogError)
+  }
+  app.exit(1)
+}
 
 const SCREENSAVER_ARGS = ['/s', '-s', '--screensaver']
 const isScreensaverLaunch = (): boolean =>
@@ -179,7 +217,7 @@ if (!gotLock) {
     const appearance = new AppearanceManager(config)
     const notifications = new DesktopNotifications(config)
     // mux 事件中枢:由 EventHub 管理,订阅者包括远程客户端与命令核心。
-    const events = new EventHub(harness)
+    const events = new EventHub(harness, config)
     // 统一远程命令核心(QQ / Telegram / Webhook 共用)。
     const commands = new RemoteCommandProcessor(harness, config)
     let telegramBot: TelegramBotAdapter | null = null
@@ -357,5 +395,9 @@ if (!gotLock) {
     app.on('will-quit', () => {
       console.log('[main] will-quit')
     })
+  }).catch((error) => {
+    // 启动链路兜底:此前这里没有 catch,任何早期抛出(如 userData 不可写、本地库无法
+    // 建立)**没有窗口、没有对话框**,用户只能看到一行没人找得到的 desktop.log。
+    void reportFatalStartupError(error)
   })
 }

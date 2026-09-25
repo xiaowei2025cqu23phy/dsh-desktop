@@ -12,7 +12,8 @@
 
 import type { HarnessManager } from './harness'
 import type { ServerRequest } from './client'
-import type { ConfigStore } from './config'
+import type { ConfigStore, UsageConfig } from './config'
+import { DesktopNotifications, type NotificationKind } from './notifications'
 import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -29,6 +30,36 @@ const LIVE_VIEW_INTERVAL_MS = 25_000
 
 /** 任务队列失败重试的基础退避时长(第 1 次失败退避该值,之后每次翻倍)。 */
 const TASK_RETRY_BASE_DELAY_MS = 30_000
+
+/** 预算达到该比例先提醒一次(超限再按 onExceed 处理)。 */
+const BUDGET_WARN_RATIO = 0.8
+
+/** 预算超限时,失败队列项的自动重试退避时长(否则每轮 tick 都会重试并被拒)。 */
+const BUDGET_RETRY_BACKOFF_MS = 5 * 60_000
+
+/** 预算拒绝启动的固定前缀:调用方据此识别"被闸门拦下",避免重复推送同一原因。 */
+export const BUDGET_DENY_PREFIX = '预算超限:'
+
+/**
+ * 本地日期键(YYYY-MM-DD)。
+ *
+ * 预算的跨天重置以**本地日历日**为准,不能用固定 86400 秒累加——那会让重置时刻随
+ * 启动时间漂移,跨时区/夏令时也会算错。
+ */
+function localDayKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+/** 本地月份键(YYYY-MM):月度预算按本地自然月重置。 */
+function localMonthKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
+/** 单个预算周期的判定(纯计算,便于单测):达到 80% 提醒、达到 100% 视为超限。 */
+function budgetScope(limit: number, spent: number, period: string): BudgetScopeStatus {
+  const ratio = limit > 0 ? spent / limit : 0
+  return { limit, spent, ratio, warn: ratio >= BUDGET_WARN_RATIO, exceeded: ratio >= 1, period }
+}
 
 /**
  * 任务队列失败后的退避时长:30s → 60s → 120s(每次翻倍)。
@@ -197,6 +228,60 @@ export interface ChatStreamSink {
   target?: { scope: string; targetId: string; msgId?: string },
 ) => void
 
+/** 单个模型的 Token 累计(用量报表用)。 */
+interface ModelTokens {
+  provider: string
+  model: string
+  input: number
+  output: number
+  cache: number
+  calls: number
+}
+
+/** 单价口径(¥/百万 token + 倍率),与费用面板一致。 */
+interface UsagePrices {
+  inputPerM: number
+  outputPerM: number
+  cachePerM: number
+  multiplier: number
+}
+
+/** 单个预算周期(今日 / 本月)的判定结果。 */
+export interface BudgetScopeStatus {
+  /** 上限金额(元;> 0)。 */
+  limit: number
+  /** 本期已用金额(元,估算)。 */
+  spent: number
+  /** 已用比例(0~1+,超限后 > 1)。 */
+  ratio: number
+  /** 已达提醒线(80%)。 */
+  warn: boolean
+  /** 已达上限。 */
+  exceeded: boolean
+  /** 周期键(本地日期 YYYY-MM-DD / 本地月份 YYYY-MM),跨期即自动重置。 */
+  period: string
+}
+
+/**
+ * 预算总判定:未设预算时整块为 null(不限额 = 完全没有行为变化)。
+ */
+export interface BudgetStatus {
+  daily: BudgetScopeStatus | null
+  monthly: BudgetScopeStatus | null
+  /** 任一周期已达上限。 */
+  exceeded: boolean
+  /** onExceed = block 且已超限:新的任务启动被拒绝。 */
+  blocked: boolean
+  /** 给用户的说明文本(未超限时为空);blocked 时即拒绝原因。 */
+  message: string
+}
+
+/** 会话停止结果:成功/失败都要能回显给用户,失败不静默。 */
+export interface SessionStopResult {
+  ok: boolean
+  message: string
+}
+
 export class RemoteCommandProcessor {
   private chatContexts = new Map<string, ChatContext>()
   /** 所有会话的进程内运行时状态(owner/任务描述/token/回复/播报/跟随等,统一淘汰)。 */
@@ -220,6 +305,11 @@ export class RemoteCommandProcessor {
   private robotChatDir: string | null = null
   /** 已提示过安全提醒的群(进程内去重)。 */
   private groupNoticed = new Set<string>()
+  /** 预算阈值提醒出口(默认桌面通知;见 showNotice / setNotifier)。 */
+  private notifier: ((kind: NotificationKind, title: string, body: string) => void) | null = null
+  private desktopNotifications: DesktopNotifications | null = null
+  /** 已提醒过的预算阈值:键 `${周期}-${period}-${warn|exceed}`,同一周期同一级别只打扰一次。 */
+  private budgetNotices = new Map<string, boolean>()
 
   /** 对话上下文键:私聊按用户,群聊按群(一个群共用一个对话,与私聊隔开)。 */
   private contextKey(channel: string, userId: string, pushTarget?: { scope: string; targetId: string }): string {
@@ -356,6 +446,80 @@ export class RemoteCommandProcessor {
       return `✓ 已选择:${option.label}`
     } catch (error) {
       return `回答失败:${error instanceof Error ? error.message : String(error)}`
+    }
+  }
+
+  /**
+   * 桌面端活动中心「停止」:对该会话请求 session.cancel(与「停止 <会话id>」指令同一 RPC)。
+   *
+   * 操作者是本机用户,不做通道归属校验;成功后把活动行标为已停止,让徽标立即反映,
+   * 失败则把原因原样返回给界面(不静默)。
+   */
+  async stopSession(sessionId: string): Promise<SessionStopResult> {
+    if (!/^session-/.test(sessionId)) return { ok: false, message: '会话 id 无效,无法停止。' }
+    try {
+      await this.harness.client().rpc('session.cancel', { sessionId })
+    } catch (error) {
+      return { ok: false, message: `停止失败:${error instanceof Error ? error.message : String(error)}` }
+    }
+    this.markSessionsStopped([sessionId])
+    this.appendAudit({ time: Date.now(), type: 'session.cancel', sessionId, detail: '桌面端活动中心请求停止会话' })
+    return { ok: true, message: `已请求停止 ${sessionId}` }
+  }
+
+  /** 桌面端活动中心「全部停止」:停止所有活动行仍处于运行中的会话(逐个走同一 RPC)。 */
+  async stopAllSessions(): Promise<SessionStopResult> {
+    const active = this.activityStore()?.activities() ?? []
+    const sessionIds = [...new Set(active
+      .filter((item) => item.sessionId !== null && (item.status === 'running' || item.status === 'waiting' || item.status === 'queued'))
+      .map((item) => item.sessionId as string))]
+    if (sessionIds.length === 0) return { ok: true, message: '当前没有运行中的会话。' }
+    const failures: string[] = []
+    const stoppedIds: string[] = []
+    for (const sessionId of sessionIds) {
+      try {
+        await this.harness.client().rpc('session.cancel', { sessionId })
+        stoppedIds.push(sessionId)
+      } catch (error) {
+        failures.push(`${sessionId}:${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    this.markSessionsStopped(stoppedIds)
+    this.appendAudit({ time: Date.now(), type: 'session.cancel', detail: `桌面端活动中心停止全部会话:成功 ${stoppedIds.length} 个${failures.length === 0 ? '' : `,失败 ${failures.length} 个`}` })
+    if (failures.length === 0) return { ok: true, message: `已请求停止 ${stoppedIds.length} 个会话` }
+    return {
+      ok: stoppedIds.length > 0,
+      message: `已请求停止 ${stoppedIds.length} 个会话,${failures.length} 个失败:${failures.slice(0, 3).join(';')}`,
+    }
+  }
+
+  /**
+   * 支持活动表的配置仓库。
+   *
+   * 活动表在真实宿主(SQLite)里总是可用;极简测试替身没有 activities/upsertActivity,
+   * 这里返回 null 让调用方跳过,而不是让停止/恢复流程整体抛错。
+   */
+  private activityStore(): ConfigStore | null {
+    const store = this.config
+    if (store === undefined) return null
+    if (typeof store.activities !== 'function' || typeof store.upsertActivity !== 'function') return null
+    return store
+  }
+
+  /**
+   * 把指定会话的活动行标为已停止:只改状态,标题/工作区/最近事件仍归原写入者
+   * (recordTask 或事件中枢)——两边不互相覆盖。
+   *
+   * 这是给界面的即时反馈;会话若仍在跑,随后的会话事件会把状态改回运行中。
+   */
+  private markSessionsStopped(sessionIds: string[]): void {
+    const store = this.activityStore()
+    if (store === null || sessionIds.length === 0) return
+    const now = Date.now()
+    for (const sessionId of sessionIds) {
+      const row = store.activities().find((item) => item.sessionId === sessionId)
+      if (row === undefined) continue
+      store.upsertActivity({ ...row, status: 'cancelled', updatedAt: now })
     }
   }
 
@@ -498,6 +662,13 @@ export class RemoteCommandProcessor {
       if (entries.some((item) => item.status === 'running')) return
       const next = entries.find((item) => item.status === 'queued')
       if (next === undefined) return
+      // 预算闸门:排队任务同样要拦。保留排队行(预算按本地日期重置后会自动继续),
+      // 但把原因写进队列项,桌面端/手机端能直接看到为什么没跑。
+      const denied = await this.budgetDenyReason()
+      if (denied !== null) {
+        target.upsertTaskQueueEntry({ ...next, error: denied, updatedAt: Date.now() })
+        return
+      }
       const client = this.harness.client()
       try {
         if (next.sessionId === null) {
@@ -1466,6 +1637,60 @@ export class RemoteCommandProcessor {
     }
   }
 
+  /**
+   * 汇总某个时间窗(自 `since` 起)内的 Token。
+   *
+   * 口径与费用面板一致:进程内实时累计优先(重启前的会话回读历史补齐,最多 12 个,
+   * 避免拖慢报表;读不到的历史由实时数据兜底)。
+   */
+  private async tokensSince(
+    windowSessions: Array<{ sessionId: string }>,
+    since: number,
+  ): Promise<{ input: number; output: number; cache: number; byModel: Map<string, ModelTokens> }> {
+    const ids = new Set(windowSessions.map((s) => s.sessionId))
+    let input = 0, output = 0, cache = 0
+    const byModel = new Map<string, ModelTokens>()
+    const add = (key: string, rec: ModelTokens): void => {
+      input += rec.input
+      output += rec.output
+      cache += rec.cache
+      const entry = byModel.get(key) ?? { provider: rec.provider, model: rec.model, input: 0, output: 0, cache: 0, calls: 0 }
+      entry.input += rec.input
+      entry.output += rec.output
+      entry.cache += rec.cache
+      entry.calls += rec.calls
+      byModel.set(key, entry)
+    }
+    // 实时 usage 在到达时已按当时模型拆分；不再把整个会话归到最后一次模型。
+    for (const [sessionId, state] of this.sessions) {
+      if (state.tokenUsage === undefined || !ids.has(sessionId)) continue
+      for (const [key, rec] of state.tokenUsage) add(key, rec)
+    }
+    // 重启前的会话只读取最近 20 个历史消息；无法快速恢复的历史不会阻塞报表。
+    const historical = windowSessions.filter((s) => this.sessions.get(s.sessionId)?.tokenUsage === undefined).slice(0, 12)
+    const rows = await Promise.all(historical.map((s) => this.sessionUsageByModel(s.sessionId, since)))
+    for (const models of rows) {
+      for (const item of models) add(`${item.provider}/${item.model}`, item)
+    }
+    return { input, output, cache, byModel }
+  }
+
+  /** Token → 费用(¥):单价 × 倍率,与面板口径一致。 */
+  private costOf(
+    tokens: { input: number; output: number; cache: number },
+    prices: UsagePrices,
+  ): { input: number; output: number; cache: number; total: number } {
+    const calc = (value: number, pricePerM: number): number => value / 1e6 * pricePerM * prices.multiplier
+    const cost = {
+      input: calc(tokens.input, prices.inputPerM),
+      output: calc(tokens.output, prices.outputPerM),
+      cache: calc(tokens.cache, prices.cachePerM),
+      total: 0,
+    }
+    cost.total = cost.input + cost.output + cost.cache
+    return cost
+  }
+
   /** 用量与费用估算(结构化;命令端与 PWA 共用)。owner 提供时按发起者过滤(机器人命令),桌面端/PWA 传 undefined 看全量。 */
   async usageReport(owner?: Pick<SessionOwner, 'channel' | 'userId'>): Promise<{
     todaySessions: number
@@ -1479,67 +1704,37 @@ export class RemoteCommandProcessor {
     cost: { input: number; output: number; cache: number; total: number }
     prices: { inputPerM: number; outputPerM: number; cachePerM: number; multiplier: number }
     todayList: Array<{ title: string; turns: number }>
+    /** 预算判定(仅在设置了上限且为全局报表时给出;未设预算时 null)。 */
+    budget: BudgetStatus | null
   }> {
     const client = this.harness.client()
     const list = await client.rpc<{ items: Array<{ sessionId: string; updatedAt?: number; title?: string | null; projections?: { values?: { sessionStats?: { turns?: number; llmMs?: number } } } }> }>('session.list', {}, 20000)
     const items = (list.items ?? []).filter((s) => owner === undefined || this.ownedByOwner(owner, s.sessionId))
     const now = new Date()
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
     const today = items.filter((s) => (s.updatedAt ?? 0) >= todayStart)
     const all = items.filter((s) => (s.updatedAt ?? 0) > 0)
     const sumTurns = (arr: Array<{ projections?: { values?: { sessionStats?: { turns?: number } } } }>) =>
       arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.turns ?? 0), 0)
     const sumLlms = (arr: Array<{ projections?: { values?: { sessionStats?: { llmMs?: number } } } }>) =>
       arr.reduce((acc, s) => acc + (s.projections?.values?.sessionStats?.llmMs ?? 0), 0)
-    // 实时 usage 在到达时已按当时模型拆分；不再把整个会话归到最后一次模型。
-    const todayIds = new Set(today.map((s) => s.sessionId))
-    let inTok = 0, outTok = 0, cacheTok = 0
-    const byModel = new Map<string, { provider: string; model: string; input: number; output: number; cache: number; calls: number }>()
-    for (const [sessionId, state] of this.sessions) {
-      if (state.tokenUsage === undefined) continue
-      if (!todayIds.has(sessionId)) continue
-      for (const [key, rec] of state.tokenUsage) {
-        inTok += rec.input
-        outTok += rec.output
-        cacheTok += rec.cache
-        const entry = byModel.get(key) ?? { provider: rec.provider, model: rec.model, input: 0, output: 0, cache: 0, calls: 0 }
-        entry.input += rec.input
-        entry.output += rec.output
-        entry.cache += rec.cache
-        entry.calls += rec.calls
-        byModel.set(key, entry)
-      }
-    }
-    // 重启前的会话只读取最近 20 个历史消息；无法快速恢复的历史不会阻塞报表。
-    const historicalSessions = today.filter((s) => this.sessions.get(s.sessionId)?.tokenUsage === undefined).slice(0, 12)
-    const historical = await Promise.all(historicalSessions.map((s) => this.sessionUsageByModel(s.sessionId, todayStart)))
-    for (const models of historical) {
-      for (const item of models) {
-        inTok += item.input
-        outTok += item.output
-        cacheTok += item.cache
-        const key = `${item.provider}/${item.model}`
-        const entry = byModel.get(key) ?? { provider: item.provider, model: item.model, input: 0, output: 0, cache: 0, calls: 0 }
-        entry.input += item.input
-        entry.output += item.output
-        entry.cache += item.cache
-        entry.calls += item.calls
-        byModel.set(key, entry)
-      }
-    }
+    const todayTokens = await this.tokensSince(today, todayStart)
     // 费用估算:Token × 官方单价 × 倍率。
-    const usage = this.config?.get().usage
-    const prices = usage === undefined
+    const usage: UsageConfig | undefined = this.config?.get().usage
+    const prices: UsagePrices = usage === undefined
       ? { inputPerM: 2, outputPerM: 8, cachePerM: 0.5, multiplier: 1 }
       : { inputPerM: usage.inputPricePerM, outputPerM: usage.outputPricePerM, cachePerM: usage.cachePricePerM, multiplier: usage.multiplier }
-    const calc = (tokens: number, pricePerM: number): number => tokens / 1e6 * pricePerM * prices.multiplier
-    const cost = {
-      input: calc(inTok, prices.inputPerM),
-      output: calc(outTok, prices.outputPerM),
-      cache: calc(cacheTok, prices.cachePerM),
-      total: 0,
+    const cost = this.costOf(todayTokens, prices)
+    // 预算评估:只对全局报表做(机器人「用量」按发起者过滤,不代表全局花费);未设预算整体跳过。
+    let budget: BudgetStatus | null = null
+    if (owner === undefined && usage !== undefined && (usage.dailyBudget > 0 || usage.monthlyBudget > 0)) {
+      // 本月累计只在设了月度预算时聚合:要多回读一轮历史,不设月度预算就不付这份开销。
+      const monthCost = usage.monthlyBudget > 0
+        ? this.costOf(await this.tokensSince(items.filter((s) => (s.updatedAt ?? 0) >= monthStart), monthStart), prices).total
+        : null
+      budget = this.evaluateBudget(cost.total, monthCost)
     }
-    cost.total = cost.input + cost.output + cost.cache
     return {
       todaySessions: today.length,
       totalSessions: all.length,
@@ -1547,14 +1742,117 @@ export class RemoteCommandProcessor {
       totalTurns: sumTurns(all),
       todayLlmMs: sumLlms(today),
       totalLlmMs: sumLlms(all),
-      tokens: { input: inTok, output: outTok, cache: cacheTok, total: inTok + outTok + cacheTok },
-      byModel: [...byModel.values()].sort((a, b) => (b.input + b.output) - (a.input + a.output)),
+      tokens: { input: todayTokens.input, output: todayTokens.output, cache: todayTokens.cache, total: todayTokens.input + todayTokens.output + todayTokens.cache },
+      byModel: [...todayTokens.byModel.values()].sort((a, b) => (b.input + b.output) - (a.input + a.output)),
       cost,
       prices,
       todayList: today.slice(0, 5).map((s) => ({
         title: (s.title ?? s.sessionId.slice(0, 12)).slice(0, 30),
         turns: s.projections?.values?.sessionStats?.turns ?? 0,
       })),
+      budget,
+    }
+  }
+
+  // ---- 预算闸门 ----
+
+  /**
+   * 预算判定:今日金额对照 dailyBudget、本月金额对照 monthlyBudget(均为本地日期周期),
+   * 达到 80% 提醒一次、超限按 onExceed 再提醒一次,并把结论交给调用方(用量面板 / 任务闸门)。
+   *
+   * @param dayCost 今日累计费用(元,估算;由 usageReport 的全量口径算出)。
+   * @param monthCost 本月累计费用(元);未设月度预算时传 null。
+   * @param now 参考时刻(默认当前;传入便于同一份报告内部保持一致)。
+   */
+  private evaluateBudget(dayCost: number, monthCost: number | null, now = Date.now()): BudgetStatus {
+    const usage = this.config?.get().usage
+    const date = new Date(now)
+    const daily = usage !== undefined && usage.dailyBudget > 0
+      ? budgetScope(usage.dailyBudget, dayCost, localDayKey(date))
+      : null
+    const monthly = usage !== undefined && usage.monthlyBudget > 0 && monthCost !== null
+      ? budgetScope(usage.monthlyBudget, monthCost, localMonthKey(date))
+      : null
+    const exceeded = daily?.exceeded === true || monthly?.exceeded === true
+    const blocked = exceeded && usage?.onExceed === 'block'
+    // 阈值提醒:同一周期同一级别只发一次(状态栏每 10 秒就会重算一次报告,不去重会刷屏)。
+    const notices: Array<{ key: string; text: string }> = []
+    for (const [label, scope] of [['今日', daily], ['本月', monthly]] as Array<[string, BudgetScopeStatus | null]>) {
+      if (scope === null) continue
+      const money = `¥${scope.spent.toFixed(2)} / ¥${scope.limit.toFixed(2)}`
+      if (scope.warn) notices.push({ key: `${label}-${scope.period}-warn`, text: `${label}已用 ${money}(${Math.round(scope.ratio * 100)}%,已达 80% 提醒线)` })
+      if (scope.exceeded) {
+        notices.push({
+          key: `${label}-${scope.period}-exceed`,
+          text: `${label}已超预算:${money}` + (blocked ? ' —— 新的任务启动已被拒绝(机器人 / 队列 / 定时)' : ' —— 当前动作:仅提醒'),
+        })
+      }
+    }
+    const fresh = notices.filter((item) => !this.budgetNotices.has(item.key))
+    if (fresh.length > 0) {
+      for (const item of fresh) {
+        this.budgetNotices.set(item.key, true)
+      }
+      // 键按本地周期命名,跨天/跨月自然失效;淘汰只影响很旧的周期键。
+      evictOldest(this.budgetNotices, 60)
+      // 分级:预算超限/告警用 taskFail(现有分级里唯一的"出问题"档,可绕过勿扰时段)。
+      this.showNotice('taskFail', blocked ? 'Token 预算已超限' : 'Token 预算告警', fresh.map((item) => item.text).join('\n'))
+    }
+    const message = !exceeded
+      ? ''
+      : blocked
+        ? this.budgetDenyMessage(daily, monthly)
+        : `预算已超限(${(daily?.exceeded === true ? '今日' : '本月')}),当前动作「只提醒」:任务仍会执行。`
+    return { daily, monthly, exceeded, blocked, message }
+  }
+
+  /** 拒绝启动任务的原因文本:写清数字与恢复方式,不做静默失败。 */
+  private budgetDenyMessage(daily: BudgetScopeStatus | null, monthly: BudgetScopeStatus | null): string {
+    const scope = daily?.exceeded === true ? daily : monthly
+    const label = daily?.exceeded === true ? '今日' : '本月'
+    const limit = scope?.limit ?? 0
+    const spent = scope?.spent ?? 0
+    return `${BUDGET_DENY_PREFIX}${label}已用 ¥${spent.toFixed(2)},上限 ¥${limit.toFixed(2)},本次任务未启动。` +
+      '可在桌面端「设置 → 通用 → 用量费用」调高上限或改为「只提醒」;预算按本地日期 / 月份自动重置。'
+  }
+
+  /**
+   * 任务启动闸门:设置了预算时先评估一次(顺带发出阈值提醒),超限且 onExceed = block 则拒绝启动。
+   *
+   * 评估复用 usageReport,保证与面板 / 机器人口径完全一致;统计不可用时**放行**——
+   * 宁可少拦一次,也不能因为统计故障让机器人彻底不能干活。返回拒绝原因(null = 放行)。
+   */
+  private async budgetDenyReason(): Promise<string | null> {
+    const usage = this.config?.get().usage
+    if (usage === undefined) return null
+    if (!(usage.dailyBudget > 0) && !(usage.monthlyBudget > 0)) return null
+    try {
+      const report = await this.usageReport()
+      return usage.onExceed === 'block' && report.budget?.blocked === true ? report.budget.message : null
+    } catch (error) {
+      console.warn('[budget] 预算评估失败,本次任务照常启动:', error instanceof Error ? error.message : String(error))
+      return null
+    }
+  }
+
+  /** 注入预算提醒出口(缺省用桌面通知分级;测试可注入替身)。 */
+  setNotifier(fn: (kind: NotificationKind, title: string, body: string) => void): void {
+    this.notifier = fn
+  }
+
+  /** 发一条桌面通知:复用现有通知分级(enabled / 分级开关 / 勿扰),不新造通知通道。 */
+  private showNotice(kind: NotificationKind, title: string, body: string): void {
+    try {
+      if (this.notifier !== null) {
+        this.notifier(kind, title, body)
+        return
+      }
+      if (this.config === undefined) return
+      this.desktopNotifications ??= new DesktopNotifications(this.config)
+      this.desktopNotifications.show(kind, title, body)
+    } catch (error) {
+      // 个别平台/权限下通知会抛;预算判定与任务流程不受影响。
+      console.warn('[budget] 通知发送失败:', error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -1694,7 +1992,11 @@ export class RemoteCommandProcessor {
       }
       const key = `${task.channel}:${task.userId}`
       // 定时任务按「添加时的身份」执行(无实时对话上下文,工作区走默认配置)。
-      await this.cmdRun(key, key, task.description, task.pushTarget ?? undefined).catch(() => '')
+      const reply = await this.cmdRun(key, key, task.description, task.pushTarget ?? undefined).catch((error: unknown) => `启动失败:${error instanceof Error ? error.message : String(error)}`)
+      // 定时任务无人盯着:启动失败(含被预算闸门拒绝)必须把原因推给发起者,不能只留一句"已触发"。
+      if (!reply.includes('任务已启动') && !reply.includes('已排队') && this.push !== null) {
+        this.push(task.channel, task.userId, `⚠️ 定时任务未执行:${reply.slice(0, 300)}`, undefined, task.pushTarget ?? undefined)
+      }
       if (task.delay.kind === 'daily') {
         remaining.push({ ...task, nextAt: this.nextFireTime(task.delay, now) })
       }
@@ -1710,7 +2012,8 @@ export class RemoteCommandProcessor {
     const due = target.taskQueue().filter((item) => item.status === 'failed' && item.nextAttemptAt !== null && item.nextAttemptAt <= now)
     for (const entry of due) {
       const result = await this.retryQueueEntry(entry.id).catch(() => '')
-      if (result !== '' && this.push !== null) {
+      // 被预算闸门拦下时不再按队列节奏反复推送(阈值提醒已由通知分级发出一次)。
+      if (result !== '' && !result.startsWith(BUDGET_DENY_PREFIX) && this.push !== null) {
         const owner = entry.sessionId === null ? undefined : this.sessions.get(entry.sessionId)?.owner
         if (owner !== undefined && owner.pushTarget !== undefined) {
           this.push(owner.channel, owner.userId, `🔄 任务自动重试:${entry.description.slice(0, 60)}\n${result}`, undefined, owner.pushTarget)
@@ -1725,9 +2028,16 @@ export class RemoteCommandProcessor {
     const target = this.config as ConfigStore & { taskQueue?: ConfigStore['taskQueue']; upsertTaskQueueEntry?: ConfigStore['upsertTaskQueueEntry'] }
     if (typeof target?.taskQueue !== 'function' || typeof target?.upsertTaskQueueEntry !== 'function') return
     const now = Date.now()
+    const activities = this.activityStore()
     for (const entry of target.taskQueue()) {
       if (entry.status === 'running') {
         target.upsertTaskQueueEntry({ ...entry, status: 'failed', nextAttemptAt: null, error: '应用退出导致任务中断', updatedAt: now })
+        // 对应活动行一并收摊:任务已随上次退出中断,再留在「运行中」会让徽标永远不归零
+        // (事件中枢只负责它自己派生的行,recordTask 写的显式行由这里收尾)。
+        if (activities !== null && entry.sessionId !== null) {
+          const row = activities.activities().find((item) => item.sessionId === entry.sessionId && item.status === 'running')
+          if (row !== undefined) activities.upsertActivity({ ...row, status: 'failed', lastEvent: '应用退出导致任务中断', updatedAt: now })
+        }
       }
     }
   }
@@ -1789,6 +2099,12 @@ export class RemoteCommandProcessor {
     if (target.taskQueue().some((item) => item.status === 'running' && item.id !== id)) {
       target.upsertTaskQueueEntry({ ...entry, status: 'queued', nextAttemptAt: null, updatedAt: Date.now() })
       return '已有任务在运行,重试已排队,将串行执行。'
+    }
+    // 预算闸门:重试同样是新的花费。被拒时按 5 分钟退避,避免每轮 tick 都重试并重复推送。
+    const denied = await this.budgetDenyReason()
+    if (denied !== null) {
+      target.upsertTaskQueueEntry({ ...entry, error: denied, nextAttemptAt: Date.now() + BUDGET_RETRY_BACKOFF_MS, updatedAt: Date.now() })
+      return denied
     }
     target.upsertTaskQueueEntry({ ...entry, status: 'running', nextAttemptAt: null, updatedAt: Date.now() })
     try {
@@ -2128,6 +2444,9 @@ export class RemoteCommandProcessor {
     pushTarget?: { scope: string; targetId: string },
   ): Promise<string> {
     if (description === '') return '任务描述不能为空,示例:任务 分析这个仓库的架构'
+    // 预算闸门:超限且动作为 block 时在这里挡住新任务(含定时任务与「重试」,都走本方法)。
+    const denied = await this.budgetDenyReason()
+    if (denied !== null) return denied
     const client = this.harness.client()
     const parsed = parseTaskOptions(description)
     // 「任务 新:描述」= 强制另起一个新任务会话(默认任务会话是复用的)。
@@ -2673,6 +2992,11 @@ export class RemoteCommandProcessor {
     const failed = failure !== null
     const message = failure?.message ?? ''
     const isTransport = failure?.isTransport ?? false
+    // 会话被取消(harness 以 reason.kind='aborted' 收尾,如活动中心点了「停止」):既不是失败
+    // 也不是完成——记成「已完成」会让用户以为自己没停掉,记成「失败」又平白报错。
+    const reason = isRecord(payload.event.data) && isRecord(payload.event.data.reason) ? payload.event.data.reason : {}
+    const aborted = !failed && reason.kind === 'aborted'
+    const endStatus: 'cancelled' | 'failed' | 'completed' = failed ? 'failed' : aborted ? 'cancelled' : 'completed'
     // TRANSPORT 中断(模型流错误,如中转站读取超时/流式通道不稳):同会话自动重试一次。
     if (isTransport && this.sessions.get(sessionId)?.retriedTransport !== true) {
       this.session(sessionId).retriedTransport = true
@@ -2697,11 +3021,11 @@ export class RemoteCommandProcessor {
           id: prevHistory?.id ?? `task-${queueNow}-${Math.random().toString(36).slice(2, 8)}`,
           description: queueDescription,
           sessionId,
-          status: failed ? 'failed' : 'completed',
+          status: endStatus,
           attempts: prevHistory?.attempts ?? 1,
           ...(failed && message !== '' ? { error: message } : {}),
         },
-        { sessionId, status: failed ? 'failed' : 'completed', ...(failed && message !== '' ? { error: message } : {}) },
+        { sessionId, status: endStatus, ...(failed && message !== '' ? { error: message } : {}) },
         queueNow,
       )
     }
@@ -2714,23 +3038,26 @@ export class RemoteCommandProcessor {
     const now = Date.now()
     const reportKey = `${sessionId}|${(queueDescription ?? '').slice(0, 60)}`
     const record = this.lastTurnReports.get(reportKey) ?? { done: 0, fail: 0 }
-    const last = failed ? record.fail : record.done
+    // 取消与失败共用「未成功」窗口去重:用户连点停止不会刷屏。
+    const last = failed || aborted ? record.fail : record.done
     if (now - last < 5 * 60 * 1000) return
-    if (failed) record.fail = now
+    if (failed || aborted) record.fail = now
     else record.done = now
     this.lastTurnReports.set(reportKey, record)
     if (this.lastTurnReports.size > 300) {
       const oldest = this.lastTurnReports.keys().next().value as string | undefined
       if (oldest !== undefined) this.lastTurnReports.delete(oldest)
     }
-    this.recordTask({ sessionId, status: failed ? 'failed' : 'completed', ...(failed && message !== '' ? { error: message } : {}) })
-    const text = failed
-      ? `❌ 任务失败(会话 ${sessionId})${message !== '' ? `\n${message.slice(0, 200)}` : ''}` +
-        (isTransport
-          ? '\n🔧 常见于第三方中转站:上游读取超时/流式通道不稳/风控截断。排查顺序:调大 read_timeout(≥120s)→ 关闭流式测试 → 降低 max_tokens → 简化输入对比(详见 FAQ)'
-          : '') +
-        `\n发送「打开 ${sessionId}」查看详情`
-      : `✅ 任务完成(会话 ${sessionId})\n发送「打开 ${sessionId}」查看结果`
+    this.recordTask({ sessionId, status: endStatus, ...(failed && message !== '' ? { error: message } : {}) })
+    const text = aborted
+      ? `⏹️ 任务已停止(会话 ${sessionId})\n发送「打开 ${sessionId}」查看已有结果`
+      : failed
+        ? `❌ 任务失败(会话 ${sessionId})${message !== '' ? `\n${message.slice(0, 200)}` : ''}` +
+          (isTransport
+            ? '\n🔧 常见于第三方中转站:上游读取超时/流式通道不稳/风控截断。排查顺序:调大 read_timeout(≥120s)→ 关闭流式测试 → 降低 max_tokens → 简化输入对比(详见 FAQ)'
+            : '') +
+          `\n发送「打开 ${sessionId}」查看详情`
+        : `✅ 任务完成(会话 ${sessionId})\n发送「打开 ${sessionId}」查看结果`
     if (this.push !== null) this.push(owner.channel, owner.userId, text, undefined, owner.pushTarget)
     // 任务结束:启动下一个排队任务(串行执行)。
     void this.drainQueue().catch(() => {})
