@@ -222,5 +222,23 @@ const harness = { client: () => ({}), status: () => ({ state: 'stopped' }), base
   clash.stop()
 }
 
+// ---- HTTPS 证书跟随:地址未变时不应重签 ----
+// 重签会写盘并让调用方重启监听,若判定写错就会每分钟无谓地重签+重启。
+// (重签成功路径依赖 Electron app.getPath,纯 Node 下无法验证,故这里只覆盖判定分支。)
+{
+  const config = makeConfig()
+  const gateway = new RemoteGateway(config, harness, events)
+  config.update('remote', { https: false })
+  check('HTTPS 关闭时不做证书跟随', gateway.revalidateHttpsCert(), false)
+
+  config.update('remote', { https: true })
+  // 把地址源统一到桩上(实现内部也是调 lanAddresses,桩在 prototype 上才对两者都生效)。
+  const saved = RemoteGateway.prototype.lanAddresses
+  RemoteGateway.prototype.lanAddresses = () => []
+  // 地址为空 → 没有任何 missing → 不应重签。
+  check('地址集合为空时不重签', gateway.revalidateHttpsCert(), false)
+  RemoteGateway.prototype.lanAddresses = saved
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

@@ -250,6 +250,18 @@ if (!gotLock) {
       },
     })
     const gateway = new RemoteGateway(config, harness, events, commands)
+    // 网络地址变化(网卡接入/换网/DHCP 续租)后让 HTTPS 证书跟上,否则手机用新地址访问
+    // 会因 SAN 不匹配 TLS 失败,而且 Service Worker 也注册不上。仅 HTTPS 开启时才有意义。
+    // 已建立的连接需要重新握手,所以重签后要重启监听。
+    const certFollow = setInterval(() => {
+      try {
+        if (gateway.revalidateHttpsCert()) gateway.restart()
+      } catch (error) {
+        console.warn('[main] 证书跟随检查失败:', error instanceof Error ? error.message : String(error))
+      }
+    }, 60_000)
+    certFollow.unref?.()
+    app.on('will-quit', () => clearInterval(certFollow))
     commands.setExportDir(join(app.getPath('userData'), 'exports'))
     qqBot = new QQBotAdapter(config, commands)
     telegramBot = new TelegramBotAdapter(config, commands)

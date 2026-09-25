@@ -404,6 +404,44 @@ export class RemoteGateway {
     }
   }
 
+  /**
+   * 网络地址变化时让 HTTPS 证书跟上。
+   *
+   * 为什么需要:证书只在 `start()` 时校验/重签(见 httpsCert 的注释)。若运行中某张
+   * 网卡连上并拿到新地址(WLAN 接入、DHCP 续租),证书的 SAN 不覆盖该地址,用新地址
+   * 访问会 TLS 失败——而 SAN 不匹配还会连带让 Service Worker(离线外壳)注册不上。
+   * 用户不该为了这个去重启应用。
+   *
+   * 行为:地址集合变化才重新签发;返回 true 表示发生重签,调用方应重启网关让新证书生效
+   * (已建立的连接需要重新握手,所以必须重启监听而不是热替换)。
+   */
+  revalidateHttpsCert(): boolean {
+    const config = this.getConfig()
+    if (config.https !== true) return false
+    const current = this.lanAddresses()
+    let cached: string[] = []
+    try {
+      const meta = JSON.parse(readFileSync(join(app.getPath('userData'), 'https-cert.json'), 'utf8')) as { ips?: unknown }
+      cached = Array.isArray(meta.ips) ? meta.ips.filter((v): v is string => typeof v === 'string') : []
+    } catch {
+      // 没有元数据 —— 走 httpsCert() 的重新签发路径。
+    }
+    // cached 需要覆盖 current 中的每一个实际局域网地址(127.0.0.1 由 httpsCert 固定加入)。
+    const missing = current.filter((ip) => !cached.includes(ip))
+    if (missing.length === 0) return false
+    console.log(`[gateway] 检测到新的局域网地址 ${missing.join(',')},重新签发 HTTPS 证书`)
+    // 注意:httpsCert() 内部对写盘失败只 warn 不抛,所以不能用 try/catch 判断成败 ——
+    // 必须回读证书里的 SAN 确认新地址真的写进去了,否则会返回 true 让调用方做无谓的重启。
+    try {
+      const renewed = this.httpsCert()
+      const covered = renewed.hosts
+      return missing.every((ip) => covered.includes(ip))
+    } catch (error) {
+      console.warn('[gateway] 证书重签失败:', error instanceof Error ? error.message : String(error))
+      return false
+    }
+  }
+
   start(): void {
     if (this.server !== null) return
     const config = this.getConfig()
