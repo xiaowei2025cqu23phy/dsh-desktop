@@ -122,7 +122,7 @@ This guide walks you through the desktop client end to end: installation, config
    - **用量与费用**:设置面板「用量与费用」显示今日会话/回合/Token/**费用估算**(按模型分组);费用倍率在桌面端「设置 → 用量与费用」配置(1 = 官方价);
    - **工作区**:列表、新建(在电脑端配置的**预设根目录**下新建文件夹;不能指定任意路径);每个工作区带「📂」按钮**浏览文件夹**,点文件可**预览文本内容**(≤64KB;仅限工作区/预设根内,越权拒绝);
    - **设置**:手机端同样可管理多项设置——**预设工作区根目录**(查看/移除/「浏览文件夹添加」,不必只在电脑上配)、手机壁纸、定时任务、重启 Harness 等。
-5. 安全:令牌认证 + **设备审批**(首次连接进入桌面端「待批准设备」队列,批准一次后记住)+ RPC 白名单 + 文件浏览白名单(仅工作区/预设根内,越权 403),仅局域网可达;令牌在设置面板可重新生成(旧令牌立即失效)。桌面端可随时**暂停全部连接**(立即断开已建立的连接)、单个设备暂停/拉黑(拉黑后凭有效令牌也被拒)、锁屏/休眠自动暂停;默认 2 小时自动到期关闭。
+5. 安全:令牌认证(**有效令牌即访问权**,首次连接即可用,设备自动登记到桌面端「已连接设备」列表)+ RPC 白名单 + 文件浏览白名单(仅工作区/预设根内,越权 403),仅局域网可达;令牌在设置面板可重新生成(旧令牌立即失效)。**拿到令牌就等于拿到这台电脑的控制权**,所以令牌必须保密。桌面端可随时**暂停全部连接**(立即断开已建立的连接)、单个设备暂停/拉黑(拉黑或暂停后凭有效令牌也被拒)、锁屏/休眠自动暂停;默认 2 小时自动到期关闭。
 
 **English**
 
@@ -135,7 +135,7 @@ This guide walks you through the desktop client end to end: installation, config
    - **Usage & cost**: the settings sheet shows today's sessions/turns/tokens/**estimated cost** (grouped by model); the cost multiplier is configured on the desktop (**Settings → Usage & Cost**, 1 = official price);
    - **Workspaces**: list, create (new folders under the **preset roots** configured on the PC; arbitrary paths are not allowed); each workspace has a "📂" button to **browse its folder** — tap a file to **preview text content** (≤64KB; workspace/preset-roots only, anything else is denied);
    - **Settings**: the phone can manage several settings too — **preset workspace roots** (view / remove / "browse to add", no need to configure only on the PC), phone wallpaper, scheduled tasks, restart Harness, etc.
-5. Security: token auth + **device approval** (a first connection lands in the desktop's "pending devices" queue and is remembered once approved) + RPC allowlist + file-browse allowlist (workspaces/preset roots only, 403 otherwise), LAN only; regenerate the token in the settings panel anytime (the old one stops working immediately). The desktop can **pause every connection** at once (dropping established connections immediately), pause/blacklist an individual device (a blacklisted device is rejected even with a valid token), auto-pause on lock/sleep; access expires automatically after 2 hours by default.
+5. Security: token auth (**a valid token is the access decision** — the first connection just works and the device is registered in the desktop's "connected devices" list) + RPC allowlist + file-browse allowlist (workspaces/preset roots only, 403 otherwise), LAN only; regenerate the token in the settings panel anytime (the old one stops working immediately). **Holding the token means holding control of this PC**, so keep it secret. The desktop can **pause every connection** at once (dropping established connections immediately), pause/blacklist an individual device (a paused or blacklisted device is rejected even with a valid token), auto-pause on lock/sleep; access expires automatically after 2 hours by default.
 
 ---
 

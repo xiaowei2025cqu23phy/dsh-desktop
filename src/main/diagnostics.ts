@@ -15,10 +15,17 @@ export interface DiagnosticsDeps {
   telegramBot?: TelegramBotAdapter
 }
 
+/**
+ * 脱敏:去掉报告里的凭据。
+ *
+ * 重点是 `?token=<值>` —— harness 启动时会打印带进程级 token 的 URL,
+ * harness.logs 里因此存在整条明文 URL;报告里出现它等于交出本机 agent 的控制权。
+ */
 function redact(value: unknown): unknown {
   if (typeof value === 'string') {
     return value
-      .replace(/Bearer\s+[^\s]+/gi, 'Bearer <redacted>')
+      .replace(/Bearer\s+[^\s"']+/gi, 'Bearer <redacted>')
+      .replace(/([?&](?:token|access_token|api_key|apikey|key|secret|password)=)[^\s&"']+/gi, '$1<redacted>')
       .replace(/AIza[0-9A-Za-z_-]{20,}/g, '<redacted>')
       .replace(/sk-[0-9A-Za-z]{20,}/g, '<redacted>')
       .replace(/[A-Za-z]:\\Users\\[^\\\s]+/gi, '<user-path>')

@@ -12,7 +12,7 @@ A desktop client for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-
 
 Harness is a capable agent runtime, but it lives in a browser tab: you have to remember to open it, remember to watch it, and the moment you step away from the machine you can only wait. This project moves it onto the desktop and adds the three things a browser tab can't do:
 
-- **It watches for you** — when you go idle, it fills the screen with the agent's live work (and can even replace the Windows system screensaver); when the agent is stuck waiting for approval, it comes to find you instead of you polling a tab.
+- **It watches for you** — when the agent is stuck waiting for approval, it comes to find you instead of you polling a tab; when idle it can also turn the screen into a screensaver (wallpaper + clock, Windows system-screensaver capable).
 - **It makes your phone a remote** — scan a QR code, then send tasks, watch streaming progress and approve in one tap; the approval queue is shared across all three surfaces, so whoever answers first wins.
 - **It turns QQ / Telegram into a remote control** — send one line in a private chat and the agent goes to work, then reports back on its own.
 
@@ -77,10 +77,10 @@ The installer ships without the agent runtime and without any config/keys (by de
 ### ✨ Highlights
 
 - **Embedded Web UI**: native control bar + the full harness Web UI (sessions, tools, plugins). **Dual-instance support**: the built-in page and the 🧪 button in the top bar switch between the *official release* (`npx`) and a *local fork* build, each with its own port / `DSH_HOME` / credentials. The instance's origin and capabilities are **auto-probed** — users who only have the official dsh get a fully working app, and fork-only enhancements (sidebar file browser, text/image preview, …) appear only when the probe finds them, so no dead entry points on an official instance.
-- **AI Screensaver (system screensaver replacement)**: after N idle minutes, a fullscreen view shows the agent working live (reasoning, text stream, tool calls); click, key, wheel, or touch exits instantly. Built-in **task timeout guard** prevents runaway CPU loops; can be registered as the Windows system screensaver — idle time becomes productive time.
-- **Phone remote control (PWA)**: scan the QR code to connect over LAN — send tasks, watch live streaming progress, stop tasks; **one-tap approval/question cards** — no more waiting forever when the agent asks for permission. Add it to the home screen to use it like an app. Remote access is LAN-only and auto-disables after 2 hours by default; **never expose the harness via tunneling, port forwarding or a public reverse proxy**. Control stays on the desktop: pause every connection at once, pause/blacklist an individual device (a blacklisted device is rejected even with a valid token), auto-pause on lock/sleep, and optionally bind only the current LAN IP (default is 0.0.0.0 on all adapters, including VPN/virtual ones). Devices are approved once, then remembered.
+- **Screensaver (system screensaver replacement)**: after N idle minutes, a fullscreen wallpaper + clock appears; click, key, wheel, or touch exits instantly (mouse movement does not, so a jittery mouse doesn't dismiss it). **Purely visual — it runs no agent task**, spending no tokens or CPU. Can be registered as the Windows system screensaver, with the previous settings backed up and restored.
+- **Phone remote control (PWA)**: scan the QR code to connect over LAN — send tasks, watch live streaming progress, stop tasks; **one-tap approval/question cards** — no more waiting forever when the agent asks for permission. Add it to the home screen to use it like an app. Remote access is LAN-only and auto-disables after 2 hours by default; **never expose the harness via tunneling, port forwarding or a public reverse proxy**. **A valid token is the access decision**: a phone or script holding it connects right away, so holding the token means holding control of this PC — the real protections are LAN-only reachability plus token secrecy. Control stays on the desktop: pause every connection at once, pause/blacklist an individual device (a paused or blacklisted device is rejected even with a valid token), auto-pause on lock/sleep, and optionally bind only the current LAN IP (default is 0.0.0.0 on all adapters, including VPN/virtual ones).
 - **PWA offline shell (optional HTTPS)**: enabling HTTPS in settings generates a self-signed certificate covering every local LAN IP. After trusting it once on the phone, the Service Worker registers — the app shell is cached and opens offline, and "Add to Home Screen" works. Over plain HTTP browsers refuse to register a Service Worker, so the PWA runs as an ordinary tab instead.
-- **Persistent status bar**: three live chips in the top bar — running activities ▶, today's token usage 💰, approved remote devices 📱 — visible without sending a command or opening settings. The phone gets the same strip (running / usage).
+- **Persistent status bar**: three live chips in the top bar — running activities ▶, today's token usage 💰, connected remote devices 📱 — visible without sending a command or opening settings. The phone gets the same strip (running / usage).
 - **First-run onboarding**: a three-step checklist on first launch (① harness ready ② model configured ③ start using), showing each step's live status and jumping straight to model setup — no need to guess the next step from the docs.
 - **QQ / Telegram bot channels**: run tasks from private chat (in groups the bot chats only — every command and query is ignored); **proactive push** enabled (QQ 48h interaction window) — task done, failed, or needs approval, the bot comes to you; low-risk approvals carry inline **Allow/Deny buttons** (high-risk write/delete/exec operations are routed to the desktop for confirmation); access control is **disabling "allow being added as a friend" on the platform** (confirmed once on first enable) plus an optional **openid allowlist** (empty = unrestricted).
 - **QQ bot experience (0.6.0+)**: workspace-less tasks merge into one per-user default task session (no more session spam; the same session is reused across restarts); pick a workspace with `任务 @workspace` or send tasks while inside a workspace chat; `进展` shows the phase (thinking/tool/output/done + product hint); tasks are silent by default, `播报` opts into live digests; robot chats (DM & groups) live in a visible "机器人对话" workspace; **groups are chat-only — commands and queries are ignored** (so strangers cannot read your data or drive your PC) with a safety reminder; archived sessions can be brought back anytime with `恢复 <sessionId>`; full command set & deployment/permission guide: [QQ-BOT.md](docs/QQ-BOT.md).
@@ -106,9 +106,11 @@ The installer ships without the agent runtime and without any config/keys (by de
 
 ![Phone remote control demo](assets/demo-remote.gif)
 
-**AI screensaver** (fullscreen live agent view when idle; wallpaper fully customizable):
+**Screensaver** (fullscreen wallpaper + clock when idle; wallpaper fully customizable):
 
-![AI screensaver demo](assets/demo-screensaver.gif)
+![Screensaver demo](assets/demo-screensaver.gif)
+
+> That demo was recorded while the screensaver could still show the agent's live output; today it shows only the wallpaper and clock.
 
 > Recorded with the built-in "whale ocean" sample wallpaper — no personal wallpapers or session content involved.
 
@@ -133,26 +135,22 @@ The "default model" dropdown in the top bar lists every configured provider and 
 - **Settings → Add custom provider** registers an OpenAI-compatible gateway (presets: DeepSeek official / OpenAI / Ollama local / custom), with "fetch models from gateway" discovery. API keys are written via `credentials.set`, never stored in plaintext config.
 - Fuller model management (keys, catalog providers, reasoning parameters) lives in the embedded Web UI under **Settings → Models**.
 
-### AI screensaver
+### Screensaver
 
-**Settings → AI Screensaver**:
+**Settings → Appearance & extensions → Screensaver**:
 
 | Setting | Description |
 |---|---|
 | Enable idle detection | Enter the fullscreen screensaver once idle passes the threshold |
 | Idle minutes before trigger | Default 5 minutes |
-| Auto-start an agent task | **Off by default.** Entering the screensaver shows only the ambient view (clock/status) and consumes nothing; when checked, it creates a session and runs a task |
-| Task prompt | Customize the screensaver task (default: browse tech news and summarize) |
-| Task working directory | Optional; the agent's working directory |
-| Task timeout (minutes) | Default 10 minutes. The task stops automatically on timeout — prevents a runaway agent burning CPU (an important guardrail) |
 
-The screensaver renders the agent's reasoning, output text and tool-call cards live (streamed as incremental appends, so long output doesn't stutter). **Exit: click, key, wheel or touch — all instant**; mouse movement does not exit (so a jittery mouse doesn't dismiss it). After exiting, the task **keeps running in the background** by default and "continue last task" resumes it next time; turn "keep task" off to start fresh each entry. Screensaver sessions are named "AI 屏保任务 HH:MM" so they're easy to spot in the Web UI.
+The screensaver is a **pure screensaver**: a fullscreen wallpaper and clock. It starts no agent task, calls no model and spends no tokens. Its job is to cover the screen, not to run work for you unattended — use **Scheduled tasks** or a bot channel for that; they have their own switches and quotas.
 
-**Anti-bounce**: both the system-screensaver launch (`/s`) and idle auto-activation are subject to a 5-minute exit cooldown — once you dismiss it, neither will bring it back for 5 minutes. The manual "AI Screensaver" button is exempt.
+**Exit: click, key, wheel or touch — all instant**; mouse movement does not exit (so a jittery mouse doesn't dismiss it). The main process also watches input, so it still exits even if the page hangs.
 
-**Register as the Windows system screensaver**: after clicking "register as system screensaver", Windows' lock/timeout mechanism launches this app with `/s` straight into fullscreen (registry `HKCU\Control Panel\Desktop\SCRNSAVE.EXE`, no admin required; the previous setting is backed up before registering and restored on unregister).
+**Anti-bounce**: both the system-screensaver launch (`/s`) and idle auto-activation are subject to a 5-minute exit cooldown — once you dismiss it, neither will bring it back for 5 minutes. The manual top-bar button is exempt.
 
-> Note: the AI screensaver is a **viewing mode** — it shows you what the agent is doing rather than taking over your mouse and keyboard. Before leaving the agent to work while you're idle, consider whether the task really needs to run (model calls cost tokens, tool calls cost CPU).
+**Register as the Windows system screensaver**: after clicking "register as system screensaver", Windows' lock/timeout mechanism launches this app with `/s` straight into fullscreen (registry `HKCU\Control Panel\Desktop\SCRNSAVE.EXE`, no admin required; the previous setting is backed up before registering and restored on unregister. Clicking register again only updates the timeout — it never overwrites the saved backup).
 
 ### Harness service
 
@@ -173,7 +171,7 @@ The screensaver renders the agent's reasoning, output text and tool-call cards l
 Enabling **Settings → Remote Access** starts a LAN gateway (default port 3082, configurable, Bearer token auth):
 
 1. Connect the phone to the same Wi-Fi and scan the **QR code** in the settings panel (or open `http://<PC-IP>:3082`).
-2. The phone's first connection enters the desktop's **pending-device queue**; approve it once and that device is remembered, no further prompts.
+2. The phone's first connection just works (a valid token is the access decision); the device is registered automatically in the desktop's **Connected devices** list so you can pause or blacklist it later.
 3. The PWA fills in the address & token automatically, shows a **persistent status strip** (running activities ▶, today's token usage 💰) fed by the same data as the desktop.
 
 **Installing it as an app (PWA)**:
@@ -182,8 +180,8 @@ Enabling **Settings → Remote Access** starts a LAN gateway (default port 3082,
 - For the full offline shell and "Add to Home Screen": **Settings → Remote Access → Enable HTTPS** (self-signed certificate covering every local LAN IP, cached in userData). The phone warns about the untrusted certificate on first visit — trust it once and the Service Worker registers automatically afterwards. The settings panel shows the **certificate SHA-256 fingerprint and the addresses it covers** so you can verify it before trusting. When the LAN IP changes, the certificate is re-issued automatically and needs to be trusted once more under the new fingerprint.
 - See [docs/PWA.md](docs/PWA.md).
 
-> Security: remote access auto-disables 2 hours after enabling (expiry policy adjustable in settings); LAN only — **never expose it via tunneling/port-forwarding**.
-> Control stays on the desktop: pausing every connection **drops established connections immediately** rather than waiting for the next request; single-device pause/blacklist (a blacklisted device is rejected even with a valid token); auto-pause on lock/sleep; optional binding to the current LAN IP only.
+> Security: remote access auto-disables 2 hours after enabling (expiry policy adjustable in settings); LAN only — **never expose it via tunneling/port-forwarding**. **A valid token is the access decision**: any phone or script holding it can drive this PC like you do, so keep the token secret and regenerate it in settings if it leaks.
+> Control stays on the desktop: pausing every connection **drops established connections immediately** rather than waiting for the next request; single-device pause/blacklist (a paused or blacklisted device is rejected even with a valid token); auto-pause on lock/sleep; optional binding to the current LAN IP only.
 
 Phone features:
 - **Workspace-first new conversations** (same flow as harness Web): pick or create a workspace first, then start a conversation; new sessions land in the chosen workspace group (preset roots work as workspaces too)
@@ -194,7 +192,7 @@ Phone features:
 - **Wallpaper**: built-in packs, or **upload a picture from the phone gallery** as wallpaper
 - **Settings**: preset workspace roots (view/remove/browse-to-add), scheduled tasks, restart Harness
 - **Auto-reconnect**: exponential backoff after network drops; returns to the same conversation
-- **Security**: Bearer token + device approval + RPC allowlist + file-browse allowlist (workspaces/preset roots only, 403 otherwise), LAN only
+- **Security**: Bearer token (the only access decision) + device pause/blacklist + RPC allowlist + file-browse allowlist (workspaces/preset roots only, 403 otherwise), LAN only
 
 The bottom of the sidebar has **🗄 Archived**: archived sessions can be restored with one tap (they return to their original workspace group; refreshed automatically when the desktop hosts the service, and after a restart when hosted externally).
 
@@ -270,7 +268,7 @@ src/main/          main process
   harness.ts       harness process hosting (probe/takeover/spawn/health/restart)
   client.ts        HTTP RPC client (POST /api/<method> + mux event stream)
   rpc-protocol.ts  RPC protocol adapter (typert slash vs legacy dot: capability table + arg envelopes)
-  gateway.ts       LAN gateway (Bearer token, device approval, RPC & file allowlists, SSE)
+  gateway.ts       LAN gateway (Bearer token, device pause/blacklist, RPC & file allowlists, SSE)
   tls-cert.ts      self-signed X.509 generation (pure node:crypto, for the PWA offline shell)
   remote-commands.ts  remote command processor (shared by QQ/TG/PWA: tasks, approvals, questions, sessions, schedules)
   remote-util.ts   pure helpers for the above (unit-testable)
@@ -279,7 +277,7 @@ src/main/          main process
   qq-onboard.ts    QQ scan-to-bind flow
   telegram-bot.ts  Telegram adapter
   models.ts        model catalog, default-model switching, custom provider wizard
-  screensaver.ts   AI screensaver (idle detection, fullscreen window, task orchestration, system registration)
+  screensaver.ts   screensaver (idle detection, fullscreen window, system registration)
   appearance.ts    per-surface wallpapers and the beads pixel filter
   workspace-registry.ts  workspace registry and path allowlist
   db.ts            SQLite local storage (activity/audit/task queue, legacy JSON migration)
@@ -293,7 +291,7 @@ src/preload.ts     preload (IPC bridge; the renderer never touches Electron dire
 src/renderer/      renderer (classic scripts, no bundler)
   index.html       main window (control bar + workbench + webview)
   main.ts          main-window logic
-  screensaver.html fullscreen screensaver (live agent view)
+  screensaver.html fullscreen screensaver (wallpaper + clock)
 src/remote/        phone PWA (served by the gateway)
   index.html app.ts  single-page app
   sw.js              offline shell (registers only over HTTPS)
@@ -308,8 +306,8 @@ The desktop app implements deepseek-harness's HTTP RPC protocol directly and spe
 - **Official `@deepseek-ai/dsh` 0.1.2-rc.1+** (typert slash protocol): protocol and per-method argument envelopes are negotiated at probe time; browser token auth (`?token=` exchanged for a persistent cookie); model catalog via `session/modelCatalog`; providers via `llm/listProviders` / `llm/listConfigurableProviders`; custom providers written through `settings/update` + `settings/mutate` + `credentials/set`.
 - **Legacy / self-built forks** (dot protocol): automatic fallback for `llm.models`, `llm.providers`, `workspace.*`, `host.describe`, and friends.
 - Unary calls: `POST /api/<method>` with `{type:'client-request', rpcId, method, payload}`; responses are `{type:'server-response', rpcId, result}`; loopback needs no token.
-- Event stream: `GET /api/events.mux` (SSE / WebSocket auto-negotiated); `session/event` frames drive the screensaver, phone PWA and bot channels.
-- Session history replay (the official build has no `session.history`): read `projections.asOfSeq` from `session/list`, then pull records via `session/page` and replay message-level events to the phone, QQ and screensaver clients.
+- Event stream: `GET /api/events.mux` (SSE / WebSocket auto-negotiated); `session/event` frames drive the phone PWA and bot channels.
+- Session history replay (the official build has no `session.history`): read `projections.asOfSeq` from `session/list`, then pull records via `session/page` and replay message-level events to the phone and QQ clients.
 - Key methods: `session.list/create/prompt/cancel/rename/selectModel`, `session.modelCatalog`, `session.page`, `llm.listProviders/listConfigurableProviders/discoverModels`, `settings.update/mutate`, `credentials.set`, `workspace.create/rename/delete`.
 
 Protocol details may evolve with the harness; argument envelopes (typert: `_request` / `request` / flat) are adapted per method, and where the official build drops a legacy method the desktop degrades or bridges it (e.g. `workspace.list` synthesized from session cwd).
@@ -317,7 +315,7 @@ Protocol details may evolve with the harness; argument envelopes (typert: `_requ
 ## Known Limitations
 
 - Mobile browsers generally refuse to preview PDFs inside an iframe; the phone offers "open in new tab / download" instead.
-- The screensaver is a **viewing mode**: interactions (input, approvals) happen back in the main Web UI; a session that needs confirmation waits and stays visible in the Web UI.
+- The screensaver is purely visual (wallpaper + clock) and carries no interaction; watch what the agent is doing in the main Web UI or on the phone PWA.
 - System screensaver registration is Windows-only (registry-based; original settings are backed up before registering and restored on unregister); macOS/Linux use the built-in idle-detection mode instead.
 - The event stream negotiates automatically: older harness versions only accept WebSocket (HTTP 426), newer ones also support SSE; both are compatible.
 - The screensaver window follows system screensaver behavior (no auto-wake from sleep).

@@ -1,55 +1,44 @@
 /**
- * AI 屏保控制器。
+ * 屏保控制器。
+ *
+ * 屏保是**纯展示**:壁纸 + 时钟,不启动任何 agent 任务。空闲检测与 Windows 系统屏保
+ * 注册(SCRNSAVE.EXE)都保留,所以它仍然是"替换系统屏保"的那块屏;只是不再替你在
+ * 无人看管时空跑任务——那类需求交给定时任务与机器人通道,它们各自有开关与配额。
  *
  * 两种触发方式:
- * 1. 内置空闲检测:主进程轮询 powerMonitor.getSystemIdleTime(),超过阈值后全屏显示
- *    agent 实时工作画面;检测到用户活动(空闲时间回落)立即退出全屏。
- * 2. Windows 系统屏保:注册表 SCRNSAVE.EXE 指向本应用,系统超时后用 `/s` 参数拉起,
- *    应用直接进入全屏屏保模式。
- *
- * 屏保页面通过 IPC 订阅 mux 事件流,实时渲染 agent 的思考、文本与工具调用。
+ * 1. 内置空闲检测:轮询 powerMonitor.getSystemIdleTime(),超过阈值后全屏显示;
+ *    检测到用户活动(空闲时间回落)立即退出。
+ * 2. Windows 系统屏保:注册表 SCRNSAVE.EXE 指向本应用,系统超时后用 `/s` 拉起。
  */
 
 import { app, BrowserWindow, ipcMain, powerMonitor, screen } from 'electron'
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import type { ConfigStore, ScreensaverConfig } from './config'
-import type { HarnessManager } from './harness'
-import type { ServerRequest } from './client'
-import { randomUUID } from 'node:crypto'
 
 const IDLE_POLL_MS = 3000
 /** 空闲时间低于该秒数视为"用户已回来"。 */
 const ACTIVITY_GRACE_SECONDS = 3
+/** 退出后的自动激活冷却:防止"关掉又立刻弹出"。 */
+const REACTIVATE_COOLDOWN_MS = 300_000
 
 export class ScreensaverController {
   private window: BrowserWindow | null = null
   private active = false
   private locked = false
-  /** 当前屏保正在观看的会话。 */
-  private sessionId: string | null = null
-  /** 上一次屏保的会话(跨激活保留,用于"继续上次任务")。 */
-  private lastSessionId: string | null = null
   private idleTimer: ReturnType<typeof setInterval> | null = null
-  /** 当前屏保会话最近事件序号,用于重连续传。 */
-  private lastSeq = 0
   /** 最近一次激活时间:进入宽限期内不因空闲检测退出(避免点击按钮后立刻被踢出)。 */
   private activatedAt = 0
-  /** 最近一次退出时间:空闲自动激活的冷却(防止"点击关闭后立刻又弹出")。 */
+  /** 最近一次退出时间:空闲/系统起源的自动激活冷却。 */
   private lastDeactivatedAt = 0
   /** 激活流程进行中(防并发:3 秒轮询会同时触发多次 activate)。 */
   private activating = false
-  /** 最近一次空闲激活失败时间:失败后 5 分钟冷却,避免对不可用 harness 的激活风暴。 */
-  private lastActivateFailAt = 0
   /** 冷却期内跳过激活的日志节流时间(避免每 3 秒刷一行)。 */
   private lastCooldownLogAt = 0
-  /** 本次激活的来源(manual/idle),决定安全网是否生效。 */
+  /** 本次激活的来源(manual/idle/system),决定空闲回落安全网是否生效。 */
   private activationOrigin: 'manual' | 'idle' | 'system' = 'manual'
 
-  constructor(
-    private config: ConfigStore,
-    private harness: HarnessManager,
-  ) {}
+  constructor(private config: ConfigStore) {}
 
   getConfig(): ScreensaverConfig {
     return this.config.get().screensaver
@@ -98,7 +87,6 @@ export class ScreensaverController {
   dispose(): void {
     if (this.idleTimer !== null) clearInterval(this.idleTimer)
     this.idleTimer = null
-    this.clearTaskTimer()
     this.deactivate()
   }
 
@@ -106,20 +94,8 @@ export class ScreensaverController {
     return this.active
   }
 
-  /** mux 帧入口:由主进程的 mux 桥接调用,转发给屏保窗口。 */
-  forwardFrame(frame: ServerRequest): void {
-    if (!this.active || this.window === null || this.window.isDestroyed()) return
-    const payload = frame.payload as { type?: string; sessionId?: string; event?: { seq?: number } } | null
-    if (payload === null || typeof payload !== 'object') return
-    if (payload.type === 'session/event') {
-      if (this.sessionId !== null && payload.sessionId !== this.sessionId) return
-      if (typeof payload.event?.seq === 'number') this.lastSeq = payload.event.seq
-    }
-    this.window.webContents.send('screensaver:event', frame)
-  }
-
   /**
-   * 进入 AI 屏保。
+   * 进入屏保。
    * @param origin - manual:用户主动(按钮、托盘);system:Windows 系统屏保 /s 拉起;
    *   idle:空闲检测自动触发。
    *   只有 manual 不受冷却约束(用户明确意愿);system/idle 距上次退出 5 分钟内拒绝,
@@ -129,7 +105,7 @@ export class ScreensaverController {
    */
   async activate(origin: 'manual' | 'idle' | 'system' = 'manual'): Promise<void> {
     if (this.active || this.activating) return
-    if (origin !== 'manual' && Date.now() - this.lastDeactivatedAt < 300000) {
+    if (origin !== 'manual' && Date.now() - this.lastDeactivatedAt < REACTIVATE_COOLDOWN_MS) {
       // 冷却期内每 3 秒的 tick 都会走到这里:日志节流到每分钟最多一条。
       if (Date.now() - this.lastCooldownLogAt > 60000) {
         this.lastCooldownLogAt = Date.now()
@@ -140,28 +116,7 @@ export class ScreensaverController {
     this.activationOrigin = origin
     this.activating = true
     try {
-      // 确保 harness 可用(托管模式自动拉起,并等待就绪)。
-      const status = this.harness.status()
-      if (status.state === 'idle' || status.state === 'stopped' || status.state === 'error') {
-        if (this.config.get().harness.mode !== 'external') {
-          await this.harness.restart()
-        }
-      }
-      const deadline = Date.now() + 120000
-      for (;;) {
-        const current = this.harness.status()
-        if (current.state === 'running' || current.state === 'external') break
-        if (current.state === 'error') {
-          throw new Error(`harness 不可用:${current.error ?? '未知错误'}`)
-        }
-        if (Date.now() > deadline) {
-          throw new Error('harness 启动超时,请查看服务日志')
-        }
-        await sleep(500)
-      }
       this.active = true
-      this.sessionId = null
-      this.lastSeq = 0
       this.activatedAt = Date.now()
       const display = screen.getPrimaryDisplay()
       const win = new BrowserWindow({
@@ -176,7 +131,7 @@ export class ScreensaverController {
         backgroundColor: '#05070d',
         alwaysOnTop: true,
         webPreferences: {
-          preload: join(__dirname, '..', 'preload.js'),
+          preload: join(__dirname, '..', 'screensaver-preload.js'),
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,
@@ -188,6 +143,8 @@ export class ScreensaverController {
       win.on('closed', () => {
         if (this.window === win) this.window = null
         this.active = false
+        // 窗口被其它方式关掉(Alt+F4 等)也要记冷却,否则下一次空闲 tick 会立刻重开。
+        this.lastDeactivatedAt = Date.now()
       })
       win.on('leave-full-screen', () => this.deactivate('leave-fullscreen'))
       // 主进程输入兜底:任何真实键盘/鼠标输入都退出 —— 不依赖渲染进程 JS 状态,
@@ -203,110 +160,27 @@ export class ScreensaverController {
       const debugKeep = process.argv.includes('--ss-debug')
       await win.loadFile(join(__dirname, '..', 'renderer', 'screensaver.html'), debugKeep ? { query: { keep: '1' } } : undefined)
       console.log('[screensaver] 窗口已加载,active=', this.active)
+    } catch (error) {
+      // 窗口创建/加载失败必须复位,否则 active 会永久为 true,空闲检测再也不激活。
+      this.active = false
+      const win = this.window
+      this.window = null
+      if (win !== null && !win.isDestroyed()) win.destroy()
+      throw error
     } finally {
       this.activating = false
     }
   }
 
-  /** 退出 AI 屏保(任务默认保留在后台继续运行)。 */
+  /** 退出屏保。 */
   deactivate(reason = 'manual'): void {
     if (!this.active && this.window === null) return
     console.log(`[screensaver] 退出(reason=${reason})`)
     this.active = false
-    this.lastSessionId = this.sessionId
-    this.sessionId = null
     this.lastDeactivatedAt = Date.now()
     const win = this.window
     this.window = null
     if (win !== null && !win.isDestroyed()) win.destroy()
-  }
-
-  /**
-   * 屏保渲染进程就绪后调用:决定观看哪个会话。
-   * - autoTask 关闭:返回 null(纯环境屏保)。
-   * - keepSessionAfterExit 且存在上次会话:继续观看(可能仍在运行,也可能已完成)。
-   * - 否则:取消上次会话(尽力),创建新会话并发送任务提示词。
-   *
-   * 新任务带超时护栏:超过 taskMaxMinutes 仍未结束自动停止,防止失控循环烧 CPU。
-   */
-  async startTask(): Promise<{ sessionId: string; resumed: boolean } | null> {
-    const config = this.config.get().screensaver
-    if (!config.autoTask || config.taskPrompt.trim() === '') return null
-    const client = this.harness.client()
-    this.clearTaskTimer()
-    if (config.keepSessionAfterExit && this.lastSessionId !== null) {
-      this.sessionId = this.lastSessionId
-      this.lastSeq = 0
-      return { sessionId: this.lastSessionId, resumed: true }
-    }
-    if (!config.keepSessionAfterExit && this.lastSessionId !== null) {
-      const stale = this.lastSessionId
-      this.lastSessionId = null
-      try {
-        await client.rpc('session.cancel', { sessionId: stale })
-      } catch {
-        // 会话可能已结束,忽略。
-      }
-    }
-    const created = await client.rpc<{ sessionId: string }>('session.create', {
-      ...(config.taskCwd && config.taskCwd.trim() !== '' ? { cwd: config.taskCwd.trim() } : {}),
-    })
-    const sessionId = created.sessionId
-    this.sessionId = sessionId
-    this.lastSessionId = sessionId
-    this.lastSeq = 0
-    // 标题标记,便于在 Web UI 的会话列表中识别和清理。
-    try {
-      await client.rpc('session.rename', { sessionId, title: `AI 屏保任务 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` })
-    } catch {
-      // 标题失败不影响任务。
-    }
-    await client.rpc('session.prompt', {
-      sessionId,
-      mode: 'queue',
-      content: [{ type: 'text', text: config.taskPrompt.trim() }],
-    })
-    if (config.taskMaxMinutes > 0) {
-      this.taskTimer = setTimeout(() => {
-        if (this.sessionId !== null) {
-          console.log(`[screensaver] 任务超过 ${config.taskMaxMinutes} 分钟未完成,自动停止`)
-          void this.cancelTask()
-        }
-      }, config.taskMaxMinutes * 60 * 1000)
-      this.taskTimer.unref?.()
-    }
-    return { sessionId, resumed: false }
-  }
-
-  private taskTimer: ReturnType<typeof setTimeout> | null = null
-
-  private clearTaskTimer(): void {
-    if (this.taskTimer !== null) {
-      clearTimeout(this.taskTimer)
-      this.taskTimer = null
-    }
-  }
-
-  /** 读取会话历史(供"继续上次任务"时回放)。 */
-  async history(sessionId: string, maxMessages = 40): Promise<unknown[]> {
-    const result = await this.harness.client().rpc<{ events: unknown[] }>('session.history', {
-      sessionId,
-      maxMessages,
-    })
-    return result.events ?? []
-  }
-
-  /** 取消屏保任务(用户主动点击"停止"或超时护栏触发)。 */
-  async cancelTask(): Promise<void> {
-    this.clearTaskTimer()
-    if (this.sessionId === null) return
-    const id = this.sessionId
-    this.sessionId = null
-    try {
-      await this.harness.client().rpc('session.cancel', { sessionId: id })
-    } catch {
-      // 会话可能已结束,忽略。
-    }
   }
 
   // ---- 系统屏保注册 ----
@@ -318,7 +192,12 @@ export class ScreensaverController {
     return `"${process.execPath}" "${app.getAppPath()}"`
   }
 
-  /** 注册为 Windows 系统屏保(HKCU,无需管理员)。非 Windows 返回不支持。注册前备份原设置,取消时恢复。 */
+  /**
+   * 注册为 Windows 系统屏保(HKCU,无需管理员)。注册前备份原设置,取消时恢复。
+   *
+   * 已注册时**不重新读取注册表**:那时注册表里是本应用自己的命令,再备份一次会把
+   * 它当成"用户原设置"存下来,取消注册后就永远恢复不回去了。
+   */
   async registerSystemScreensaver(): Promise<{ ok: boolean; message: string }> {
     if (process.platform !== 'win32') {
       return { ok: false, message: '仅 Windows 支持注册系统屏保' }
@@ -327,19 +206,30 @@ export class ScreensaverController {
     const command = this.systemScreensaverCommand()
     const timeout = Math.max(60, Math.round(cfg.idleMinutes * 60))
     try {
-      // 备份用户原有屏保设置,取消注册时恢复。
-      const backup = await queryDesktopRegistry()
-      this.config.update('screensaver', { systemScreensaverBackup: backup })
+      const alreadyRegistered = await this.systemScreensaverRegistered()
+      const existingBackup = cfg.systemScreensaverBackup
+      const hasBackup = existingBackup !== null && Object.keys(existingBackup).length > 0
+      if (!alreadyRegistered || !hasBackup) {
+        // 备份用户原有屏保设置,取消注册时恢复。仅在未注册(注册表仍是用户原值时)才刷新备份。
+        const backup = await queryDesktopRegistry()
+        this.config.update('screensaver', { systemScreensaverBackup: backup })
+      }
       await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'SCRNSAVE.EXE', '/t', 'REG_SZ', '/d', command, '/f'])
       await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'ScreenSaveActive', '/t', 'REG_SZ', '/d', '1', '/f'])
       await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'ScreenSaveTimeOut', '/t', 'REG_SZ', '/d', String(timeout), '/f'])
-      return { ok: true, message: `已注册为系统屏保(超时 ${timeout} 秒)。\n${command}` }
+      const suffix = alreadyRegistered ? '(已更新超时;原设置备份保持不变)' : ''
+      return { ok: true, message: `已注册为系统屏保(超时 ${timeout} 秒)。${suffix}\n${command}` }
     } catch (error) {
       return { ok: false, message: `注册失败:${error instanceof Error ? error.message : String(error)}` }
     }
   }
 
-  /** 取消系统屏保注册(恢复注册前的原设置)。 */
+  /**
+   * 取消系统屏保注册(恢复注册前的原设置)。
+   *
+   * 原本不存在的值用 `reg delete` 删掉,而不是写成空字符串——否则会在注册表里凭空
+   * 留下 `SCRNSAVE.EXE=""` 这类条目。
+   */
   async unregisterSystemScreensaver(): Promise<{ ok: boolean; message: string }> {
     if (process.platform !== 'win32') {
       return { ok: false, message: '仅 Windows 支持系统屏保注册' }
@@ -348,10 +238,11 @@ export class ScreensaverController {
       const backup = this.config.get().screensaver.systemScreensaverBackup
       if (backup !== null && Object.keys(backup).length > 0) {
         for (const [name, value] of Object.entries(backup)) {
-          await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', name, '/t', 'REG_SZ', '/d', value, '/f'])
+          if (value === '') await deleteRegValue(name)
+          else await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', name, '/t', 'REG_SZ', '/d', value, '/f'])
         }
       } else {
-        await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'SCRNSAVE.EXE', '/t', 'REG_SZ', '/d', '', '/f'])
+        await deleteRegValue('SCRNSAVE.EXE')
         await runReg('add', ['HKCU\\Control Panel\\Desktop', '/v', 'ScreenSaveActive', '/t', 'REG_SZ', '/d', '0', '/f'])
       }
       this.config.update('screensaver', { systemScreensaverBackup: null })
@@ -372,8 +263,8 @@ export class ScreensaverController {
             resolve(stdout)
           })
       })
-      return output.includes('REG_SZ') && !/REG_SZ\s+$/.test(output) &&
-        !/SCRNSAVE\.EXE\s+REG_SZ\s+"?"?\s*$/.test(output) && output.trim().length > 0
+      const match = /REG_SZ\s+(.*)$/m.exec(output)
+      return match !== null && match[1].trim() !== ''
     } catch {
       return false
     }
@@ -393,22 +284,9 @@ export class ScreensaverController {
       }
     })
     ipcMain.handle('screensaver:deactivate', () => { this.deactivate() })
-    ipcMain.handle('screensaver:isActive', () => this.isActive())
-    ipcMain.handle('screensaver:startTask', () => this.startTask())
-    ipcMain.handle('screensaver:cancelTask', () => this.cancelTask())
-    ipcMain.handle('screensaver:history', (_event, sessionId: string, maxMessages?: number) =>
-      this.history(sessionId, maxMessages))
     ipcMain.handle('screensaver:registerSystem', () => this.registerSystemScreensaver())
     ipcMain.handle('screensaver:unregisterSystem', () => this.unregisterSystemScreensaver())
     ipcMain.handle('screensaver:systemRegistered', () => this.systemScreensaverRegistered())
-    ipcMain.handle('screensaver:attach', () => {
-      // 屏保窗口挂载时若有正在运行的会话,允许渲染端从历史续播。
-      return { sessionId: this.sessionId, lastSeq: this.lastSeq }
-    })
-    ipcMain.on('screensaver:session-id', (_event, sessionId: string) => {
-      // 渲染端主动上报它正在显示的会话(供转发过滤)。
-      if (typeof sessionId === 'string') this.sessionId = sessionId
-    })
   }
 
   private async onIdleTick(): Promise<void> {
@@ -427,8 +305,6 @@ export class ScreensaverController {
     const cfg = this.config.get().screensaver
     if (!cfg.enabled || this.locked) return
     if (this.window !== null && !this.window.isDestroyed()) return
-    // 上一次激活失败后 5 分钟冷却:harness 不可用时不再每 3 秒发起一次激活(风暴)。
-    if (Date.now() - this.lastActivateFailAt < 300000) return
     // 退出冷却由 activate() 统一处理(system/idle 起源 5 分钟内拒绝)。
     const idleSeconds = powerMonitor.getSystemIdleTime()
     if (idleSeconds >= cfg.idleMinutes * 60) {
@@ -436,7 +312,6 @@ export class ScreensaverController {
         await this.activate('idle')
       } catch (error) {
         console.error('[screensaver] 激活失败:', error instanceof Error ? error.message : String(error))
-        this.lastActivateFailAt = Date.now()
       }
     }
   }
@@ -449,6 +324,15 @@ function runReg(action: 'add', args: string[]): Promise<void> {
         reject(new Error(stdout.trim() || error.message))
         return
       }
+      resolve()
+    })
+  })
+}
+
+/** 删除注册表值(值本就不存在时视为成功)。 */
+function deleteRegValue(name: string): Promise<void> {
+  return new Promise((resolve) => {
+    execFile('reg', ['delete', 'HKCU\\Control Panel\\Desktop', '/v', name, '/f'], { windowsHide: true }, () => {
       resolve()
     })
   })
@@ -472,13 +356,4 @@ async function queryDesktopRegistry(): Promise<Record<string, string>> {
     })
   }
   return values
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/** 供外部创建屏保会话 id(如需要预分配)。 */
-export function newSessionId(): string {
-  return randomUUID()
 }

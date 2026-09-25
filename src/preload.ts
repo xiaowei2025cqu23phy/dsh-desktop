@@ -41,21 +41,9 @@ const api = {
     setConfig: (patch: object) => ipcRenderer.invoke('screensaver:setConfig', patch),
     activate: () => ipcRenderer.invoke('screensaver:activate'),
     deactivate: () => ipcRenderer.invoke('screensaver:deactivate'),
-    isActive: () => ipcRenderer.invoke('screensaver:isActive'),
-    startTask: () => ipcRenderer.invoke('screensaver:startTask'),
-    cancelTask: () => ipcRenderer.invoke('screensaver:cancelTask'),
-    history: (sessionId: string, maxMessages?: number) =>
-      ipcRenderer.invoke('screensaver:history', sessionId, maxMessages),
     registerSystem: () => ipcRenderer.invoke('screensaver:registerSystem'),
     unregisterSystem: () => ipcRenderer.invoke('screensaver:unregisterSystem'),
     systemRegistered: () => ipcRenderer.invoke('screensaver:systemRegistered'),
-    attach: () => ipcRenderer.invoke('screensaver:attach'),
-    reportSessionId: (sessionId: string) => ipcRenderer.send('screensaver:session-id', sessionId),
-    onEvent: (callback: (frame: unknown) => void) => {
-      const listener = (_event: unknown, frame: unknown): void => callback(frame)
-      ipcRenderer.on('screensaver:event', listener)
-      return () => { ipcRenderer.removeListener('screensaver:event', listener) }
-    },
   },
   remote: {
     getConfig: () => ipcRenderer.invoke('remote:getConfig'),
@@ -65,10 +53,8 @@ const api = {
     pairUrl: () => ipcRenderer.invoke('remote:pairUrl'),
     qrDataUrl: () => ipcRenderer.invoke('remote:qrDataUrl'),
     qrDataUrls: () => ipcRenderer.invoke('remote:qrDataUrls'),
-    pendingDevices: () => ipcRenderer.invoke('remote:pendingDevices'),
+    // 已连接设备:桌面端只用来暂停/拉黑(令牌有效即访问权)。
     approvedDevices: () => ipcRenderer.invoke('remote:approvedDevices'),
-    approveDevice: (id: string) => ipcRenderer.invoke('remote:approveDevice', id),
-    rejectDevice: (id: string) => ipcRenderer.invoke('remote:rejectDevice', id),
     revokeDevice: (id: string) => ipcRenderer.invoke('remote:revokeDevice', id),
     setPaused: (paused: boolean) => ipcRenderer.invoke('remote:setPaused', paused),
     pauseDevice: (id: string) => ipcRenderer.invoke('remote:pauseDevice', id),
@@ -76,11 +62,6 @@ const api = {
     blacklistDevice: (id: string) => ipcRenderer.invoke('remote:blacklistDevice', id),
     unblacklistDevice: (id: string) => ipcRenderer.invoke('remote:unblacklistDevice', id),
     blacklistedDevices: () => ipcRenderer.invoke('remote:blacklistedDevices'),
-    onDevicePending: (callback: (device: { id: string; label: string; address: string }) => void) => {
-      const listener = (_event: unknown, device: { id: string; label: string; address: string }): void => callback(device)
-      ipcRenderer.on('remote:device-pending', listener)
-      return () => { ipcRenderer.removeListener('remote:device-pending', listener) }
-    },
   },
   dialog: {
     pickDirectories: () => ipcRenderer.invoke('dialog:pickDirectories'),
@@ -173,6 +154,7 @@ const api = {
   },
   app: {
     info: () => ipcRenderer.invoke('app:info'),
+    recoveryNotice: () => ipcRenderer.invoke('app:recoveryNotice'),
     openSettingsFolder: () => ipcRenderer.invoke('app:openSettingsFolder'),
     quit: () => ipcRenderer.invoke('app:quit'),
   },

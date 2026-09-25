@@ -1,7 +1,8 @@
 /**
- * 网关「真正断开」离线测试(用假 harness/config/events,无需 Electron 运行)。
+ * 网关「真正断开」与「访问判定」离线测试(用假 harness/config/events,无需 Electron 运行)。
  * 覆盖:建立 SSE 连接后 setPaused(true) → 该响应被 end 且 EventHub 订阅归零;
- *       blacklistDevice 只断开被拉黑设备的连接。
+ *       blacklistDevice 只断开被拉黑设备的连接;
+ *       令牌即访问权(带令牌首次连接直接可用)、被暂停/被拉黑设备仍被拒绝。
  * 用法:node scripts/gateway-stop-test.mjs
  */
 
@@ -27,7 +28,7 @@ function makeConfig() {
     remote: {
       enabled: true, port: 0, bindHost: '127.0.0.1', paused: false,
       token: 'test-token', expiresAt: null, blacklistedDevices: [],
-      approvedDevices: [], pendingDevices: [], presetWorkspaceRoots: [],
+      approvedDevices: [], presetWorkspaceRoots: [],
     },
     appearance: { phone: { path: null, position: { x: 0.5, y: 0.5 } }, window: { path: null, position: { x: 0.5, y: 0.5 } } },
     chatSessions: {},
@@ -100,6 +101,55 @@ const harness = { client: () => ({}), status: () => ({ state: 'stopped' }), base
   check('拉黑只断开目标设备 end', ended.join(','), 'dev-A')
   check('拉黑只断开目标设备 unsubscribe', unsubbed.join(','), 'dev-A')
   check('其他设备连接保留', gateway.activeSse.size, 1)
+}
+
+// ---- 令牌即访问权:无设备标识直接放行;暂停/拉黑/错误令牌仍拒绝 ----
+{
+  const config = makeConfig()
+  const gateway = new RemoteGateway(config, harness, events)
+  gateway.start()
+  let port = null
+  for (let i = 0; i < 200 && port === null; i++) {
+    const addr = gateway.server !== null ? gateway.server.address() : null
+    port = addr !== null && typeof addr.port === 'number' ? addr.port : null
+    if (port === null) await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  // 用 /api/rpc 探测鉴权结果:401 = 拒绝;其他状态码 = 已通过鉴权进入业务处理。
+  const rpcStatus = async (headers) => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify({ method: 'session.list', payload: {} }),
+    })
+    return res.status
+  }
+  const token = { authorization: 'Bearer test-token' }
+
+  check('无令牌被拒', await rpcStatus({}), 401)
+  check('错误令牌被拒', await rpcStatus({ authorization: 'Bearer wrong-token' }), 401)
+  check('有效令牌无设备标识直接放行', await rpcStatus(token), 200)
+  check('有效令牌 + 首次连接的设备标识直接放行', await rpcStatus({ ...token, 'x-dsh-device': 'dev-new' }), 200)
+  check(
+    '首次连接的设备自动登记为已连接设备',
+    config.get().remote.approvedDevices.some((device) => device.id === 'dev-new'),
+    true,
+  )
+
+  // 桌面端暂停该设备:令牌正确也拒绝。
+  gateway.pauseDevice('dev-new')
+  check('已暂停设备被拒(令牌正确)', await rpcStatus({ ...token, 'x-dsh-device': 'dev-new' }), 401)
+  gateway.resumeDevice('dev-new')
+  check('恢复后同一设备可用', await rpcStatus({ ...token, 'x-dsh-device': 'dev-new' }), 200)
+
+  // 拉黑:令牌正确也拒绝,且优先于一切。
+  gateway.blacklistDevice('dev-new')
+  check('已拉黑设备被拒(令牌正确)', await rpcStatus({ ...token, 'x-dsh-device': 'dev-new' }), 401)
+
+  // 全局暂停兜底:config.paused 为 true 时,请求打到仍在监听的服务器也一律拒绝(竞态窗口兜底)。
+  config.update('remote', { paused: true })
+  check('全局暂停后拒绝', await rpcStatus(token), 503)
+  config.update('remote', { paused: false })
+  gateway.stop()
 }
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)

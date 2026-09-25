@@ -12,6 +12,7 @@ import { previewHarnessConfig } from './config'
 import type { RemoteGateway } from './gateway'
 import type { HarnessManager } from './harness'
 import type { ModelManager } from './models'
+import { isSameOrUnder } from './path-policy'
 import type { QQBotAdapter } from './qq-bot'
 import type { RemoteCommandProcessor } from './remote-commands'
 import type { ScreensaverController } from './screensaver'
@@ -112,10 +113,7 @@ export function registerIpc(deps: IpcDeps): void {
     ipcMain.handle('remote:pairUrl', () => gateway.pairUrl())
     ipcMain.handle('remote:qrDataUrl', () => gateway.qrDataUrl())
     ipcMain.handle('remote:qrDataUrls', () => gateway.qrDataUrls())
-  ipcMain.handle('remote:pendingDevices', () => gateway.pendingDevices())
   ipcMain.handle('remote:approvedDevices', () => gateway.approvedDevices())
-  ipcMain.handle('remote:approveDevice', (_event, id: string) => gateway.approveDevice(id))
-  ipcMain.handle('remote:rejectDevice', (_event, id: string) => gateway.rejectDevice(id))
   ipcMain.handle('remote:revokeDevice', (_event, id: string) => gateway.revokeDevice(id))
   ipcMain.handle('remote:setPaused', (_event, paused: boolean) => gateway.setPaused(paused))
   ipcMain.handle('remote:pauseDevice', (_event, id: string) => gateway.pauseDevice(id))
@@ -280,11 +278,10 @@ export function registerIpc(deps: IpcDeps): void {
     // 让记忆「更主动」,不只依赖 README/package.json。
     try {
       const client = deps.harness.client()
-      const normPath = path.replace(/\\/g, '/').toLowerCase()
       const list = await client.rpc<{ items: Array<{ sessionId: string; cwd?: string; updatedAt?: number; blank?: boolean; origin?: string }> }>('session.list', {}, 20000)
       const recent = (list.items ?? [])
         .filter((s) => !s.blank && !(typeof s.origin === 'string' && s.origin !== '') &&
-          typeof s.cwd === 'string' && s.cwd.replace(/\\/g, '/').toLowerCase().startsWith(normPath))
+          typeof s.cwd === 'string' && isSameOrUnder(s.cwd, path))
         .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
         .slice(0, 3)
       const firstMessages: string[] = []
@@ -413,6 +410,9 @@ export function registerIpc(deps: IpcDeps): void {
   }
 
   // ---- 应用 ----
+  // 配置恢复提示:损坏隔离 / 备份回退后告知用户,避免"设置莫名重置"无解释。
+  ipcMain.handle('app:recoveryNotice', () => deps.config.takeRecoveryNotice())
+
   ipcMain.handle('app:info', () => {
     try {
       const stamp = join(__dirname, 'build-info.json')

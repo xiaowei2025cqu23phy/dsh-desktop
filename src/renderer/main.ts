@@ -736,33 +736,6 @@ function bindDrawerNavigation(): void {
   applyDrawerGroup('general')
 }
 
-let pendingDeviceForApproval: { id: string; label: string; address: string } | null = null
-let shownDeviceIds = new Set<string>()
-
-async function showDeviceApproval(device: { id: string; label: string; address: string }): Promise<void> {
-  shownDeviceIds.add(device.id)
-  pendingDeviceForApproval = device
-  $id('da-info').textContent = `设备:${device.label}\n地址:${device.address}\n\n只有你确认的局域网设备才能远程访问电脑,包括任务、文件与审批操作。`
-  $id('device-approve').classList.remove('hidden')
-  // 同时打开设置抽屉并切到服务组,方便查看设备列表。
-  drawerOpen = true
-  $id('drawer').classList.remove('hidden')
-  applyDrawerGroup('service')
-  await renderRemoteDevices()
-}
-
-/** 轮询兜底:即使 IPC 事件丢失,待批准设备也会弹出审批(每 10 秒)。 */
-async function pollPendingDevices(): Promise<void> {
-  try {
-    const pending = await API.remote.pendingDevices()
-    for (const device of pending) {
-      if (!shownDeviceIds.has(device.id)) await showDeviceApproval(device)
-    }
-  } catch {
-    /* 远程访问未启用或 IPC 暂不可用时忽略。 */
-  }
-}
-
 async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
@@ -974,10 +947,6 @@ async function loadScreensaverConfig(): Promise<void> {
     const config = await API.screensaver.getConfig()
     input('ss-enabled').checked = config.enabled
     input('ss-idle').value = String(config.idleMinutes)
-    input('ss-auto-task').checked = config.autoTask
-    input('ss-prompt').value = config.taskPrompt
-    input('ss-cwd').value = config.taskCwd ?? ''
-    input('ss-max').value = String(config.taskMaxMinutes ?? 10)
   } catch (error) {
     S.toast(`读取屏保配置失败:${String(error)}`, 'error')
   }
@@ -1635,35 +1604,18 @@ function renderRemotePause(paused: boolean): void {  const pauseBtn = $id('btn-r
   else status.classList.remove('security-warning')
 }
 
+/**
+ * 设备列表(纯桌面端管控视图):列出已连接设备(可暂停/拉黑)与已拉黑设备。
+ *
+ * 令牌有效即访问权,这里只做主人主动的收紧动作(暂停/拉黑/断开)。
+ */
 async function renderRemoteDevices(): Promise<void> {
-  const pending = await API.remote.pendingDevices()
-  const approved = await API.remote.approvedDevices()
+  const known = await API.remote.approvedDevices()
   const blacklisted = await API.remote.blacklistedDevices()
-  const pendingHost = $id('remote-pending-devices')
   const approvedHost = $id('remote-approved-devices')
   const blacklistHost = $id('remote-blacklist-devices')
-  pendingHost.textContent = pending.length === 0 ? '暂无待批准设备' : ''
-  pending.forEach((device) => {
-    const row = document.createElement('div')
-    row.textContent = `${device.label} · ${device.address} `
-    const allow = document.createElement('button')
-    allow.className = 'btn btn-sm'
-    allow.textContent = '允许'
-    allow.onclick = async () => { await API.remote.approveDevice(device.id); await renderRemoteDevices() }
-    const reject = document.createElement('button')
-    reject.className = 'btn btn-sm btn-danger'
-    reject.textContent = '拒绝'
-    reject.onclick = async () => { await API.remote.rejectDevice(device.id); await renderRemoteDevices() }
-    const black = document.createElement('button')
-    black.className = 'btn btn-sm btn-danger'
-    black.textContent = '拉黑'
-    black.title = '拉黑:即使令牌正确也永远拒绝,不再提示'
-    black.onclick = async () => { await API.remote.blacklistDevice(device.id); await renderRemoteDevices() }
-    row.append(allow, reject, black)
-    pendingHost.appendChild(row)
-  })
-  approvedHost.textContent = approved.length === 0 ? '暂无已批准设备' : ''
-  approved.forEach((device) => {
+  approvedHost.textContent = known.length === 0 ? '暂无已连接设备(手机首次连接后自动出现在这里)' : ''
+  known.forEach((device) => {
     const row = document.createElement('div')
     row.textContent = `${device.label} · ${device.address} ${device.paused ? '⏸(已暂停)' : ''} `
     if (device.paused) {
@@ -1676,20 +1628,21 @@ async function renderRemoteDevices(): Promise<void> {
       const pause = document.createElement('button')
       pause.className = 'btn btn-sm'
       pause.textContent = '⏸ 暂停'
-      pause.title = '暂停该设备连接(可随时恢复)'
+      pause.title = '暂停该设备连接:令牌正确也拒绝,可随时恢复'
       pause.onclick = async () => { await API.remote.pauseDevice(device.id); await renderRemoteDevices() }
       row.appendChild(pause)
     }
     const black = document.createElement('button')
     black.className = 'btn btn-sm btn-danger'
     black.textContent = '🚫 拉黑'
-    black.title = '拉黑:令牌正确也拒绝,永久加入黑名单'
+    black.title = '拉黑:令牌正确也拒绝,并永久加入黑名单'
     black.onclick = async () => { await API.remote.blacklistDevice(device.id); await renderRemoteDevices() }
     row.appendChild(black)
     const revoke = document.createElement('button')
     revoke.className = 'btn btn-sm btn-danger'
-    revoke.textContent = '撤销'
-    revoke.title = '撤销授权:设备需重新扫码申请'
+    revoke.textContent = '⏻ 断开'
+    // 诚实措辞:断开只是立即断开并移除记录,不构成拒绝——该设备下次带令牌连接会被重新登记。
+    revoke.title = '立即断开该设备并移除记录(不会阻止它再次连接;要永久拒绝请用「拉黑」)'
     revoke.onclick = async () => { await API.remote.revokeDevice(device.id); await renderRemoteDevices() }
     row.appendChild(revoke)
     approvedHost.appendChild(row)
@@ -2056,13 +2009,6 @@ function bindTopBar(): void {
       S.toast(`默认工作区已设为:${path}`, 'ok')
     }
   })
-  $id('btn-ss-cwd-pick').addEventListener('click', async () => {
-    const path = await pickDirectoryInto('ss-cwd')
-    if (path !== null) {
-      await API.screensaver.setConfig({ taskCwd: path })
-      S.toast(`屏保任务目录已设为:${path}`, 'ok')
-    }
-  })
   switchView('workbench')
 }
 
@@ -2260,41 +2206,13 @@ function bindWorkbench(): void {
   })
   $id('btn-queue-refresh').addEventListener('click', () => void loadQueue())
   $id('ad-close').addEventListener('click', () => $id('activity-detail').classList.add('hidden'))
-  // 设备审批弹窗。
-  $id('da-close').addEventListener('click', () => $id('device-approve').classList.add('hidden'))
-  $id('da-allow').addEventListener('click', async () => {
-    if (pendingDeviceForApproval === null) return
-    const device = pendingDeviceForApproval
-    pendingDeviceForApproval = null
-    await API.remote.approveDevice(device.id)
-    $id('device-approve').classList.add('hidden')
-    await renderRemoteDevices()
-    S.toast(`已允许设备:${device.label}`, 'ok')
-  })
-  $id('da-reject').addEventListener('click', async () => {
-    if (pendingDeviceForApproval === null) return
-    const device = pendingDeviceForApproval
-    pendingDeviceForApproval = null
-    await API.remote.rejectDevice(device.id)
-    $id('device-approve').classList.add('hidden')
-    await renderRemoteDevices()
-    S.toast(`已拒绝设备:${device.label}`, 'ok')
-  })
-  API.remote.onDevicePending((device) => { shownDeviceIds.add(device.id); void showDeviceApproval(device) })
-  // 每 10 秒轮询待批准设备,保证审批弹窗必然出现(事件推送丢失时的兜底)。
-  window.setInterval(() => void pollPendingDevices(), 10_000)
-  void pollPendingDevices()
   // 弹层背景点击关闭。
   $id('activity-detail').addEventListener('click', (event) => {
     if (event.target === $id('activity-detail')) $id('activity-detail').classList.add('hidden')
   })
-  $id('device-approve').addEventListener('click', (event) => {
-    if (event.target === $id('device-approve')) $id('device-approve').classList.add('hidden')
-  })
   // Esc 关闭抽屉/弹层。
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return
-    if (!$id('device-approve').classList.contains('hidden')) { $id('device-approve').classList.add('hidden'); return }
     if (!$id('qq-gate').classList.contains('hidden')) { $id('qq-gate').classList.add('hidden'); return }
     if (!$id('activity-detail').classList.contains('hidden')) { $id('activity-detail').classList.add('hidden'); return }
     if (!$id('drawer').classList.contains('hidden')) closeDrawer()
@@ -2544,14 +2462,6 @@ function bindScreensaver(): void {
     void saveScreensaverConfig({ enabled: input('ss-enabled').checked }))
   input('ss-idle').addEventListener('change', () =>
     void saveScreensaverConfig({ idleMinutes: Math.max(1, Number(input('ss-idle').value) || 5) }))
-  input('ss-auto-task').addEventListener('change', () =>
-    void saveScreensaverConfig({ autoTask: input('ss-auto-task').checked }))
-  input('ss-prompt').addEventListener('change', () =>
-    void saveScreensaverConfig({ taskPrompt: input('ss-prompt').value }))
-  input('ss-cwd').addEventListener('change', () =>
-    void saveScreensaverConfig({ taskCwd: input('ss-cwd').value.trim() || null }))
-  input('ss-max').addEventListener('change', () =>
-    void saveScreensaverConfig({ taskMaxMinutes: Math.max(1, Math.min(120, Number(input('ss-max').value) || 10)) }))
   $id('btn-ss-now').addEventListener('click', () => {
     void API.screensaver.activate().then(() => {
       S.toast('AI 屏保已启动,移动鼠标或按键退出', 'ok')
@@ -2615,6 +2525,20 @@ function bind(): void {
   bindOnboarding()
 }
 
+/**
+ * 配置恢复提示:配置文件损坏被隔离、或从备份回退时,明确告知用户。
+ * 静默回默认值会让用户以为"设置莫名重置",因此这里必须显式提示。
+ */
+async function showRecoveryNotice(): Promise<void> {
+  try {
+    const notice = await API.app.recoveryNotice()
+    if (notice === null || notice === '') return
+    S.toast(notice, 'error')
+  } catch {
+    // 提示获取失败不影响其它功能。
+  }
+}
+
 /** 在设置面板显示当前构建版本与 commit,便于发现「跑的是旧包」的情况。 */
 async function showBuildInfo(): Promise<void> {
   try {
@@ -2628,7 +2552,7 @@ async function showBuildInfo(): Promise<void> {
   }
 }
 
-/** 顶栏常驻状态条:运行中活动 / 今日 Token / 已批准设备,免发指令、免翻设置。 */
+/** 顶栏常驻状态条:运行中活动 / 今日 Token / 已连接远程设备,免发指令、免翻设置。 */
 async function refreshStatusBar(): Promise<void> {
   try {
     const activities = await API.activity.list()
@@ -2645,10 +2569,10 @@ async function refreshStatusBar(): Promise<void> {
     tokensEl.classList.toggle('ts-active', total > 0)
   } catch { /* 加载失败保留占位 */ }
   try {
-    const approved = await API.remote.approvedDevices()
+    const known = await API.remote.approvedDevices()
     const devicesEl = $id('ts-devices')
-    devicesEl.textContent = `📱 ${approved.length}`
-    devicesEl.classList.toggle('ts-active', approved.length > 0)
+    devicesEl.textContent = `📱 ${known.length}`
+    devicesEl.classList.toggle('ts-active', known.length > 0)
   } catch { /* 加载失败保留占位 */ }
 }
 
@@ -2707,6 +2631,7 @@ function bindOnboarding(): void {
 function init(): void {
   bind()
   void showBuildInfo()
+  void showRecoveryNotice()
   void refreshStatus()
   setInterval(() => void refreshStatus(), 2000)
   void refreshStatusBar()

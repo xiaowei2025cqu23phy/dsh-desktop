@@ -4,7 +4,7 @@
  */
 
 import { app } from 'electron'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, renameSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { LocalDb } from './db'
@@ -72,18 +72,8 @@ export function previewHarnessConfig(p: PreviewConfig): HarnessConfig {
 export interface ScreensaverConfig {
   /** 空闲检测开启。 */
   enabled: boolean
-  /** 空闲多少分钟后进入 AI 屏保。 */
+  /** 空闲多少分钟后进入屏保。 */
   idleMinutes: number
-  /** 进入屏保时自动启动一个 agent 任务(默认关闭:空闲只显示环境画面,不烧资源)。 */
-  autoTask: boolean
-  /** 自动任务提示词(屏保自动任务使用;QQ/Telegram 工作模式不再读取——harness 自带系统提示词)。 */
-  taskPrompt: string
-  /** 任务工作目录(空则使用 harness 默认)。 */
-  taskCwd: string | null
-  /** 任务最长运行分钟数,超时自动停止(防止 agent 失控循环烧 CPU)。 */
-  taskMaxMinutes: number
-  /** 退出屏保后保留任务继续在后台运行。 */
-  keepSessionAfterExit: boolean
   /** 注册系统屏保前备份的原注册表值,取消注册时恢复。内部字段,不暴露给 UI。 */
   systemScreensaverBackup: Record<string, string> | null
 }
@@ -125,10 +115,8 @@ export interface RemoteConfig {
   token: string
   /** 远程访问过期时间;null 表示不自动过期(不建议长期启用)。 */
   expiresAt: number | null
-  /** 已获得桌面批准的远程设备(paused = 桌面端已暂停该设备)。 */
+  /** 已连接过的远程设备(paused = 桌面端已暂停该设备;blacklistedDevices 为拉黑名单)。 */
   approvedDevices: Array<{ id: string; label: string; address: string; approvedAt: number; lastSeenAt: number; paused?: boolean }>
-  /** 等待桌面批准的远程设备。 */
-  pendingDevices: Array<{ id: string; label: string; address: string; requestedAt: number; lastSeenAt: number }>
   /**
    * 预设工作区根目录:手机端只能在这些目录下新建文件夹工作区并发布任务;
    * 已有工作区(含电脑端创建的)不受限,均可选择。
@@ -355,12 +343,6 @@ const DEFAULTS: AppConfig = {
   screensaver: {
     enabled: false,
     idleMinutes: 5,
-    autoTask: false,
-    taskPrompt:
-      '你是运行在 AI 屏保中的 DeepSeek Harness 智能体。请自主完成一项有价值的任务,例如:浏览今天的科技新闻并整理要点、构思一段创意文字、分析当前工作区代码给出改进建议。完成后用简洁的中文总结你做了什么。',
-    taskCwd: null,
-    taskMaxMinutes: 10,
-    keepSessionAfterExit: true,
     systemScreensaverBackup: null,
   },
   appearance: {
@@ -380,7 +362,6 @@ const DEFAULTS: AppConfig = {
     token: '',
     expiresAt: null,
     approvedDevices: [],
-    pendingDevices: [],
     presetWorkspaceRoots: [],
   },
   qq: {
@@ -432,12 +413,21 @@ export class ConfigStore {
   private config: AppConfig
   private readonly path: string
   private readonly db: LocalDb
+  /** 本次启动是否发生了配置恢复(损坏隔离 / 备份回退),供界面提示用户。 */
+  private recoveryNotice: string | null = null
 
   constructor() {
     this.path = join(app.getPath('userData'), 'config.json')
     this.config = this.load()
     this.db = new LocalDb(app.getPath('userData'))
     this.migrateLegacyData()
+  }
+
+  /** 配置恢复提示(无恢复时返回 null)。界面据此告知用户文件已隔离、旧文件在哪。 */
+  takeRecoveryNotice(): string | null {
+    const notice = this.recoveryNotice
+    this.recoveryNotice = null
+    return notice
   }
 
   /** 首次启用 SQLite 时,把旧 JSON 中的活动/审计/队列一次性导入,之后数据源切换为 local.db。 */
@@ -453,6 +443,13 @@ export class ConfigStore {
     }
   }
 
+  /**
+   * 读取配置。
+   *
+   * 解析失败时**不静默回默认值**——那会让用户在毫不知情的情况下丢掉远程令牌、已批准
+   * 设备、定时任务与工作区记忆,而下一次 save() 就把默认值固化。改为:把损坏文件改名
+   * 隔离,优先用上一次成功保存的 `config.json.bak` 恢复,并把经过记入 recoveryNotice。
+   */
   private load(): AppConfig {
     try {
       if (!existsSync(this.path)) return structuredClone(DEFAULTS)
@@ -482,7 +479,6 @@ export class ConfigStore {
         config.scheduledTasks = Object.values(config.scheduledTasks as Record<string, never>)
       }
       if (!Array.isArray(config.remote.approvedDevices)) config.remote.approvedDevices = []
-      if (!Array.isArray(config.remote.pendingDevices)) config.remote.pendingDevices = []
       if (!Array.isArray(config.remote.blacklistedDevices)) config.remote.blacklistedDevices = []
       if (!Array.isArray(config.taskHistory)) config.taskHistory = []
       if (!Array.isArray(config.taskQueue)) config.taskQueue = []
@@ -491,9 +487,37 @@ export class ConfigStore {
       if (config.workspaceMemories === null || typeof config.workspaceMemories !== 'object' || Array.isArray(config.workspaceMemories)) config.workspaceMemories = {}
       return config
     } catch (error) {
-      console.error('[config] 配置文件解析失败,使用默认值:', String(error))
-      return structuredClone(DEFAULTS)
+      console.error('[config] 配置文件解析失败:', String(error))
+      return this.recoverFromBrokenConfig()
     }
+  }
+
+  /** 隔离损坏的 config.json,并尽量从 .bak 恢复;两者都不可用时才回默认值。 */
+  private recoverFromBrokenConfig(): AppConfig {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const broken = `${this.path}.corrupt-${stamp}`
+    try {
+      copyFileSync(this.path, broken)
+    } catch {
+      // 复制失败不影响后续流程,仅少一份现场。
+    }
+    const backupPath = `${this.path}.bak`
+    if (existsSync(backupPath)) {
+      try {
+        const raw = JSON.parse(readFileSync(backupPath, 'utf8').replace(/^\uFEFF/, '')) as Partial<AppConfig>
+        this.recoveryNotice =
+          `配置文件损坏,已隔离到 ${broken},并从上一次备份恢复设置。` +
+          '若发现设置不对,可关闭应用后用备份文件覆盖 config.json。'
+        console.warn('[config]', this.recoveryNotice)
+        return this.merge(DEFAULTS, raw)
+      } catch {
+        // 备份同样损坏:继续走默认值分支。
+      }
+    }
+    this.recoveryNotice =
+      `配置文件损坏,已隔离到 ${broken},当前使用默认设置(远程令牌、已批准设备、定时任务等需要重新配置)。`
+    console.warn('[config]', this.recoveryNotice)
+    return structuredClone(DEFAULTS)
   }
 
   private merge<T>(base: T, patch: Partial<T>): T {
@@ -526,17 +550,42 @@ export class ConfigStore {
     safe.remote.token = ''
     safe.qq.appSecret = ''
     safe.telegram.token = ''
+    // harness.launchToken 同样是凭据(等价于本机 agent 控制权),导出时必须一并清空。
+    safe.harness.launchToken = null
     writeFileSync(target, JSON.stringify(safe, null, 2), 'utf8')
   }
 
-  /** 从备份恢复非敏感配置,保留当前令牌和机器人凭据。 */
+  /**
+   * 从备份恢复非敏感配置,保留本机现有凭据。
+   *
+   * 只接受本应用导出的配置形状:未知顶层键直接忽略——否则误选一份诊断报告
+   * (dsh-diagnostics.json)会把它的 schemaVersion/logs 等字段永久写进 config.json。
+   */
   importSafe(source: string): AppConfig {
-    const raw = JSON.parse(readFileSync(source, 'utf8').replace(/^\uFEFF/, '')) as Partial<AppConfig>
-    const currentSecrets = { remoteToken: this.config.remote.token, qqSecret: this.config.qq.appSecret, telegramToken: this.config.telegram.token }
-    const next = this.merge(this.config, raw)
+    const parsed: unknown = JSON.parse(readFileSync(source, 'utf8').replace(/^\uFEFF/, ''))
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('文件内容不是配置对象(应为「导出脱敏配置」生成的 JSON)')
+    }
+    // 仅保留 DEFAULTS 里已知的顶层键,过滤 null(避免用 null 覆盖整个分区)。
+    const raw: Record<string, unknown> = {}
+    for (const key of Object.keys(DEFAULTS)) {
+      const value = (parsed as Record<string, unknown>)[key]
+      if (value !== undefined && value !== null) raw[key] = value
+    }
+    if (Object.keys(raw).length === 0) {
+      throw new Error('文件中没有可用的配置分区,已取消导入')
+    }
+    const currentSecrets = {
+      remoteToken: this.config.remote.token,
+      qqSecret: this.config.qq.appSecret,
+      telegramToken: this.config.telegram.token,
+      launchToken: this.config.harness.launchToken,
+    }
+    const next = this.merge(this.config, raw as Partial<AppConfig>)
     next.remote.token = currentSecrets.remoteToken
     next.qq.appSecret = currentSecrets.qqSecret
     next.telegram.token = currentSecrets.telegramToken
+    next.harness.launchToken = currentSecrets.launchToken
     this.config = next
     this.save()
     return this.config
@@ -613,12 +662,35 @@ export class ConfigStore {
     return this.config[section]
   }
 
+  /**
+   * 保存配置。
+   *
+   * 先写临时文件再 rename 覆盖:writeFileSync 直接写目标会先截断,一旦中途失败
+   * (磁盘满、进程被强杀)就留下半截 JSON,下次启动即判为损坏。rename 在同一卷上
+   * 是原子的,因此目标文件要么是旧的完整内容、要么是新的完整内容。
+   * 覆盖前把上一版留作 `config.json.bak`,供损坏时回退。
+   */
   private save(): void {
+    const tmp = `${this.path}.tmp`
     try {
       mkdirSync(dirname(this.path), { recursive: true })
-      writeFileSync(this.path, JSON.stringify(this.config, null, 2), 'utf8')
+      const text = JSON.stringify(this.config, null, 2)
+      writeFileSync(tmp, text, 'utf8')
+      if (existsSync(this.path)) {
+        try {
+          copyFileSync(this.path, `${this.path}.bak`)
+        } catch {
+          // 备份失败不阻断保存。
+        }
+      }
+      renameSync(tmp, this.path)
     } catch (error) {
       console.error('[config] 保存失败:', error)
+      try {
+        rmSync(tmp, { force: true })
+      } catch {
+        // 清理失败无影响。
+      }
     }
   }
 

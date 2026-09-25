@@ -453,8 +453,21 @@ export class HarnessManager extends EventEmitter {
     }
   }
 
+  /**
+   * 落盘/上报前抹掉 harness 访问 token。
+   *
+   * 官方 harness 启动时打印 `…/?token=<进程级凭证>`,该值用于换取持久 cookie、
+   * 等价于本机 agent 的控制权。日志环会被日志查看器与「导出脱敏诊断报告」读取,
+   * 因此这里在入库前就把 token 字面量替换掉,而不是依赖下游各自脱敏。
+   */
+  private scrubToken(text: string): string {
+    const token = this.getLaunchToken()
+    if (token === null || token === '') return text
+    return text.split(token).join('<redacted-token>')
+  }
+
   private log(text: string): void {
-    const entry = `[${new Date().toLocaleTimeString()}] ${text}`
+    const entry = `[${new Date().toLocaleTimeString()}] ${this.scrubToken(text)}`
     this.logs.push(entry)
     if (this.logs.length > 400) this.logs.splice(0, this.logs.length - 400)
     this.emit('log', entry)

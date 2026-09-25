@@ -104,7 +104,8 @@
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId, 'x-dsh-device-label': navigator.userAgent.slice(0, 60) },
       body: JSON.stringify({ method: method, payload: payload || {} }),
     }).then(function (res) {
-      if (res.status === 428) throw new Error('等待桌面端批准此设备')
+      // 401 = 令牌无效/已重新生成,或电脑端已暂停、关闭、到期自动关闭了远程访问。
+      if (res.status === 401) throw new Error('令牌无效或远程访问已关闭')
       return res.json()
     }).then(function (data) {
       if (!data.ok) {
@@ -2225,8 +2226,8 @@
       enterMain(host)
     }).catch(function (err) {
       var message = String(err && err.message ? err.message : err)
-      var hint = /等待桌面端批准/.test(message)
-        ? '等待桌面端批准此设备(请在电脑上点击「允许连接」)'
+      var hint = /令牌无效/.test(message)
+        ? '令牌无效或远程访问已关闭:请在电脑端「设置 → 远程访问」确认仍处于启用状态,然后重新扫码'
         : /Failed to fetch|NetworkError|ECONNREFUSED|ERR_CONNECTION/.test(message)
           ? '无法连接电脑。请确认:手机与电脑在同一 Wi-Fi、电脑远程访问已启用、防火墙放行该端口'
           : message

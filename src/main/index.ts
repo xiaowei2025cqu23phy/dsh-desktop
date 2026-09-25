@@ -175,12 +175,11 @@ if (!gotLock) {
     previewHarness = new HarnessManager(previewHarnessConfig(config.get().preview))
     if (config.get().preview.enabled) void previewHarness.start()
     const models = new ModelManager(() => harness.client())
-    screensaver = new ScreensaverController(config, harness)
+    screensaver = new ScreensaverController(config)
     const appearance = new AppearanceManager(config)
     const notifications = new DesktopNotifications(config)
-    // mux 事件中枢:由 EventHub 管理,订阅者包括屏保窗口与远程客户端。
+    // mux 事件中枢:由 EventHub 管理,订阅者包括远程客户端与命令核心。
     const events = new EventHub(harness)
-    events.subscribe((frame) => screensaver.forwardFrame(frame))
     // 统一远程命令核心(QQ / Telegram / Webhook 共用)。
     const commands = new RemoteCommandProcessor(harness, config)
     let telegramBot: TelegramBotAdapter | null = null
@@ -213,14 +212,6 @@ if (!gotLock) {
       },
     })
     const gateway = new RemoteGateway(config, harness, events, commands)
-    // 新设备请求远程访问:桌面通知 + 通知点击聚焦主窗口并拉起审批。
-    gateway.onPendingDevice = (device) => {
-      notifications.show('approval', '📱 新设备请求远程访问', `${device.label} (${device.address})\n点击查看并批准,或稍后在设置中处理`)
-      const win = BrowserWindow.getAllWindows().find((item) => !item.isDestroyed())
-      if (win !== undefined && !win.isDestroyed()) {
-        win.webContents.send('remote:device-pending', device)
-      }
-    }
     commands.setExportDir(join(app.getPath('userData'), 'exports'))
     qqBot = new QQBotAdapter(config, commands)
     telegramBot = new TelegramBotAdapter(config, commands)

@@ -13,10 +13,11 @@
 import type { HarnessManager } from './harness'
 import type { ServerRequest } from './client'
 import type { ConfigStore } from './config'
-import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { parseCommand, parseTaskOptions, type QQCommand } from './qq-commands'
+import { isPathAllowed, isSameOrUnder, normPath, realpathOrNull } from './path-policy'
 import { dshHomeOf, unarchiveInRegistry } from './workspace-registry'
 import { approvalRisk, deliveredText, evictOldest, fmtAgo, fmtDuration, isRecord, normUserId, promptTitleFrom, turnEndFailure, type HistoryEventLike } from './remote-util'
 
@@ -57,9 +58,11 @@ interface DispatchContext {
 }
 
 /**
- * 命令分发表项:声明作用域与是否要求会话归属,路由与守卫在 executeCommand 单一入口统一执行。
+ * 命令分发表项:声明作用域与是否要求会话归属。
  * - scope 'private' = 仅私聊(群聊只聊天);'any' = 群聊也可(查询类)。
- * - requiresOwnership = 该命令按 sessionId 操作会话,handler 内部用 assertOwnership 校验发起者。
+ * - requiresOwnership = 该命令按 sessionId 操作会话。为 true 时由 executeCommand 在
+ *   **单一入口**统一调用 assertOwnership;目标不是 sessionId 的命令(如 retry 按队列行
+ *   归属、enter 需先解析编号)保持 false,由各自的 handler 校验,并在表内注明原因。
  */
 interface CommandEntry {
   scope: 'private' | 'any'
@@ -233,7 +236,7 @@ export class RemoteCommandProcessor {
     const dir = join(homedir(), 'dsh-workspace', '机器人对话')
     try {
       const ws = await client.rpc<{ items: Array<{ path?: string }> }>('workspace.list', {}, 15000)
-      const exists = (ws.items ?? []).some((w) => (w.path ?? '').replace(/\\/g, '/').toLowerCase() === dir.replace(/\\/g, '/').toLowerCase())
+      const exists = (ws.items ?? []).some((w) => normPath(w.path ?? '') === normPath(dir))
       if (!exists) {
         mkdirSync(dir, { recursive: true })
         try {
@@ -911,8 +914,9 @@ export class RemoteCommandProcessor {
 
   /**
    * 命令分发表:parseCommand 的 union 与此表用 satisfies 对齐,漏项会在编译期报错。
-   * 每个命令声明 scope(私聊/任意)与 requiresOwnership(是否按 sessionId 校验归属),
-   * 路由与守卫在 executeCommand 单一入口统一执行——新增命令必须显式声明,不再自动继承零守卫。
+   * 每个命令声明 scope(私聊/任意)与 requiresOwnership(是否按 sessionId 校验归属);
+   * 两者都由 executeCommand 在单一入口执行——新增命令必须显式声明,不写就是「无守卫」,
+   * 因此声明后请补 scripts/approval-flow-test.mjs 的归属用例。
    */
   private readonly commandTable = {
     help: { scope: 'any', requiresOwnership: false, handler: (): string => this.fullHelp() },
@@ -956,7 +960,11 @@ export class RemoteCommandProcessor {
     nofollow: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): string => this.cmdNofollow(ctx.key, (c as { sessionId: string }).sessionId) },
     clearqueue: { scope: 'any', requiresOwnership: false, handler: (_c: QQCommand, ctx: DispatchContext): string => this.cmdClearQueue(ctx.owner) },
     run: { scope: 'private', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdRun(ctx.key, ctx.ctxKey, (c as { description: string }).description, ctx.pushTarget) },
+    // retry 的归属判定按「调度队列行的 channel/userId」而非 sessionId(taskId 也可能是
+    // 队列 id),因此不能交给 executeCommand 的 sessionId 守卫,由 cmdRetry 自行校验。
     retry: { scope: 'private', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdRetry(ctx.key, ctx.ctxKey, (c as { taskId: string }).taskId, ctx.pushTarget) },
+    // enter 的目标可能是工作区名/目录/编号,编号要到 workspaceSessionPicker 里解析出
+    // sessionId 后才能校验,故同样由 cmdEnter 自行校验。
     enter: { scope: 'any', requiresOwnership: false, handler: (c: QQCommand, ctx: DispatchContext): Promise<string> => this.cmdEnter(ctx.ctxKey, ctx.key, (c as { target: string }).target, ctx.pushTarget) },
     exit: { scope: 'any', requiresOwnership: false, handler: (_c: QQCommand, ctx: DispatchContext): string => this.cmdExit(ctx.ctxKey) },
     newchat: {
@@ -990,6 +998,15 @@ export class RemoteCommandProcessor {
     // 群聊守卫在单一入口执行:private 命令(任务/定时等)在群聊一律拒绝。
     if (entry.scope === 'private' && pushTarget !== undefined && pushTarget.scope === 'group') {
       return '该指令仅支持私聊:请私聊机器人使用(防群聊刷屏与身份混淆);群内对话/查询不受影响。'
+    }
+    // 归属守卫:声明 requiresOwnership 且命令自带 sessionId 时,在单一入口统一校验。
+    // 漏掉这一层曾经意味着「表里写了 true 却毫无作用」——留下测试锁住它。
+    if (entry.requiresOwnership) {
+      const sessionId = (command as { sessionId?: unknown }).sessionId
+      if (typeof sessionId === 'string' && sessionId !== '') {
+        const denied = this.assertOwnership(ctx.owner, sessionId)
+        if (denied !== null) return denied
+      }
     }
     return entry.handler(command, ctx)
   }
@@ -1105,13 +1122,12 @@ export class RemoteCommandProcessor {
       const sessions = (list.items ?? []).filter((s) => !s.blank && !archived.has(s.sessionId) && !(typeof s.origin === 'string' && s.origin !== '') && this.ownedByOwner(owner, s.sessionId))
       // 每个工作区的会话数/运行数按 cwd/注册 id 归属统计(与「进入」一致,避免显示不全)。
       const countOf = (w: { workspaceId: string; path?: string; sessionIds?: string[] }): { total: number; running: number } => {
-        const p = (w.path ?? '').replace(/\\/g, '/').toLowerCase()
+        const p = w.path ?? ''
         const ids = new Set(w.sessionIds ?? [])
         let total = 0
         let running = 0
         for (const s of sessions) {
-          const c = (s.cwd ?? '').replace(/\\/g, '/').toLowerCase()
-          const hit = ids.has(s.sessionId) || (p !== '' && (c === p || c.startsWith(`${p}/`)))
+          const hit = ids.has(s.sessionId) || (p !== '' && isSameOrUnder(s.cwd ?? '', p))
           if (!hit) continue
           total += 1
           if (s.running) running += 1
@@ -1202,14 +1218,9 @@ export class RemoteCommandProcessor {
   /** 路径白名单校验:目标必须在某个已注册工作区或预设根目录之下(符号链接解析后)。 */
   private async allowPath(target: string): Promise<{ ok: boolean; message: string }> {
     if (target === '') return { ok: false, message: '用法:目录 <路径> 或 文件 <路径>' }
-    // Windows 路径大小写不敏感;先统一比较,再按平台语义解析真实路径。
-    const norm = (p: string): string => process.platform === 'win32' ? p.replace(/\\/g, '/').toLowerCase() : p.replace(/\\/g, '/')
-    let normalized: string
-    try {
-      normalized = norm(realpathSync(resolve(target)))
-    } catch {
-      return { ok: false, message: '路径不存在或无法解析(仅限工作区内文件)' }
-    }
+    // 目标必须存在且可解析;「不存在」与「越权」用不同提示,便于用户区分。
+    const realTarget = realpathOrNull(target)
+    if (realTarget === null) return { ok: false, message: '路径不存在或无法解析(仅限工作区内文件)' }
     const client = this.harness.client()
     try {
       const ws = await client.rpc<{ items: Array<{ path?: string }> }>('workspace.list', {}, 20000)
@@ -1217,17 +1228,8 @@ export class RemoteCommandProcessor {
       if (this.config !== undefined) {
         roots.push(...(this.config.get().remote.presetWorkspaceRoots ?? []))
       }
-      for (const root of roots) {
-        if (root === '' || root === null || root === undefined) continue
-        let realRoot: string
-        try {
-          realRoot = norm(realpathSync(resolve(root)))
-        } catch {
-          // 工作区根暂不可达(如网络盘):按字面比较兜底,仍要求前缀一致。
-          realRoot = norm(resolve(root))
-        }
-        if (normalized === realRoot || normalized.startsWith(realRoot + '/')) return { ok: true, message: '' }
-      }
+      // 允许根同样解析真实路径(不可达时回退字面路径),两侧口径一致。
+      if (isPathAllowed(realTarget, roots)) return { ok: true, message: '' }
       return { ok: false, message: '路径不在任何工作区或预设根目录内,已拒绝访问(工作区之外的文件不提供浏览)' }
     } catch (error) {
       return { ok: false, message: `校验失败:${error instanceof Error ? error.message : String(error)}` }
@@ -2408,14 +2410,13 @@ export class RemoteCommandProcessor {
     } catch {
       return []
     }
-    const pathKey = (workspace.path ?? '').replace(/\\/g, '/').toLowerCase()
+    const pathKey = workspace.path ?? ''
     const ids = new Set(workspace.sessionIds ?? [])
     return items.filter((s) => {
       if (s.blank === true || archived.has(s.sessionId)) return false
       if (typeof s.origin === 'string' && s.origin !== '') return false
       if (ids.has(s.sessionId)) return true
-      const c = (s.cwd ?? '').replace(/\\/g, '/').toLowerCase()
-      return pathKey !== '' && (c === pathKey || c.startsWith(`${pathKey}/`))
+      return pathKey !== '' && isSameOrUnder(s.cwd ?? '', pathKey)
     }).map((s) => ({
       sessionId: s.sessionId,
       title: this.sessionTitleOf(s) || null,

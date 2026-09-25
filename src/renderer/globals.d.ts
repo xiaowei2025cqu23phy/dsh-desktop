@@ -34,11 +34,6 @@ interface ModelsListResult {
 interface ScreensaverConfigView {
   enabled: boolean
   idleMinutes: number
-  autoTask: boolean
-  taskPrompt: string
-  taskCwd: string | null
-  taskMaxMinutes: number
-  keepSessionAfterExit: boolean
 }
 
 interface ServerRequestFrame {
@@ -71,8 +66,11 @@ interface RemoteConfigView {
   token: string
   expiresAt: number | null
   presetWorkspaceRoots: string[]
+  /**
+   * 已连接(已知)设备:带 x-dsh-device 的客户端首次连接即自动登记,桌面端据此暂停/拉黑。
+   * 授权只由令牌决定;`approvedAt` 是配置里的历史字段名,现表示首次登记时间。
+   */
   approvedDevices: Array<{ id: string; label: string; address: string; approvedAt: number; lastSeenAt: number; paused?: boolean }>
-  pendingDevices: Array<{ id: string; label: string; address: string; requestedAt: number; lastSeenAt: number }>
 }
 
 interface QQConfigView {
@@ -236,16 +234,9 @@ interface DesktopApi {
     setConfig(patch: object): Promise<ScreensaverConfigView>
     activate(): Promise<void>
     deactivate(): Promise<void>
-    isActive(): Promise<boolean>
-    startTask(): Promise<{ sessionId: string; resumed: boolean } | null>
-    cancelTask(): Promise<void>
-    history(sessionId: string, maxMessages?: number): Promise<unknown[]>
     registerSystem(): Promise<{ ok: boolean; message: string }>
     unregisterSystem(): Promise<{ ok: boolean; message: string }>
     systemRegistered(): Promise<boolean>
-    attach(): Promise<{ sessionId: string | null; lastSeq: number }>
-    reportSessionId(sessionId: string): void
-    onEvent(callback: (frame: ServerRequestFrame) => void): () => void
   }
   remote: {
     getConfig(): Promise<RemoteConfigView>
@@ -255,10 +246,7 @@ interface DesktopApi {
     pairUrl(): Promise<string>
     qrDataUrl(): Promise<string | null>
     qrDataUrls(): Promise<Array<{ address: string; url: string; dataUrl: string | null }>>
-    pendingDevices(): Promise<RemoteConfigView['pendingDevices']>
     approvedDevices(): Promise<RemoteConfigView['approvedDevices']>
-    approveDevice(id: string): Promise<void>
-    rejectDevice(id: string): Promise<void>
     revokeDevice(id: string): Promise<void>
     setPaused(paused: boolean): Promise<void>
     pauseDevice(id: string): Promise<void>
@@ -266,7 +254,6 @@ interface DesktopApi {
     blacklistDevice(id: string): Promise<void>
     unblacklistDevice(id: string): Promise<void>
     blacklistedDevices(): Promise<Array<{ id: string; label: string; address: string; blockedAt: number }>>
-    onDevicePending(callback: (device: { id: string; label: string; address: string }) => void): () => void
   }
   dialog: {
     pickDirectories(): Promise<string[]>
@@ -308,6 +295,7 @@ interface DesktopApi {
   }
   app: {
     info(): Promise<{ version: string; commit: string; builtAt: number }>
+    recoveryNotice(): Promise<string | null>
     openSettingsFolder(): Promise<{ opened: true }>
     quit(): Promise<void>
   }
@@ -347,4 +335,10 @@ interface WebviewElement extends HTMLElement {
 interface Window {
   dshDesktop: DesktopApi
   DSHShared: SharedHelpers
+  /** 屏保窗口专用最小桥(src/screensaver-preload.ts),仅屏保页可见。 */
+  dshScreen: {
+    wallpaper(): Promise<{ dataUrl: string | null; position?: { x: number; y: number } }>
+    appearance(): Promise<{ mask: number }>
+    exit(): Promise<void>
+  }
 }

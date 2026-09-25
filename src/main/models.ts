@@ -26,10 +26,14 @@ export interface ModelEntry {
 }
 
 /**
- * 根据模型 ID 推断上下文上限。网关明确返回 contextWindow 时由网关值优先;
- * 未声明的未知模型使用 1M,避免继续退回 Harness 的 256K 默认值。
+ * 根据模型 ID 推断上下文上限。
+ *
+ * 网关明确返回 contextWindow 时由网关值优先;这里只为「已知模型」给出较准的数字,
+ * 认不出的模型返回 `undefined` —— 让 harness 用自带默认值(字段会被 JSON 序列化丢弃)。
+ * 给未知模型瞎报一个大数字是有害的:harness 会把它当真实窗口,于是一直不触发压缩,
+ * 直到上游直接返回长度错误。
  */
-export function inferContextWindow(modelId: string): number {
+export function inferContextWindow(modelId: string): number | undefined {
   const id = modelId.trim().toLowerCase()
   if (/^gemini-3\.\d+-pro/.test(id)) return 2_000_000
   if (/^gemini-3|^gemini-2/.test(id)) return 1_000_000
@@ -40,8 +44,11 @@ export function inferContextWindow(modelId: string): number {
   if (/^qwen3/.test(id)) return 256_000
   if (/^kimi/.test(id)) return 256_000
   if (/^minimax/.test(id)) return 1_000_000
+  // DeepSeek 现行型号(deepseek-flash / deepseek-v4-pro 等)为 1M;旧名 deepseek-chat /
+  // deepseek-reasoner 为 128K。两者都命中 ^deepseek,统一按 1M 会高估旧型号,故分开判断。
+  if (/^deepseek-(chat|reasoner|coder)/.test(id)) return 128_000
   if (/^deepseek/.test(id)) return 1_000_000
-  return 1_000_000
+  return undefined
 }
 
 export interface ModelGroup {

@@ -24,6 +24,7 @@ import { parseSchedDelay } from './qq-commands'
 import type { RemoteCommandProcessor } from './remote-commands'
 import { dshHomeOf, unarchiveInRegistry } from './workspace-registry'
 import { generateSelfSignedCert, certFingerprint, certCoversHosts } from './tls-cert'
+import { isPathAllowed, isSameOrUnder, normPath } from './path-policy'
 
 /** 远程访问配置:直接复用 ConfigStore 的完整结构(监听地址/暂停/黑名单等)。 */
 export type RemoteConfig = ReturnType<ConfigStore['get']>['remote']
@@ -87,8 +88,8 @@ export class RemoteGateway {
   private remoteDir: string
   /** 认证失败计数(防暴力尝试):ip → {count, until}。 */
   private authFails = new Map<string, { count: number; until: number }>()
-  /** 新设备请求批准时的回调(桌面端据此拉起审批)。 */
-  onPendingDevice: ((device: { id: string; label: string; address: string }) => void) | null = null
+  /** 已知设备表上限:设备 id 由客户端提供,不设上限会被随机 id 撑爆配置。 */
+  private static readonly MAX_KNOWN_DEVICES = 32
 
   constructor(
     private config: ConfigStore,
@@ -168,7 +169,7 @@ export class RemoteGateway {
     this.setPaused(!this.paused())
   }
 
-  /** 暂停/恢复单个已批准设备(桌面端控制权)。 */
+  /** 暂停/恢复单个已知设备(桌面端控制权:令牌正确也拒绝,直到恢复)。 */
   pauseDevice(id: string): void {
     const remote = this.config.get().remote
     this.config.update('remote', { approvedDevices: remote.approvedDevices.map((device) => device.id === id ? { ...device, paused: true } : device) })
@@ -181,14 +182,17 @@ export class RemoteGateway {
     this.config.appendAudit({ time: Date.now(), type: 'remote.device.resumed', detail: `恢复设备:${id}` })
   }
 
-  /** 拉黑设备:从批准/待批准中移除并加入黑名单(令牌正确也拒绝)。 */
+  /**
+   * 拉黑设备:加入黑名单(令牌正确也拒绝),并断开它已建立的连接。
+   *
+   * 这是「按设备 id 永久拒绝」的唯一手段:暂停是可恢复的临时动作,拉黑是持久拒绝。
+   */
   blacklistDevice(id: string): void {
     const remote = this.config.get().remote
-    const known = [...remote.approvedDevices, ...remote.pendingDevices].find((device) => device.id === id)
+    const known = remote.approvedDevices.find((device) => device.id === id)
     const entry = { id, label: known?.label ?? '未知设备', address: known?.address ?? '', blockedAt: Date.now() }
     this.config.update('remote', {
       approvedDevices: remote.approvedDevices.filter((device) => device.id !== id),
-      pendingDevices: remote.pendingDevices.filter((device) => device.id !== id),
       blacklistedDevices: [...remote.blacklistedDevices.filter((device) => device.id !== id), entry],
     })
     this.config.appendAudit({ time: Date.now(), type: 'remote.device.blacklisted', detail: `拉黑设备:${entry.label} ${entry.address}` })
@@ -563,7 +567,14 @@ export class RemoteGateway {
     this.config.appendAudit({ time: Date.now(), type: 'remote.request', detail: `局域网 ${req.socket.remoteAddress ?? '?'}: ${detail}`.slice(0, 300) })
   }
 
-  private authorization(url: URL, req: IncomingMessage): 'ok' | 'pending' | 'denied' {
+  /**
+   * 访问判定:**有效令牌即访问权**,结果只有 'ok' / 'denied'。
+   *
+   * 令牌本身就等于完整控制权(能驱动 agent、读文件、应答审批),所以访问与否只由令牌决定;
+   * 真正的边界是:仅可信局域网可达(trustedLanClient)、令牌保密、桌面端暂停/拉黑、到期自动关闭。
+   * 设备 id(x-dsh-device)只服务两个**桌面端主动动作**:暂停单个设备、拉黑。
+   */
+  private authorization(url: URL, req: IncomingMessage): 'ok' | 'denied' {
     const remote = req.socket.remoteAddress ?? ''
     if (!trustedLanClient(remote)) return 'denied'
     const token = this.authToken(url, req)
@@ -577,68 +588,69 @@ export class RemoteGateway {
       return 'denied'
     }
     this.authFails.delete(remote)
-    if (remote === '127.0.0.1' || remote === '::1' || remote.endsWith('::ffff:127.0.0.1')) return 'ok'
     const id = req.headers['x-dsh-device'] ?? url.searchParams.get('device') ?? ''
     const deviceId = typeof id === 'string' && id.trim() !== '' ? id.trim().slice(0, 120) : ''
-    // 黑名单:令牌正确也拒绝(桌面端拉黑优先于一切)。
-    if (config.blacklistedDevices.some((device) => device.id === deviceId)) {
+    // 黑名单优先于一切(本机回环也不例外):令牌正确也拒绝。
+    if (deviceId !== '' && config.blacklistedDevices.some((device) => device.id === deviceId)) {
       this.config.appendAudit({ time: Date.now(), type: 'remote.request', detail: `已拉黑设备尝试连接:${deviceId}` })
       return 'denied'
     }
-    const address = remote.replace(/^::ffff:/i, '')
-    if (deviceId === '') return 'pending'
-    const approved = config.approvedDevices.find((device) => device.id === deviceId)
-    if (approved !== undefined) {
-      // 桌面端暂停了该设备:即使令牌正确也拒绝。
-      if (approved.paused === true) return 'denied'
-      if (Date.now() - approved.lastSeenAt > 60_000) {
-        approved.lastSeenAt = Date.now()
-        this.config.update('remote', { approvedDevices: config.approvedDevices })
-      }
-      return 'ok'
+    // 不带设备 id 的客户端(webhook 脚本/Home Assistant 等)直接放行:令牌即访问权,无需登记。
+    if (deviceId === '') return 'ok'
+    const known = config.approvedDevices.find((device) => device.id === deviceId)
+    // 桌面端暂停了该设备:即使令牌正确也拒绝(恢复后同一设备可继续使用)。
+    if (known?.paused === true) {
+      this.config.appendAudit({ time: Date.now(), type: 'remote.request', detail: `已暂停设备尝试连接:${deviceId}` })
+      return 'denied'
     }
-    if (!config.pendingDevices.some((device) => device.id === deviceId)) {
-      const labelHeader = req.headers['x-dsh-device-label']
-      const label = typeof labelHeader === 'string' && labelHeader !== '' ? labelHeader.slice(0, 80) : '未命名设备'
-      // 待批准设备列表设上限:防止恶意/反复连接无限累积;超出时按时间戳淘汰最旧。
-      const MAX_PENDING_DEVICES = 32
-      const nextPending = [...config.pendingDevices, { id: deviceId, label, address, requestedAt: Date.now(), lastSeenAt: Date.now() }]
-        .sort((a, b) => b.requestedAt - a.requestedAt)
-        .slice(0, MAX_PENDING_DEVICES)
-      this.config.update('remote', { pendingDevices: nextPending })
-      this.auditRemote(req, `新设备请求批准:${label}`)
-      this.onPendingDevice?.({ id: deviceId, label, address })
+    const labelHeader = req.headers['x-dsh-device-label']
+    const label = typeof labelHeader === 'string' && labelHeader !== '' ? labelHeader.slice(0, 80) : '未命名设备'
+    if (known === undefined) this.auditRemote(req, `新设备首次连接:${label}(令牌有效)`)
+    this.noteDeviceSeen(deviceId, label, remote.replace(/^::ffff:/i, ''))
+    return 'ok'
+  }
+
+  /**
+   * 登记/刷新「已连接设备」:设备 id 是桌面端暂停与拉黑的锚点,首次带 id 连接即自动登记。
+   *
+   * 写盘节流:lastSeenAt 只用于展示,同一设备 60 秒内的后续请求不重复写配置(手机会频繁发请求)。
+   */
+  private noteDeviceSeen(deviceId: string, label: string, address: string): void {
+    const remote = this.config.get().remote
+    const known = remote.approvedDevices.find((device) => device.id === deviceId)
+    if (known !== undefined) {
+      if (Date.now() - known.lastSeenAt < 60_000 && known.label === label && known.address === address) return
+      known.lastSeenAt = Date.now()
+      known.label = label
+      known.address = address
+      this.config.update('remote', { approvedDevices: remote.approvedDevices })
+      return
     }
-    return 'pending'
+    // approvedAt 是配置里的历史字段名,含义为设备首次登记时间。
+    const entry = { id: deviceId, label, address, approvedAt: Date.now(), lastSeenAt: Date.now() }
+    const next = [...remote.approvedDevices, entry]
+      .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+      .slice(0, RemoteGateway.MAX_KNOWN_DEVICES)
+    this.config.update('remote', { approvedDevices: next })
   }
 
   private authorized(url: URL, req: IncomingMessage): boolean {
     return this.authorization(url, req) === 'ok'
   }
 
-  pendingDevices(): RemoteConfig['pendingDevices'] { return this.config.get().remote.pendingDevices }
+  /** 已连接(已知)设备列表:桌面端据此暂停/拉黑(授权只由令牌决定)。 */
   approvedDevices(): RemoteConfig['approvedDevices'] { return this.config.get().remote.approvedDevices }
-  approveDevice(id: string): void {
-    const remote = this.config.get().remote
-    const pending = remote.pendingDevices.find((device) => device.id === id)
-    if (pending === undefined) return
-    this.config.update('remote', {
-      pendingDevices: remote.pendingDevices.filter((device) => device.id !== id),
-      approvedDevices: [...remote.approvedDevices.filter((device) => device.id !== id), { id: pending.id, label: pending.label, address: pending.address, approvedAt: Date.now(), lastSeenAt: pending.lastSeenAt }],
-    })
-    this.config.appendAudit({ time: Date.now(), type: 'remote.device.approved', detail: `批准远程设备:${pending.label} ${pending.address}` })
-  }
-  rejectDevice(id: string): void {
-    const remote = this.config.get().remote
-    const pending = remote.pendingDevices.find((device) => device.id === id)
-    this.config.update('remote', { pendingDevices: remote.pendingDevices.filter((device) => device.id !== id) })
-    if (pending !== undefined) this.config.appendAudit({ time: Date.now(), type: 'remote.device.rejected', detail: `拒绝远程设备:${pending.label} ${pending.address}` })
-  }
+
+  /**
+   * 断开并移除一个设备的记录(桌面端「断开」按钮)。
+   *
+   * 语义:立即断开连接并清掉这条记录;该设备下次带令牌连接会被重新登记,要永久拒绝请用拉黑。
+   */
   revokeDevice(id: string): void {
     const remote = this.config.get().remote
     const device = remote.approvedDevices.find((item) => item.id === id)
     this.config.update('remote', { approvedDevices: remote.approvedDevices.filter((item) => item.id !== id) })
-    if (device !== undefined) this.config.appendAudit({ time: Date.now(), type: 'remote.device.revoked', detail: `撤销远程设备:${device.label} ${device.address}` })
+    if (device !== undefined) this.config.appendAudit({ time: Date.now(), type: 'remote.device.revoked', detail: `断开并移除设备记录:${device.label} ${device.address}` })
     // 立即断开该设备已建立的连接。
     this.disconnectDeviceSse(id)
   }
@@ -694,9 +706,8 @@ export class RemoteGateway {
   }
 
   private async issueSseTicket(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const auth = this.authorization(url, req)
-    if (auth !== 'ok') {
-      this.json(res, auth === 'pending' ? 428 : 401, { error: auth === 'pending' ? 'desktop approval required' : 'unauthorized' })
+    if (!this.authorized(url, req)) {
+      this.json(res, 401, { error: 'unauthorized' })
       return
     }
     const device = req.headers['x-dsh-device']
@@ -730,9 +741,8 @@ export class RemoteGateway {
   }
 
   private async handleRpc(url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const auth = this.authorization(url, req)
-    if (auth !== 'ok') {
-      this.json(res, auth === 'pending' ? 428 : 401, { error: auth === 'pending' ? 'desktop approval required' : 'unauthorized' })
+    if (!this.authorized(url, req)) {
+      this.json(res, 401, { error: 'unauthorized' })
       return
     }
     this.auditRemote(req, 'rpc')
@@ -1087,17 +1097,9 @@ export class RemoteGateway {
 
   // ---- 手机端文件夹浏览与预设根管理(只读白名单:工作区路径 + 预设根) ----
 
-  /** 路径规范化:Windows 大小写不敏感 + 统一分隔符(与 remote-commands 的 norm 一致)。 */
-  private normPath(p: string): string {
-    return process.platform === 'win32' ? p.replace(/\\/g, '/').toLowerCase() : p.replace(/\\/g, '/')
-  }
-
-  /** 目标路径是否在某个工作区路径或预设根目录之下。 */
+  /** 目标路径是否在某个工作区路径或预设根目录之下(白名单判定见 path-policy)。 */
   private async fsAllowed(target: string): Promise<boolean> {
     if (target === '') return false
-    // 大小写不敏感归一化:Windows 上 C:\Users\ME\PROJ\x 与 C:\Users\me\proj 应视为同一路径,
-    // 否则会把合法的大小写差异误判为越权拒绝。
-    const normalized = this.normPath(resolve(target))
     let roots = this.presetRoots()
     try {
       const client = this.harness.client()
@@ -1106,11 +1108,8 @@ export class RemoteGateway {
     } catch {
       // workspace.list 失败时仍允许预设根下的路径。
     }
-    for (const root of roots) {
-      const r = this.normPath(resolve(root))
-      if (normalized === r || normalized.startsWith(r + '/')) return true
-    }
-    return false
+    // 两侧都解析真实路径(工作区内指向外部的符号链接不放行),win32 折叠大小写,前缀要求 `/` 边界。
+    return isPathAllowed(target, roots)
   }
 
   /** 可浏览的根:工作区路径 + 预设根(去重,标记是否预设根)。 */
@@ -1462,8 +1461,8 @@ export class RemoteGateway {
       this.json(res, 400, { error: 'root and name required' })
       return
     }
-    const normalizedRoot = this.normPath(resolve(root))
-    if (!this.presetRoots().some((r) => this.normPath(resolve(r)) === normalizedRoot)) {
+    const normalizedRoot = normPath(resolve(root))
+    if (!this.presetRoots().some((r) => normPath(resolve(r)) === normalizedRoot)) {
       this.json(res, 403, { error: 'root is not in preset workspace roots' })
       return
     }
@@ -1472,9 +1471,8 @@ export class RemoteGateway {
       return
     }
     const realTarget = resolve(join(resolve(root), name))
-    // 双重校验:解析后的目标必须仍在预设根目录之下(大小写不敏感)。
-    const targetNorm = this.normPath(realTarget)
-    if (targetNorm !== normalizedRoot && !targetNorm.startsWith(normalizedRoot + '/')) {
+    // 双重校验:解析后的目标必须仍在预设根目录之下(normPath 折叠大小写,前缀要求 `/` 边界)。
+    if (!isSameOrUnder(realTarget, normalizedRoot)) {
       this.json(res, 403, { error: 'path escapes preset root' })
       return
     }

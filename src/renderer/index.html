@@ -28,7 +28,7 @@
       <div class="topbar-status" id="topbar-status">
         <span class="ts-chip" id="ts-running" title="正在运行的任务/活动(无需发指令或翻设置)">▶ 0</span>
         <span class="ts-chip" id="ts-tokens" title="今日 Token 用量">💰 0</span>
-        <span class="ts-chip" id="ts-devices" title="已批准的远程设备">📱 0</span>
+        <span class="ts-chip" id="ts-devices" title="已连接的远程设备">📱 0</span>
       </div>
       <div class="topbar-actions">
         <button id="btn-preview" class="btn" title="查看实验预览实例(独立端口,改动 UI 前先在这里验证)">🧪 预览</button>
@@ -343,6 +343,7 @@
           <p class="hint" id="remote-bind-status"></p>
         </div>
         <p class="security-warning">⚠️ 仅限可信家庭/办公局域网。不要使用 frp、ngrok、Cloudflare Tunnel、端口转发或任何内网穿透暴露到公网。Harness 插件可能拥有主机级执行权限。0.0.0.0 会同时监听 VPN/虚拟网卡等所有接口——如果你只用一张网卡,请选「仅当前局域网 IP」。若手机无法连接,请检查 Windows 防火墙是否放行本程序的入站连接(端口见上方)。</p>
+        <p class="security-warning">🔑 <b>令牌就是全部权限</b>:任何拿到访问令牌的人或程序都能远程操控这台电脑——跑任务、读写工作区、应答审批,与你在本机操作无异;访问与否只由令牌决定。真正的保护只有两条:一是<b>局域网可达范围</b>——只服务本机回环与 10.x / 172.16-31.x / 192.168.x 私网地址,公网不可达;二是<b>令牌保密</b>——不要截图、不要发群里、不要写进脚本/CI 变量/公开仓库。怀疑泄露就点「重新生成并断开旧设备」,旧令牌立即失效。</p>
         <div class="field-row">
           <button id="btn-remote-pause" class="btn btn-danger btn-sm">⏸ 立即暂停(断开所有连接)</button>
           <button id="btn-remote-resume" class="btn btn-sm hidden">▶ 恢复远程访问</button>
@@ -352,7 +353,7 @@
           <input id="remote-pause-on-lock" type="checkbox" />
           锁屏/睡眠时自动暂停远程访问(解锁后需在桌面端手动恢复)
         </label>
-        <p class="hint">🔒 控制权永远在桌面端:可随时暂停全部连接,或对单个设备暂停/拉黑;被拉黑的设备即使令牌正确也会被拒绝。</p>
+        <p class="hint">🔒 控制权永远在桌面端:可随时暂停全部连接,或对单个已连接设备暂停/拉黑;被拉黑或已暂停的设备即使令牌正确也会被拒绝。</p>
         <label class="check-row">
           <input id="remote-https" type="checkbox" />
           启用 HTTPS(自签证书,手机需信任证书后才能注册 PWA 离线外壳)
@@ -380,12 +381,8 @@
           <p id="remote-expiry-status" class="hint"></p>
         </div>
         <div class="field">
-          <label>待批准设备</label>
-          <pre id="remote-pending-devices" class="help-pre">暂无待批准设备</pre>
-        </div>
-        <div class="field">
-          <label>已批准设备(可暂停/拉黑)</label>
-          <pre id="remote-approved-devices" class="help-pre">暂无已批准设备</pre>
+          <label>已连接设备(可暂停/拉黑)</label>
+          <pre id="remote-approved-devices" class="help-pre">暂无已连接设备(手机首次连接后自动出现在这里)</pre>
         </div>
         <div class="field">
           <label>已拉黑设备(桌面端拉黑,令牌正确也拒绝)</label>
@@ -545,34 +542,18 @@
       </section>
 
       <section class="panel" data-drawer-group="appearance">
-        <h3>AI 屏保</h3>
+        <h3>屏保</h3>
         <label class="check-row">
           <input id="ss-enabled" type="checkbox" />
-          启用空闲检测(空闲后自动进入全屏 AI 屏保)
+          启用空闲检测(空闲后自动进入全屏屏保)
         </label>
         <div class="field">
           <label for="ss-idle">空闲几分钟后触发</label>
           <input id="ss-idle" type="number" min="1" max="120" />
         </div>
-        <label class="check-row">
-          <input id="ss-auto-task" type="checkbox" />
-          进入屏保时自动启动 agent 任务
-        </label>
-        <div class="field">
-          <label for="ss-prompt">任务提示词</label>
-          <textarea id="ss-prompt" rows="4"></textarea>
-        </div>
-        <div class="field">
-          <label for="ss-cwd">任务工作目录(可选)</label>
-          <div class="field-row"><input id="ss-cwd" type="text" placeholder="留空使用 harness 默认目录" /><button id="btn-ss-cwd-pick" class="btn btn-sm">📁 选择文件夹</button></div>
-        </div>
-        <div class="field">
-          <label for="ss-max">任务超时(分钟,防失控自动停止)</label>
-          <input id="ss-max" type="number" min="1" max="120" />
-        </div>
-        <p class="hint">提示:默认不自动跑任务,进入屏保只显示环境画面;勾选「自动启动任务」才会执行,并受超时护栏保护。</p>
+        <p class="hint">屏保是纯展示:壁纸 + 时钟,不会启动任何 agent 任务。想在空闲时让 agent 干活,请用「定时任务」或机器人通道——那里有独立的开关与配额。</p>
         <div class="field-row">
-          <button id="btn-ss-now" class="btn btn-primary">立即进入 AI 屏保</button>
+          <button id="btn-ss-now" class="btn btn-primary">立即进入屏保</button>
         </div>
         <div class="field-row">
           <button id="btn-ss-register" class="btn">注册为系统屏保</button>
@@ -622,21 +603,6 @@
         <pre id="log-view" class="log-view"></pre>
       </section>
     </aside>
-  </div>
-
-  <!-- 远程设备审批弹窗 -->
-  <div id="device-approve" class="modal hidden">
-    <div class="modal-box">
-      <div class="we-head">
-        <h3>📱 新设备请求远程访问</h3>
-        <button id="da-close" class="btn btn-ghost">✕</button>
-      </div>
-      <p id="da-info" class="hint" style="margin:12px 0;font-size:13px;line-height:1.8"></p>
-      <div class="field-row">
-        <button id="da-allow" class="btn btn-primary">允许连接</button>
-        <button id="da-reject" class="btn btn-danger">拒绝</button>
-      </div>
-    </div>
   </div>
 
   <!-- QQ 机器人访问控制确认(首次启用时强制) -->
