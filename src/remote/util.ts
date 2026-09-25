@@ -7,6 +7,14 @@
 
 type AnyRecord = Record<string, unknown>
 
+/**
+ * 按 id 取元素(宽松类型:$ 返回 any,历史代码逐步收紧中)。
+ *
+ * 放在 util 里供各模块共用 —— 拆分前它是 app.ts 顶部的局部 var,拆分后如果每个模块
+ * 各自复制一份,就会出现"某个模块的 $ 行为被改而其它模块没跟上"的经典漂移。
+ */
+export function $ (id: string): any { return document.getElementById(id) }
+
 export const S = {
   isRecord: function (v: unknown): v is AnyRecord {
     return v !== null && typeof v === 'object' && !Array.isArray(v)

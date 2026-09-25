@@ -6,62 +6,10 @@
  * 同一个闭包 —— 与拆分前"一个 IIFE 装下全部"的运行语义一致。
  */
 
-import { S } from './util'
+import { $, S } from './util'
 import { apiAction, apiRpc, apiRespond, state } from './api'
-
-// 宽松类型起步:$ 返回 any,后续逐步收紧为按元素类型的泛型。
-var $ = function (id: string): any { return document.getElementById(id) }
-
-  // ---- 本机临时会话缓存 ----
-  function cacheKey(sid) { return 'dsh-cache-' + sid }
-
-  /** 缓存上限:只保留最近 N 条,避免 localStorage 越写越慢、越占越大。 */
-  var CACHE_MAX_MSGS = 300
-  var cacheTimer: ReturnType<typeof setTimeout> | null = null
-
-  function loadCachedMessages(sid) {
-    try {
-      var raw = localStorage.getItem(cacheKey(sid))
-      return raw ? JSON.parse(raw) : null
-    } catch (e) { return null }
-  }
-
-  /** 防抖持久化:事件密集(流式输出)时合并写入,手机端明显更跟手。 */
-  function persistCache() {
-    if (!state.tempCache || state.sessionId === null) return
-    if (cacheTimer !== null) return
-    cacheTimer = setTimeout(function () {
-      cacheTimer = null
-      try {
-        var log = state.msgLog
-        if (log.length > CACHE_MAX_MSGS) log = log.slice(log.length - CACHE_MAX_MSGS)
-        localStorage.setItem(cacheKey(state.sessionId), JSON.stringify(log))
-      } catch (e) { /* 存储满/配额不足忽略 */ }
-    }, 600)
-  }
-
-  /** 离开会话/卸载时立即落盘(不等防抖窗口)。 */
-  function flushCacheNow() {
-    if (cacheTimer !== null) {
-      clearTimeout(cacheTimer)
-      cacheTimer = null
-    }
-    if (!state.tempCache || state.sessionId === null) return
-    try {
-      var log = state.msgLog
-      if (log.length > CACHE_MAX_MSGS) log = log.slice(log.length - CACHE_MAX_MSGS)
-      localStorage.setItem(cacheKey(state.sessionId), JSON.stringify(log))
-    } catch (e) { /* 忽略 */ }
-  }
-
-  function clearAllCache() {
-    var keys = []
-    for (var i = 0; i < localStorage.length; i++) {
-      var k = localStorage.key(i)
-      if (k && k.indexOf('dsh-cache-') === 0) keys.push(k)
-    }
-    keys.forEach(function (k) { localStorage.removeItem(k) })
-  }
+import { CACHE_MAX_MSGS, clearAllCache, flushCacheNow, loadCachedMessages, persistCache } from './cache'
+import { closeSheet, loadHealth, loadPresetRoots, loadScheduled, loadUsage, openSheet } from './panels'
 
   // ---- 消息渲染 ----
   function hideEmpty(hide) { $('chat-empty').classList.toggle('hidden', hide) }
@@ -1514,11 +1462,6 @@ var $ = function (id: string): any { return document.getElementById(id) }
   }
 
   // ---- 弹层 ----
-  function openSheet(el) { el.classList.remove('hidden') }
-  function closeSheet(el) { el.classList.add('hidden') }
-
-  // ---- 手机壁纸选择 ----
-  /** Upload a wallpaper image chosen from the phone's own gallery. */
   function uploadPhoneWallpaper() {
     var input = $('wallpaper-upload-input') as HTMLInputElement
     if (input === null || input.files === null || input.files.length === 0) return
@@ -1599,43 +1542,6 @@ var $ = function (id: string): any { return document.getElementById(id) }
   }
 
   // ---- 定时任务 ----
-  function loadScheduled() {
-    var host = $('sched-list')
-    fetch(state.server + '/api/tasks', {
-      signal: AbortSignal.timeout(10000),
-      headers: { authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId },
-    })
-      .then(function (r) { return r.json() })
-      .then(function (data) {
-        var items = data.items || []
-        if (items.length === 0) {
-          host.innerHTML = '(暂无定时任务)'
-          return
-        }
-        host.innerHTML = ''
-        items.forEach(function (t, i) {
-          var row = document.createElement('div')
-          row.className = 'sched-row'
-          var info = document.createElement('span')
-          info.textContent = (i + 1) + '. ' + t.when + ' — ' + t.description
-          var del = document.createElement('button')
-          del.className = 'row-act'
-          del.textContent = '✕'
-          del.addEventListener('click', function () {
-            apiAction('sched.remove', { index: i }).then(function () {
-              S.toast('已取消定时任务', 'ok')
-              loadScheduled()
-            }).catch(function (err) { S.toast('取消失败:' + err.message, 'error') })
-          })
-          row.appendChild(info)
-          row.appendChild(del)
-          host.appendChild(row)
-        })
-      }).catch(function () {
-        host.innerHTML = '(加载失败)'
-      })
-  }
-
   function addScheduled() {
     var expr = $('sched-expr').value.trim()
     var desc = $('sched-desc').value.trim()
@@ -1965,68 +1871,6 @@ var $ = function (id: string): any { return document.getElementById(id) }
   }
 
   // ---- 预设工作区根目录管理(PWA 端) ----
-  function loadPresetRoots() {
-    var host = $('preset-roots')
-    host.innerHTML = '<p class="empty">加载中…</p>'
-    apiAction('fs.list', { path: '' }).then(function (data) {
-      var roots = (data.roots || []).filter(function (r) { return r.isPreset })
-      if (roots.length === 0) {
-        host.innerHTML = '<p class="empty">(未配置预设根;可在电脑端「设置 → 远程访问」用文件资源管理器选择,或点下方按钮浏览添加)</p>'
-        return
-      }
-      host.innerHTML = ''
-      roots.forEach(function (r) {
-        var row = document.createElement('div')
-        row.className = 'sched-row'
-        var info = document.createElement('span')
-        info.textContent = r.name + '  ' + r.path
-        var del = document.createElement('button')
-        del.className = 'row-act'
-        del.textContent = '✕'
-        del.title = '从预设根移除(不删除文件夹)'
-        del.addEventListener('click', function () {
-          apiAction('fs.removeRoot', { path: r.path }).then(function () {
-            S.toast('已移除', 'ok')
-            loadPresetRoots()
-          }).catch(function (err) { S.toast('移除失败:' + err.message, 'error') })
-        })
-        row.appendChild(info)
-        row.appendChild(del)
-        host.appendChild(row)
-      })
-    }).catch(function (err) {
-      host.innerHTML = '<p class="empty">加载失败:' + S.escapeHtml(err.message) + '</p>'
-    })
-  }
-
-  // ---- 用量与费用(今日) ----
-  function loadUsage() {
-    var host = $('set-usage')
-    apiAction('usage.get').then(function (data) {
-      var r = data.report
-      if (!r) {
-        host.innerHTML = '<p class="empty">暂无数据</p>'
-        return
-      }
-      var html = ''
-      html += '会话:' + r.todaySessions + ' 个 / 回合:' + r.todayTurns + ' 次<br>'
-      html += 'Token:' + (r.tokens.total / 1000).toFixed(1) + 'K(输入 ' + (r.tokens.input / 1000).toFixed(1) + 'K / 输出 ' + (r.tokens.output / 1000).toFixed(1) + 'K' + (r.tokens.cache > 0 ? ' / 缓存 ' + (r.tokens.cache / 1000).toFixed(1) + 'K' : '') + ')'
-      if (r.cost.total > 0) {
-        html += '<br>💰 费用估算:¥' + r.cost.total.toFixed(3) + '(倍率 ' + r.prices.multiplier + ')'
-      }
-      if (r.byModel.length > 0) {
-        html += '<br><br>按模型:'
-        r.byModel.slice(0, 6).forEach(function (m) {
-          html += '<br>· ' + m.provider + '/' + m.model + ':' + ((m.input + m.output) / 1000).toFixed(1) + 'K Token,' + m.calls + ' 次'
-        })
-      }
-      host.innerHTML = html
-    }).catch(function (err) {
-      host.innerHTML = '<p class="empty">加载失败:' + S.escapeHtml(err.message) + '</p>'
-    })
-  }
-
-  // ---- 切换会话模型 ----
   function openModelSheet() {
     openSheet($('view-model'))
     var list = $('model-list')
@@ -2184,18 +2028,6 @@ var $ = function (id: string): any { return document.getElementById(id) }
       img.onerror = function () { document.body.classList.remove('has-wallpaper') }
       img.src = base.replace(/\/+$/, '') + '/wallpaper' + stamp
     })
-  }
-
-  function loadHealth() {
-    var host = $('set-health')
-    apiAction('workspace.health').then(function (data) {
-      var items = data.items || []
-      host.textContent = items.length === 0 ? '暂无已注册工作区。' : items.map(function (item) {
-        var state = item.exists && item.readable && item.writable ? '正常' : '需检查'
-        var free = item.freeBytes === null ? '' : ' / 可用 ' + (item.freeBytes / 1073741824).toFixed(1) + ' GB'
-        return (state === '正常' ? '✓ ' : '⚠️ ') + (item.title || item.path) + ': ' + state + free + ' / 会话 ' + (item.sessions === null ? '?' : item.sessions)
-      }).join('\n')
-    }).catch(function (err) { host.textContent = '检查失败:' + err.message })
   }
 
   function loadInteractions() {
