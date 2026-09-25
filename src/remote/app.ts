@@ -7,90 +7,10 @@
  */
 
 import { S } from './util'
+import { apiAction, apiRpc, apiRespond, state } from './api'
 
 // 宽松类型起步:$ 返回 any,后续逐步收紧为按元素类型的泛型。
 var $ = function (id: string): any { return document.getElementById(id) }
-
-var state = {
-    server: '',
-    token: '',
-    connected: false,
-    sessionId: null,
-    lastSeq: 0,
-    msgLog: [],           // [{ kind: 'user'|'assistant'|'tool'|'system', text, images? }]
-    es: null,
-    workspaces: [],       // [{ workspaceId, path, title, sessions: [] }]
-    presetRoots: [],      // [{ path, name }] 预设工作区根(可直接作为工作区)
-    currentWsId: null,
-    currentWsPath: null,
-    currentWsRoot: null,  // 当前选中的预设根(作为工作区使用)
-    running: false,
-    stickBottom: true,     // 流式输出时吸底;用户上滑查看历史后暂停
-    tempCache: localStorage.getItem('dsh-temp-cache') === '1',
-    approvals: {},        // sessionId -> [{ rpcId, sessionId, approvalId, toolName, reason }]
-    approvalCards: {},    // `${sessionId}:${approvalId}` -> DOM 元素
-    questions: {},        // sessionId -> { rpcId, sessionId, questions }
-    questionCards: {},    // sessionId -> DOM 元素
-    fsPath: '',           // 文件夹浏览当前路径('' = 根列表)
-    fsParent: '',          // 当前允许范围内的父目录('' = 返回根列表)
-    fsPreviewText: '',     // 当前文件预览已加载的原文
-    defaultModel: null,   // { provider, model } 桌面端预设模型(host.describe)
-    deviceId: localStorage.getItem('dsh-device-id') || (function () {
-      // crypto.randomUUID 仅在安全上下文(HTTPS/localhost)可用;局域网 HTTP 需降级。
-      var id = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
-        ? crypto.randomUUID()
-        : 'dev-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)
-      localStorage.setItem('dsh-device-id', id)
-      return id
-    })(),
-    sidebarOpen: false,   // 左侧抽屉开关状态
-  }
-
-  // ---- API ----
-  function apiRpc(method: string, payload?: unknown): Promise<any> {
-    return fetch(state.server + '/api/rpc', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId, 'x-dsh-device-label': navigator.userAgent.slice(0, 60) },
-      body: JSON.stringify({ method: method, payload: payload || {} }),
-    }).then(function (res) {
-      // 401 = 令牌无效/已重新生成,或电脑端已暂停、关闭、到期自动关闭了远程访问。
-      if (res.status === 401) throw new Error('令牌无效或远程访问已关闭')
-      return res.json()
-    }).then(function (data) {
-      if (!data.ok) {
-        const err: Error & { code?: unknown } = new Error((data.error && data.error.message) || 'RPC 失败')
-        err.code = data.error && data.error.code
-        throw err
-      }
-      return data.value
-    })
-  }
-
-  /** 应答服务端请求(审批 / 提问),与桌面端机器人通道同一路径。返回 {accepted, reason?}。 */
-  function apiRespond(rpcId, result) {
-    return fetch(state.server + '/api/respond', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId, 'x-dsh-device-label': navigator.userAgent.slice(0, 60) },
-      body: JSON.stringify({ type: 'client-response', rpcId: rpcId, result: result }),
-    }).then(function (res) {
-      if (!res.ok) throw new Error('HTTP ' + res.status)
-      return res.json()
-    })
-  }
-
-  /** 控制动作(白名单,桌面端执行;用于预设工作区目录等)。 */
-  function apiAction(action: string, extra?: Record<string, unknown>): Promise<any> {
-    return fetch(state.server + '/api/action', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + state.token, 'x-dsh-device': state.deviceId, 'x-dsh-device-label': navigator.userAgent.slice(0, 60) },
-      body: JSON.stringify(Object.assign({ action: action }, extra || {})),
-    }).then(function (res) {
-      return res.json()
-    }).then(function (data) {
-      if (!data.ok) throw new Error(data.error || 'action failed')
-      return data
-    })
-  }
 
   // ---- 本机临时会话缓存 ----
   function cacheKey(sid) { return 'dsh-cache-' + sid }
