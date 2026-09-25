@@ -109,7 +109,7 @@ export interface RemoteConfig {
   paused: boolean
   /** 锁屏/睡眠时自动暂停远程访问(解锁后需桌面端手动恢复)。 */
   pauseOnLock: boolean
-  /** 被桌面端拉黑的设备:令牌正确也拒绝,且不再弹批准。 */
+  /** 被桌面端拉黑的设备:令牌正确也拒绝(识别依赖客户端自报的设备标识)。 */
   blacklistedDevices: Array<{ id: string; label: string; address: string; blockedAt: number }>
   /** Bearer 令牌(首次启用时自动生成)。 */
   token: string
@@ -515,7 +515,7 @@ export class ConfigStore {
       }
     }
     this.recoveryNotice =
-      `配置文件损坏,已隔离到 ${broken},当前使用默认设置(远程令牌、已批准设备、定时任务等需要重新配置)。`
+      `配置文件损坏,已隔离到 ${broken},当前使用默认设置(远程令牌、已连接设备、定时任务等需要重新配置)。`
     console.warn('[config]', this.recoveryNotice)
     return structuredClone(DEFAULTS)
   }
