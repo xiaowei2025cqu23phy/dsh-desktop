@@ -2,11 +2,22 @@
  * 网关文件夹浏览/预设根管理集成测试(需 app 运行中,网关在线)。
  * 覆盖:根列表、目录列表、文件读取、越权拒绝(403)、预设根添加/移除。
  * 用法:GATEWAY_TOKEN=xxx node scripts/gateway-fs-test.mjs [baseUrl]
+ *
+ * 这是**集成测试**,故不在 npm test 里(本地门禁只跑不需要外部实例的离线测试)。
+ * 缺令牌时给出可照做的提示,而不是裸异常栈。
  */
 import { readFileSync, statSync } from 'node:fs'
 
 const base = process.argv[2] || 'http://127.0.0.1:3082'
 const token = process.env.GATEWAY_TOKEN || ''
+
+if (token === '') {
+  console.error('缺少访问令牌 —— 本脚本是集成测试,需要运行中的桌面端且远程访问已启用。')
+  console.error('用法:GATEWAY_TOKEN=xxx node scripts/gateway-fs-test.mjs [baseUrl]')
+  console.error('  令牌在桌面端「设置 → 远程访问」里查看。')
+  console.error(`  当前 baseUrl = ${base}`)
+  process.exit(2)
+}
 
 let failures = 0
 function check(name, actual, expected) {

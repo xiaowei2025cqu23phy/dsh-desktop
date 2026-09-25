@@ -50,6 +50,8 @@ const api = {
     getConfig: () => ipcRenderer.invoke('remote:getConfig'),
     setConfig: (patch: object) => ipcRenderer.invoke('remote:setConfig', patch),
     lanAddresses: () => ipcRenderer.invoke('remote:lanAddresses'),
+    // 实际监听状态(与配置里的 bindHost 区分):监听失败或地址回退时如实反映。
+    state: () => ipcRenderer.invoke('remote:state'),
     httpsCertInfo: () => ipcRenderer.invoke('remote:httpsCertInfo'),
     pairUrl: () => ipcRenderer.invoke('remote:pairUrl'),
     qrDataUrl: () => ipcRenderer.invoke('remote:qrDataUrl'),

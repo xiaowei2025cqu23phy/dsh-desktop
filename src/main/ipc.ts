@@ -108,6 +108,9 @@ export function registerIpc(deps: IpcDeps): void {
       return next
     })
     ipcMain.handle('remote:lanAddresses', () => gateway.lanAddresses())
+    // 运行时监听状态:配置里的 bindHost 是"想监听什么",这里是"实际监听到了什么"。
+    // 换网络导致写死的局域网 IP 失效时,两者不一致,界面据此如实提示(而不是静默显示已启用)。
+    ipcMain.handle('remote:state', () => gateway.state())
     ipcMain.handle('remote:httpsCertInfo', () => gateway.httpsCertInfo())
     ipcMain.handle('remote:pairUrl', () => gateway.pairUrl())
     ipcMain.handle('remote:qrDataUrl', () => gateway.qrDataUrl())

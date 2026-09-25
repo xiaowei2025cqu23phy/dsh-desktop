@@ -1,10 +1,21 @@
 /**
  * 模拟手机 PWA 全流程测试:认证 → RPC → 事件流。
  * 用法:node scripts/remote-test.mjs <baseUrl> <token>
+ *
+ * 这是**集成测试**,需要运行中的桌面端 + 远程访问已启用,故不在 npm test 里
+ * (本地门禁只跑不需要外部实例的离线测试)。缺参数时给出可照做的提示,而不是裸异常栈。
  */
 
 const base = process.argv[2] ?? 'http://127.0.0.1:3082'
 const token = process.argv[3] ?? ''
+
+if (token === '') {
+  console.error('缺少访问令牌 —— 本脚本是集成测试,需要运行中的桌面端。')
+  console.error('用法:node scripts/remote-test.mjs <baseUrl> <token>')
+  console.error('  令牌与地址在桌面端「设置 → 远程访问」里查看(地址用那里的局域网 URL)。')
+  console.error(`  当前 baseUrl = ${base}`)
+  process.exit(2)
+}
 
 function rpc(method, payload) {
   return fetch(`${base}/api/rpc`, {

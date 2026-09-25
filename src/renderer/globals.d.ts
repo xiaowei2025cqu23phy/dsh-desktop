@@ -283,6 +283,8 @@ interface DesktopApi {
     getConfig(): Promise<RemoteConfigView>
     setConfig(patch: object): Promise<RemoteConfigView>
     lanAddresses(): Promise<string[]>
+    /** 实际监听状态:listenHost 为 null 表示未监听;lastError 给出失败/回退原因。 */
+    state(): Promise<{ enabled: boolean; paused: boolean; bindHost: string; listenHost: string | null; lastError: string | null }>
     httpsCertInfo(): Promise<{ enabled: boolean; fingerprint: string | null; hosts: string[] }>
     pairUrl(): Promise<string>
     qrDataUrl(): Promise<string | null>

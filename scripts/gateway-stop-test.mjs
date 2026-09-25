@@ -152,5 +152,75 @@ const harness = { client: () => ({}), status: () => ({ state: 'stopped' }), base
   gateway.stop()
 }
 
+// ---- 绑定地址失效时的回退与可恢复性 ----
+// 场景:用户选了「仅当前局域网 IP」,之后换了网络 —— 配置里的地址不再属于本机。
+// 修前:listen 报 EADDRNOTAVAIL,但 server 引用仍被赋值,于是
+//   ① 界面按 server !== null 显示"已监听",用户不知道其实没监听;
+//   ② start() 因 server !== null 直接 return,点「重新启用」永远无效,只能重启应用。
+{
+  const config = makeConfig()
+  // 用 RFC5737 文档保留地址,保证不属于本机。
+  config.update('remote', { bindHost: '203.0.113.7', port: 0 })
+  const gateway = new RemoteGateway(config, harness, events)
+
+  gateway.start()
+  // 等待条件必须用「是否等于 '(未监听)'」而不是 `=== null`:
+  // state().listenHost 为显示友好返回的是字符串 '(未监听)' 而非 null,
+  // 写 `=== null` 会让循环一次都不执行,进而误判成"回退失败"。
+  let state = gateway.state()
+  for (let i = 0; i < 200 && state.listenHost === '(未监听)'; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    state = gateway.state()
+  }
+
+  check('失效地址回退到 0.0.0.0', state.listenHost, '0.0.0.0')
+  check('回退原因如实上报', typeof state.lastError === 'string' && state.lastError.includes('203.0.113.7'), true)
+  check('回退后确实在监听', gateway.server !== null, true)
+
+  // 可恢复性:停止后能再次启动(修前 server 引用不清会导致 start() 直接 return)。
+  gateway.stop()
+  check('停止后 listenHost 归位', gateway.state().listenHost, '(未监听)')
+  gateway.start()
+  let again = gateway.state()
+  for (let i = 0; i < 200 && again.listenHost === '(未监听)'; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    again = gateway.state()
+  }
+  check('停止后可重新启用', again.listenHost, '0.0.0.0')
+  gateway.stop()
+}
+
+// ---- 端口被占用时:不谎报"已监听",且失败后可重试 ----
+{
+  const blocked = new RemoteGateway(makeConfig(), harness, events)
+  blocked.start()
+  let port = null
+  for (let i = 0; i < 200 && port === null; i++) {
+    const addr = blocked.server !== null ? blocked.server.address() : null
+    port = addr !== null && typeof addr.port === 'number' ? addr.port : null
+    if (port === null) await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  check('占用测试:先占住一个端口', port !== null, true)
+
+  const clashConfig = makeConfig()
+  clashConfig.update('remote', { bindHost: '127.0.0.1', port })
+  const clash = new RemoteGateway(clashConfig, harness, events)
+  clash.start()
+  let cs = clash.state()
+  for (let i = 0; i < 200 && cs.lastError === null; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    cs = clash.state()
+  }
+  check('端口冲突被识别', typeof cs.lastError === 'string' && cs.lastError.includes('失败'), true)
+  check('端口冲突时不谎报已监听', cs.listenHost, '(未监听)')
+  // 关键:失败后引用已清,再次 start 会真的重试(而不是 return)。
+  clash.start()
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  check('失败后仍可重试(start 不早退)', clash.state().lastError !== null, true)
+
+  blocked.stop()
+  clash.stop()
+}
+
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n${failures} 个失败 ✗`)
 process.exit(failures === 0 ? 0 : 1)

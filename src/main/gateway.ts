@@ -72,6 +72,15 @@ interface RpcBody {
 export class RemoteGateway {
   private server: ReturnType<typeof createServer> | ReturnType<typeof createHttpsServer> | null = null
   private expiryTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * 真正绑定成功的监听地址(null = 未监听)。
+   *
+   * 单独记一个字段而不是靠 `server !== null` 判断:listen 失败时 server 对象也已创建,
+   * 用它判断会把"启动失败"显示成"已监听"。
+   */
+  private listeningHost: string | null = null
+  /** 最近一次监听失败/回退的原因,供设置面板如实展示。 */
+  private lastListenError: string | null = null
   private sseTickets = new Map<string, { deviceId: string; expiresAt: number }>()
   /**
    * 媒体预览 ticket:浏览器 <img>/<video>/<audio>/<a> 无法携带自定义头,只能把凭据放 URL。
@@ -133,15 +142,45 @@ export class RemoteGateway {
     return result
   }
 
-  /** 当前监听状态(设置面板与托盘展示)。 */
-  state(): { enabled: boolean; paused: boolean; bindHost: string; listenHost: string } {
+  /**
+   * 监听状态(设置面板与托盘展示)。
+   *
+   * `listenHost` 只在**真的绑定成功**后才报告地址:此前用 `this.server !== null` 判断,
+   * 而 listen 失败时 server 对象照样被赋了值,于是界面上显示"已监听 X"但其实根本没监听
+   * —— 用户会以为手机连不上是别的原因。
+   */
+  state(): { enabled: boolean; paused: boolean; bindHost: string; listenHost: string; lastError: string | null } {
     const config = this.config.get().remote
     return {
       enabled: config.enabled,
       paused: config.paused === true,
       bindHost: config.bindHost ?? '0.0.0.0',
-      listenHost: this.server !== null ? (config.bindHost ?? '0.0.0.0') : '(未监听)',
+      listenHost: this.listeningHost ?? '(未监听)',
+      lastError: this.lastListenError,
     }
+  }
+
+  /**
+   * 校验配置里的绑定地址当前是否真的可用。
+   *
+   * 写死某个局域网 IP(设置里的「仅当前局域网 IP」)在**换网络后必然失效**:
+   * 旧地址不再属于本机,listen 会以 EADDRNOTAVAIL 失败,而失败后网关既不监听、
+   * 也因 `this.server !== null` 而无法重新启用 —— 用户只能重启应用。
+   *
+   * @returns 可用的绑定地址;配置地址已不存在时回退 0.0.0.0 并报出原因。
+   */
+  private resolveBindHost(configured: string): { host: string; fallbackFrom: string | null } {
+    if (configured === '0.0.0.0' || configured === '127.0.0.1' || configured === '::' || configured === 'localhost') {
+      return { host: configured, fallbackFrom: null }
+    }
+    const available = new Set<string>()
+    for (const entries of Object.values(networkInterfaces())) {
+      for (const entry of entries ?? []) {
+        if (entry.address === configured) available.add(entry.address)
+      }
+    }
+    if (available.has(configured)) return { host: configured, fallbackFrom: null }
+    return { host: '0.0.0.0', fallbackFrom: configured }
   }
 
   /** 桌面端一键暂停/恢复(暂停 = 立即断开所有连接;令牌与设备保留)。 */
@@ -374,7 +413,18 @@ export class RemoteGateway {
       console.log('[gateway] 远程访问已暂停(桌面端掌控中),不监听端口')
       return
     }
-    const bindHost = typeof config.bindHost === 'string' && config.bindHost.trim() !== '' ? config.bindHost.trim() : '0.0.0.0'
+    const configured = typeof config.bindHost === 'string' && config.bindHost.trim() !== '' ? config.bindHost.trim() : '0.0.0.0'
+    // 换网络后写死的局域网 IP 会失效:回退到 0.0.0.0 而不是让整个远程访问哑掉。
+    const resolved = this.resolveBindHost(configured)
+    const bindHost = resolved.host
+    if (resolved.fallbackFrom !== null) {
+      const reason = `配置的监听地址 ${resolved.fallbackFrom} 已不属于本机(可能更换了网络),已临时回退到 0.0.0.0`
+      console.warn(`[gateway] ${reason}`)
+      this.lastListenError = reason
+      this.config.appendAudit({ time: Date.now(), type: 'remote.bind-fallback', detail: reason })
+    } else {
+      this.lastListenError = null
+    }
     // HTTPS 自签证书:开启后手机信任该证书,Service Worker(离线外壳)才能注册。
     const tls = config.https === true ? this.httpsCert() : null
     const server = tls !== null
@@ -382,9 +432,22 @@ export class RemoteGateway {
       : createServer((req, res) => void this.handle(req, res))
     server.on('error', (error) => {
       console.error('[gateway] 监听失败:', error.message)
-      this.config.appendAudit({ time: Date.now(), type: 'remote.listen-error', detail: `监听 ${bindHost}:${config.port} 失败:${error.message}` })
+      // 关键:把引用清掉并记录原因。否则 `this.server !== null` 会让后来的
+      // start() 直接 return,用户点「重新启用」毫无反应,只能重启应用。
+      this.listeningHost = null
+      this.lastListenError = `监听 ${bindHost}:${config.port} 失败:${error.message}`
+      if (this.server === server) {
+        try { server.close() } catch { /* 未成功监听时 close 可能抛,忽略 */ }
+        this.server = null
+      }
+      if (this.expiryTimer !== null) { clearTimeout(this.expiryTimer); this.expiryTimer = null }
+      this.config.appendAudit({ time: Date.now(), type: 'remote.listen-error', detail: this.lastListenError })
     })
     server.listen(config.port, bindHost, () => {
+      this.listeningHost = bindHost
+      // 只清「监听失败」;地址回退的告警要留着,否则界面永远不会告诉用户
+      // 「你配的 10.x 已失效,现在监听的是 0.0.0.0」——而这恰恰是换网络后最该知道的事。
+      if (resolved.fallbackFrom === null) this.lastListenError = null
       console.log(`[gateway] 远程网关已启动,监听 ${tls !== null ? 'https' : 'http'}://${bindHost}:${config.port} (仅可信局域网客户端)`)
     })
     if (config.expiresAt !== null) {
@@ -406,6 +469,7 @@ export class RemoteGateway {
     this.server?.closeAllConnections?.()
     this.server?.close()
     this.server = null
+    this.listeningHost = null
     if (this.expiryTimer !== null) {
       clearTimeout(this.expiryTimer)
       this.expiryTimer = null

@@ -315,6 +315,9 @@ scripts/             构建、冒烟、端到端与离线测试脚本
 
 协议细节随 harness 演进可能变化;桌面端对参数壳(typert:`_request` / `request` / 平铺)按方法自适应,并在官方版缺失旧方法时提供降级或桥接(如 `workspace.list` 由会话 cwd 合成)。
 
+> ⚠️ **本项目已冻结**:只做必要的正确性修复,不再跟随 harness 版本演进。
+> 实测适配的版本、超出边界时的降级行为、以及哪些上游变更会导致失效,见 **[兼容性与冻结说明](docs/COMPATIBILITY.md)**。
+
 ## 已知限制
 
 - 审批只有「允许一次 / 拒绝」两种选择,这不是界面偷懒:`@deepseek-ai/dsh-user-approval` 里 `ApprovalOutcome` 是封闭枚举(`allowed-once` / `rejected` / `cancelled` / `unavailable`),协议里**不存在「一直允许」**。想减少审批次数请用 DSH 的权限预设(permission presets)。

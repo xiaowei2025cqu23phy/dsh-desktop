@@ -1688,7 +1688,7 @@ async function loadRemoteConfig(): Promise<void> {
     void renderHttpsCert(config.https === true)
     const bindSelect = $id('remote-bind') as HTMLSelectElement
     bindSelect.value = config.bindHost === '0.0.0.0' || !config.bindHost ? '0.0.0.0' : 'lan'
-    renderRemoteBindStatus(config.bindHost || '0.0.0.0')
+    await renderRemoteBindStatus(config.bindHost || '0.0.0.0')
     await renderRemoteDevices()
     renderRemotePause(config.paused === true)
     const expiry = $id('remote-expiry') as HTMLSelectElement
@@ -1706,13 +1706,38 @@ async function loadRemoteConfig(): Promise<void> {
   }
 }
 
-function renderRemoteBindStatus(bindHost: string): void {
+/**
+ * 监听状态提示。
+ *
+ * 不只看配置里的 bindHost(那是"想监听什么"),还查实际状态(那是"真的监听到了什么"):
+ * 写死局域网 IP 后换网络会让地址失效,此时网关会回退到 0.0.0.0 或直接监听失败,
+ * 只读配置会让界面显示"仅监听 10.x.x.x"而用户完全不知道已经变了。
+ */
+async function renderRemoteBindStatus(bindHost: string): Promise<void> {
   const el = $id('remote-bind-status')
-  if (bindHost === '0.0.0.0' || bindHost === '') {
-    el.textContent = '当前:监听全部网卡(0.0.0.0)。含 VPN/虚拟网卡——如果你只有一张网卡,建议改为「仅当前局域网 IP」。'
-  } else {
-    el.textContent = `当前:仅监听 ${bindHost}(换网络/换网卡后需重新启用)。`
+  let state: Awaited<ReturnType<typeof API.remote.state>> | null = null
+  try {
+    state = await API.remote.state()
+  } catch {
+    // 状态查询失败时退回只读配置的静态说明,不影响面板其余部分。
   }
+  const lines: string[] = []
+  if (bindHost === '0.0.0.0' || bindHost === '') {
+    lines.push('当前:监听全部网卡(0.0.0.0)。含 VPN/虚拟网卡——如果你只有一张网卡,建议改为「仅当前局域网 IP」。')
+  } else {
+    lines.push(`当前:仅监听 ${bindHost}(换网络/换网卡后需重新启用)。`)
+  }
+  if (state !== null) {
+    if (state.lastError !== null) {
+      lines.push(`⚠️ ${state.lastError}`)
+    }
+    if (state.listenHost === null && state.enabled && state.paused !== true) {
+      lines.push('⚠️ 远程访问已启用,但网关当前**没有在监听**——手机连不上就是因为这个。改回 0.0.0.0 或重新启用可恢复。')
+    } else if (state.listenHost !== null && state.listenHost !== bindHost) {
+      lines.push(`实际监听:${state.listenHost}(已从配置的 ${bindHost} 回退)。`)
+    }
+  }
+  el.textContent = lines.join('\n')
 }
 
 /**

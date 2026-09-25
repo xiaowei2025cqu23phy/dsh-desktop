@@ -1,7 +1,10 @@
 /**
  * 端到端管线测试:设置默认模型 → 创建会话 → 发送提示 → 订阅 mux 事件流。
  * 用法:node scripts/mux-test.mjs [baseUrl] [provider] [model]
- * 注意:会真实修改目标 harness 的默认模型并消耗少量模型调用。
+ *
+ * ⚠ 这是**有副作用**的集成测试:会真实修改目标 harness 的默认模型、创建会话,
+ *   并消耗模型调用。因此不在 npm test 里(本地门禁只跑无副作用的离线测试)。
+ *   运行前请确认 baseUrl 指向你想改的那个实例。
  */
 
 import { createRequire } from 'node:module'
@@ -15,6 +18,18 @@ const provider = process.argv[3] ?? 'deepseek-official'
 const model = process.argv[4] ?? 'deepseek-v4-flash'
 
 const client = new HarnessClient(baseUrl)
+
+// 前置可达性/鉴权检查:不要等到"改默认模型"那一步才失败 ——
+// 那一步失败会留下一个说不清是否改成功的目标实例。
+{
+  const ok = await client.probe(5000)
+  if (!ok) {
+    console.error(`目标实例不可达或未通过鉴权:${baseUrl}`)
+    console.error('  请确认该地址上跑着 harness,且端口/令牌正确(桌面端「设置 → 运行与调试」有实际地址)。')
+    console.error('  本脚本会修改目标实例的默认模型,请勿指向不确定的实例。')
+    process.exit(2)
+  }
+}
 
 console.log(`1) 设置默认模型 ${provider}/${model} (session.selectModel,host 同时持久化为默认)…`)
 const mm = new ModelManager(() => client)

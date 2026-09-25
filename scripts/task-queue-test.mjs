@@ -105,11 +105,15 @@ function turnEnd(processor, sessionId, kind, extra = {}) {
 
   const before = Date.now()
   turnEnd(processor, 'session-test-1', 'error', { message: '网关超时' })
+  const after = Date.now()
   let queue = config.taskQueue()
   check('失败后状态 failed', queue[0].status, 'failed')
   check('失败后尝试次数 2', queue[0].attempts, 2)
   check('失败记录错误', queue[0].error, '网关超时')
-  check('第 1 次失败退避 30s', queue[0].nextAttemptAt, before + 30_000)
+  // 断言范围而不是严格相等:退避时间由被测代码内部另取 Date.now() 计算,
+  // 与这里的 before 之间可能跨毫秒边界,写严格相等会偶发失败(门禁里就出现过一次)。
+  const delay = queue[0].nextAttemptAt - before
+  check('第 1 次失败退避 30s(允许跨毫秒误差)', delay >= 30_000 && delay <= 30_000 + (after - before), true)
   check('退避时间在未来', queue[0].nextAttemptAt > Date.now(), true)
 
   // 未到期:tick 不触发重试。
