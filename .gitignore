@@ -6,3 +6,12 @@ release/
 .playwright-mcp/
 
 pet-shot.png
+
+# 调试/临时产物:不要提交(曾经误提交过 .dev-err2.txt 与 .tmp-*.mjs)
+.tmp-*
+.dev-*.txt
+.dev-*.log
+
+# 本地测试用隔离数据目录
+.test-profile/
+.launch-test/
