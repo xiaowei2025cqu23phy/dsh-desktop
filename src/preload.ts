@@ -40,7 +40,8 @@ const api = {
     getConfig: () => ipcRenderer.invoke('screensaver:getConfig'),
     setConfig: (patch: object) => ipcRenderer.invoke('screensaver:setConfig', patch),
     activate: () => ipcRenderer.invoke('screensaver:activate'),
-    deactivate: () => ipcRenderer.invoke('screensaver:deactivate'),
+    // 退出屏保由屏保窗口自己的最小 preload(src/screensaver-preload.ts)负责;
+    // 主窗口不需要这个通道,故不在这里暴露。
     registerSystem: () => ipcRenderer.invoke('screensaver:registerSystem'),
     unregisterSystem: () => ipcRenderer.invoke('screensaver:unregisterSystem'),
     systemRegistered: () => ipcRenderer.invoke('screensaver:systemRegistered'),

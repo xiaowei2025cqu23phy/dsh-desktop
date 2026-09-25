@@ -779,7 +779,7 @@ async function openDrawer(): Promise<void> {
   drawerOpen = true
   $id('drawer').classList.remove('hidden')
   await Promise.all([loadHarnessConfig(), loadPreviewConfig(), loadScreensaverConfig(), loadRegistered(), loadAppearance(),
-    loadWallpaperPacks(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), loadUsageConfig(), loadNotificationConfig(), refreshWebhookEndpoint(),
+    loadWallpaperPacks(), loadCustomProviders(), loadRemoteConfig(), loadQQConfig(), loadTelegramConfig(), loadUsageConfig(), loadNotificationConfig(), refreshWebhookEndpoint(),
     loadUpdateInfo(), refreshLogs()])
   if (logsTimer === null) {
     logsTimer = setInterval(() => { if (drawerOpen) void refreshLogs() }, 3000)
@@ -1065,8 +1065,73 @@ async function saveGatewayProvider(): Promise<void> {
     S.toast('Provider 已保存并热生效', 'ok')
     input('gw-key').value = ''
     void loadModels()
+    void loadCustomProviders()
   } catch (error) {
     S.toast(`保存失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+  }
+}
+
+/**
+ * 自定义 Provider 的判别:添加时的 id 规则是 `^[a-z0-9][a-z0-9-]*$`(**不含点**),
+ * 而内置目录 Provider 的 id 形如 `deepseek-official` / `openai`——带点的必然是自定义。
+ *
+ * 之所以要在 UI 侧判别:`models.removeProvider` 直接对 `settings.mutate` 下发 unset,
+ * 不做任何校验,把内置 id 传进去同样会执行。所以删除入口只对确定是自定义的显示。
+ */
+function isCustomProviderId(id: string): boolean {
+  return /^[a-z0-9][a-z0-9-]*$/.test(id) && !id.includes('.')
+}
+
+/** 列出本机添加的自定义 Provider(可删除);内置目录 Provider 不在此列出。 */
+async function loadCustomProviders(): Promise<void> {
+  const host = $id('gw-custom-list')
+  let providers: ModelsListResult['providers'] = []
+  try {
+    providers = (await API.models.list()).providers
+  } catch (error) {
+    host.innerHTML = ''
+    const hint = document.createElement('span')
+    hint.className = 'hint'
+    hint.textContent = `读取失败:${error instanceof Error ? error.message : String(error)}`
+    host.appendChild(hint)
+    return
+  }
+  const custom = providers.filter((provider) => isCustomProviderId(provider.provider))
+  host.innerHTML = ''
+  if (custom.length === 0) {
+    const hint = document.createElement('span')
+    hint.className = 'hint'
+    hint.textContent = '(尚未添加自定义网关)'
+    host.appendChild(hint)
+    return
+  }
+  for (const provider of custom) {
+    const chip = document.createElement('span')
+    chip.className = 'field-row'
+    const label = document.createElement('span')
+    label.className = 'hint'
+    label.textContent = provider.displayName !== undefined && provider.displayName !== ''
+      ? `${provider.displayName}(${provider.provider})`
+      : provider.provider
+    const del = document.createElement('button')
+    del.className = 'btn btn-sm btn-danger'
+    del.textContent = '删除'
+    del.addEventListener('click', () => {
+      // 不可逆且有凭据副作用:明确确认后再删。
+      if (!window.confirm(`删除 Provider「${provider.provider}」?\n\n它会从设置中移除;已写入的 API Key 凭据需在 Web UI 的 设置 → Models 里清理。`)) return
+      del.disabled = true
+      void API.models.removeProvider(provider.provider).then(() => {
+        S.toast(`已删除 Provider「${provider.provider}」`, 'ok')
+        void loadModels()
+        return loadCustomProviders()
+      }).catch((error: unknown) => {
+        del.disabled = false
+        S.toast(`删除失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+      })
+    })
+    chip.appendChild(label)
+    chip.appendChild(del)
+    host.appendChild(chip)
   }
 }
 

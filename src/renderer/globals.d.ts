@@ -25,7 +25,7 @@ interface ModelOptionView {
 }
 
 interface ModelsListResult {
-  providers: unknown[]
+  providers: Array<{ provider: string; displayName?: string; active?: boolean }>
   groups: ModelOptionView[]
   failures: Array<{ provider: string; message: string }>
   selected: { provider: string; model: string; reasoningEffort?: string } | null
@@ -266,7 +266,6 @@ interface DesktopApi {
     getConfig(): Promise<ScreensaverConfigView>
     setConfig(patch: object): Promise<ScreensaverConfigView>
     activate(): Promise<void>
-    deactivate(): Promise<void>
     registerSystem(): Promise<{ ok: boolean; message: string }>
     unregisterSystem(): Promise<{ ok: boolean; message: string }>
     systemRegistered(): Promise<boolean>

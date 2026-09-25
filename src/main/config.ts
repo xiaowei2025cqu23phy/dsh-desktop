@@ -453,7 +453,7 @@ export class ConfigStore {
     this.path = join(app.getPath('userData'), 'config.json')
     this.config = this.load()
     this.db = new LocalDb(app.getPath('userData'))
-    // 登记为进程内当前实例(见文件末尾 activeConfigStore 的说明)。入口现在会显式把
+    // 登记为进程内当前实例(见上方 activeConfigStore 的说明)。入口现在会显式把
     // config 注入 EventHub,这条是给"只拿到 harness 的转发层"兜底用的;漏掉赋值会让
     // activeConfigStore() 恒为 null,派生活动静默不落库。
     activeStore = this
@@ -464,7 +464,6 @@ export class ConfigStore {
       this.recoveryNotice = this.recoveryNotice === null ? dbNotice : `${this.recoveryNotice}\n${dbNotice}`
     }
     this.migrateLegacyData()
-    activeStore = this
   }
 
   /** 配置恢复提示(无恢复时返回 null)。界面据此告知用户文件已隔离、旧文件在哪。 */
