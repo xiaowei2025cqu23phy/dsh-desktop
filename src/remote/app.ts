@@ -1,14 +1,17 @@
 /**
  * DSH Remote PWA:DeepSeek Harness 手机遥控。
  * 布局参考 DeepSeek App:左侧抽屉(工作区 ⇄ 会话)+ 聊天主界面。
+ *
+ * 本文件由 esbuild 打包为单个 IIFE(见 scripts/build-remote.mjs),因此各模块共享
+ * 同一个闭包 —— 与拆分前"一个 IIFE 装下全部"的运行语义一致。
  */
-(function () {
-  'use strict'
 
-  // 宽松类型起步:$ 返回 any,后续逐步收紧为按元素类型的泛型。
-  var $ = function (id: string): any { return document.getElementById(id) }
+import { S } from './util'
 
-  var state = {
+// 宽松类型起步:$ 返回 any,后续逐步收紧为按元素类型的泛型。
+var $ = function (id: string): any { return document.getElementById(id) }
+
+var state = {
     server: '',
     token: '',
     connected: false,
@@ -41,60 +44,6 @@
       return id
     })(),
     sidebarOpen: false,   // 左侧抽屉开关状态
-  }
-
-  var S = {
-    isRecord: function (v) { return v !== null && typeof v === 'object' && !Array.isArray(v) },
-    /** 从内容块提取文本与图片(排除思维链/推理块,对话里只显示答案)。 */
-    blocksParts: function (blocks) {
-      var text = ''
-      var images = []
-      if (Array.isArray(blocks)) {
-        for (var i = 0; i < blocks.length; i++) {
-          var b = blocks[i]
-          if (!S.isRecord(b)) continue
-          // 推理/思维链块不显示(不占屏),仅保留文本与图片。
-          if (b.type === 'reasoning' || b.type === 'thinking' || b.type === 'reasoning-text') continue
-          var innerText = ''
-          if (typeof b.text === 'string') innerText = b.text
-          else if (typeof b.content === 'string') innerText = b.content
-          else if (Array.isArray(b.content)) {
-            var inner = S.blocksParts(b.content)
-            innerText = inner.text
-            for (var k = 0; k < inner.images.length; k++) images.push(inner.images[k])
-          }
-          if (innerText !== '') text += (text === '' ? '' : '\n') + innerText
-          if (b.type === 'image') {
-            if (S.isRecord(b.attachment) && typeof b.attachment.attachmentId === 'string') {
-              images.push({
-                attachmentId: b.attachment.attachmentId,
-                mediaType: typeof b.attachment.mediaType === 'string' ? b.attachment.mediaType : 'image/png',
-                name: typeof b.attachment.name === 'string' ? b.attachment.name : '',
-              })
-            } else if (typeof b.data === 'string' && b.data !== '') {
-              images.push({ dataUrl: b.data.indexOf('data:') === 0 ? b.data : 'data:image/png;base64,' + b.data })
-            }
-          }
-        }
-      }
-      return { text: text, images: images }
-    },
-    escapeHtml: function (t) {
-      return String(t)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-    },
-    toast: function (msg, kind) {
-      var host = $('toast-host')
-      var el = document.createElement('div')
-      el.className = 'toast ' + (kind === 'error' ? 'toast-error' : kind === 'ok' ? 'toast-ok' : '')
-      el.textContent = msg
-      host.appendChild(el)
-      setTimeout(function () {
-        el.classList.add('toast-hide')
-        setTimeout(function () { el.remove() }, 300)
-      }, 3200)
-    },
   }
 
   // ---- API ----
@@ -2596,4 +2545,3 @@
   }
 
   init()
-})()
