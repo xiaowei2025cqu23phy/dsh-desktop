@@ -145,10 +145,84 @@ textarea { resize: vertical; }
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
   
 }
+
+/* ---- markdown 渲染后的消息(见 util.ts renderMarkdown) ----
+   .msg 上的 white-space: pre-wrap 是给纯文本用的,渲染成 HTML 后会带出多余空行,
+   这里对 markdown 内容复位为 normal。 */
+.msg-assistant p { margin: 0 0 0.6em; white-space: normal; }
+.msg-assistant p:last-child { margin-bottom: 0; }
+.msg-assistant h2, .msg-assistant h3, .msg-assistant h4, .msg-assistant h5, .msg-assistant h6 {
+  margin: 0.8em 0 0.4em; line-height: 1.35; white-space: normal;
+}
+.msg-assistant h2 { font-size: 1.18em; }
+.msg-assistant h3 { font-size: 1.1em; }
+.msg-assistant h4, .msg-assistant h5, .msg-assistant h6 { font-size: 1em; }
+.msg-assistant h2:first-child, .msg-assistant h3:first-child { margin-top: 0; }
+.msg-assistant ul { margin: 0.4em 0; padding-left: 1.3em; white-space: normal; }
+.msg-assistant li { margin: 0.15em 0; }
+.msg-assistant blockquote {
+  margin: 0.5em 0; padding: 0.2em 0 0.2em 0.7em;
+  border-left: 3px solid var(--accent); opacity: 0.92; white-space: normal;
+}
+.msg-assistant hr { margin: 0.8em 0; border: none; border-top: 1px solid rgba(255, 255, 255, 0.22); }
+.msg-assistant code {
+  padding: 1px 4px; border-radius: 4px; font-size: 0.92em;
+  background: rgba(0, 0, 0, 0.32); font-family: ui-monospace, Consolas, monospace;
+  white-space: pre-wrap; word-break: break-all;
+}
+.msg-assistant pre.md-code {
+  margin: 0.6em 0; padding: 10px; border-radius: 8px; overflow-x: auto;
+  background: rgba(0, 0, 0, 0.42); white-space: pre;
+}
+.msg-assistant pre.md-code code { padding: 0; background: none; white-space: pre; word-break: normal; }
+.msg-assistant a { color: #8ab4ff; text-decoration: underline; word-break: break-all; }
+.msg-assistant .md-table {
+  width: 100%; margin: 0.6em 0; border-collapse: collapse; font-size: 0.92em; white-space: normal;
+}
+.msg-assistant .md-table th, .msg-assistant .md-table td {
+  padding: 5px 8px; border: 1px solid rgba(255, 255, 255, 0.18); text-align: left;
+}
+.msg-assistant .md-table th { background: rgba(0, 0, 0, 0.28); font-weight: 600; }
+
+/* ---- 待审批:提示条 + 会话行标记 ---- */
+.pending-banner {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+  margin: 6px 10px 0; padding: 8px 10px; border-radius: 10px;
+  background: rgba(232, 179, 57, 0.16); border: 1px solid rgba(232, 179, 57, 0.45);
+  font-size: 13px; line-height: 1.4;
+}
+.pending-banner-text { flex: 1 1 auto; min-width: 0; }
+.session-row.waiting { border-left: 3px solid var(--accent); }
+.row-waiting {
+  display: block; margin-top: 3px; font-size: 11px; opacity: 0.95;
+  color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 审批卡片的命令详情:按 markdown 渲染,过长时折叠 */
+.approval-card .interaction-reason.clamped {
+  max-height: 240px; overflow: hidden;
+  -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 70%, transparent 100%);
+}
+.approval-card .interaction-reason p { margin: 0.3em 0; white-space: normal; }
+.approval-card .interaction-reason code {
+  padding: 1px 4px; border-radius: 4px; background: rgba(0, 0, 0, 0.32);
+  font-family: ui-monospace, Consolas, monospace; word-break: break-all;
+}
+.approval-card .interaction-reason pre.md-code {
+  margin: 0.4em 0; padding: 8px; border-radius: 6px; overflow-x: auto;
+  background: rgba(0, 0, 0, 0.42); white-space: pre; font-size: 12px;
+}
+.approval-card .interaction-tool .label {
+  display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 4px;
+  font-size: 11px; background: rgba(255, 255, 255, 0.14);
+}
+.btn-toggle-args { align-self: flex-start; margin: 2px 0 6px; font-size: 12px; }
+.muted { opacity: 0.6; }
+
+
 .msg-tool {
   align-self: flex-start; color: #fff;
-  background: rgba(232, 179, 57, 0.02);
-  border: 1px solid rgba(232, 179, 57, 0.1); font-size: 12px; max-width: 94%;
+  background: rgba(232, 179, 57, 0.02);  border: 1px solid rgba(232, 179, 57, 0.1); font-size: 12px; max-width: 94%;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
   
 }

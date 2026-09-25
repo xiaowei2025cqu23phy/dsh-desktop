@@ -200,6 +200,41 @@ export class LocalDb {
     this.db.prepare('DELETE FROM audit_log').run()
   }
 
+  /** 删除单条活动记录(活动中心里清掉已看完的条目,不必等「最近 200 条」自然淘汰)。 */
+  deleteActivity(id: string): void {
+    this.db.prepare('DELETE FROM activities WHERE id = ?').run(id)
+  }
+
+  /**
+   * 删除已结束的活动记录,保留仍在运行/等待的。
+   *
+   * 为什么不提供"全清":正在跑的任务如果连记录都没了,用户就再没有入口看到它、
+   * 也没法从活动中心停止它。清空只清终态条目。
+   */
+  clearFinishedActivities(): number {
+    const before = (this.db.prepare('SELECT COUNT(*) AS n FROM activities').get() as { n: number }).n
+    this.db.prepare("DELETE FROM activities WHERE status NOT IN ('running', 'waiting', 'queued')").run()
+    const after = (this.db.prepare('SELECT COUNT(*) AS n FROM activities').get() as { n: number }).n
+    return before - after
+  }
+
+  /** 删除已结束的队列记录(done/cancelled),保留 queued/running/failed 供重试与观察。 */
+  clearFinishedQueue(): number {
+    const before = (this.db.prepare('SELECT COUNT(*) AS n FROM task_queue').get() as { n: number }).n
+    this.db.prepare("DELETE FROM task_queue WHERE status NOT IN ('queued', 'running', 'failed')").run()
+    const after = (this.db.prepare('SELECT COUNT(*) AS n FROM task_queue').get() as { n: number }).n
+    return before - after
+  }
+
+  /** 删除一条队列记录(仅允许终态,运行中/排队中必须先取消)。 */
+  deleteQueueEntry(id: string): boolean {
+    const row = this.db.prepare('SELECT status FROM task_queue WHERE id = ?').get(id) as { status?: string } | undefined
+    if (row === undefined) return false
+    if (row.status === 'queued' || row.status === 'running') return false
+    this.db.prepare('DELETE FROM task_queue WHERE id = ?').run(id)
+    return true
+  }
+
   // ---- 任务队列 ----
 
   taskQueue(): TaskQueueEntry[] {

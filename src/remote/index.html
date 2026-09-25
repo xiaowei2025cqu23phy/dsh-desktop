@@ -53,6 +53,8 @@
         <span id="ss-running" class="ss-chip" title="正在运行的任务/活动">▶ 0</span>
         <span id="ss-tokens" class="ss-chip" title="今日 Token 用量">💰 0</span>
       </div>
+      <!-- 待审批常驻提示条:审批可能属于别的会话,只弹 toast 会被错过,agent 会一直卡着等。 -->
+      <div id="pending-banner" class="pending-banner hidden"></div>
       <main id="chat-stream" class="chat-stream">
         <div id="chat-empty" class="chat-empty">
           <div class="logo">◈</div>

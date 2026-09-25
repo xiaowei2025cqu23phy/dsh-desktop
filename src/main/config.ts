@@ -666,6 +666,26 @@ export class ConfigStore {
     this.db.clearAudit()
   }
 
+  /** 删除单条活动记录。 */
+  deleteActivity(id: string): void {
+    this.db.deleteActivity(id)
+  }
+
+  /** 清掉已结束的活动记录,返回删除条数。 */
+  clearFinishedActivities(): number {
+    return this.db.clearFinishedActivities()
+  }
+
+  /** 清掉已结束的队列记录,返回删除条数。 */
+  clearFinishedQueue(): number {
+    return this.db.clearFinishedQueue()
+  }
+
+  /** 删除一条队列记录(仅终态),返回是否删除成功。 */
+  deleteQueueEntry(id: string): boolean {
+    return this.db.deleteQueueEntry(id)
+  }
+
   /** 读取指定工作区的本地记忆。 */
   memory(path: string): WorkspaceMemory {
     return this.config.workspaceMemories[path] ?? { enabled: false, summary: '', conventions: '', commands: '', notes: '', updatedAt: 0 }

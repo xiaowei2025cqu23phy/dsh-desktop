@@ -5,7 +5,7 @@
  * (esbuild 打成单个 IIFE,模块共享同一闭包)。
  */
 
-import { $, S } from './util'
+import { $, S, renderMarkdown } from './util'
 import { apiAction, state } from './api'
 import { closeSheet, loadPresetRoots, openSheet } from './panels'
 
@@ -255,20 +255,6 @@ export function previewActionRow(source, name, withOpen) {
   return row
 }
 
-export function renderMarkdownPreview(text) {
-  var escaped = S.escapeHtml(text)
-  return escaped
-    .replace(/^### (.+)$/gm, '<h4>$1</h4>')
-    .replace(/^## (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^# (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
-    .replace(/```([\s\S]*?)```/g, '<pre class="md-code">$1</pre>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/(?:\r?\n){2,}/g, '<br /><br />')
-    .replace(/\r?\n/g, '<br />')
-}
-
 export function loadFsPreviewChunk(path, offset) {
   apiAction('fs.read', { path: path, offset: offset }).then(function (data) {
     var pre = $('fsp-content')
@@ -284,14 +270,14 @@ export function loadFsPreviewChunk(path, offset) {
     var isMarkdown = /\.(md|markdown|mdown|mkdn)$/i.test(path)
     if (offset === 0) {
       if (isMarkdown) {
-        pre.innerHTML = renderMarkdownPreview(data.text || '') || '(空文件)'
+        pre.innerHTML = renderMarkdown(data.text || '') || '(空文件)'
         pre.classList.add('rich-preview')
       } else {
         pre.textContent = data.text || '(空文件)'
         pre.classList.remove('rich-preview')
       }
     } else if (isMarkdown) {
-      pre.innerHTML += renderMarkdownPreview(data.text || '')
+      pre.innerHTML += renderMarkdown(data.text || '')
     } else pre.textContent += data.text
     if (data.truncated) {
       var more = document.createElement('button')

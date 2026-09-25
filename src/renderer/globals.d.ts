@@ -194,11 +194,16 @@ interface DesktopApi {
   }
   tasks: {
     history(): Promise<Array<{ id: string; description: string; sessionId: string | null; status: string; attempts: number; error?: string; createdAt: number; updatedAt: number }>>
+    /** 清空任务历史(config.taskHistory)。 */
+    clearHistory(): Promise<{ ok: boolean; removed: number }>
   }
   queue: {
     list(): Promise<Array<{ id: string; description: string; sessionId: string | null; status: string; attempts: number; maxAttempts: number; nextAttemptAt: number | null; error?: string; workspace: string | null; source: string; createdAt: number; updatedAt: number }>>
     cancel(id: string): Promise<string>
     retry(id: string): Promise<string>
+    /** 删除终态队列条目;排队/运行中会失败并给出原因。 */
+    delete(id: string): Promise<{ ok: boolean; message?: string }>
+    clearFinished(): Promise<{ ok: boolean; removed: number }>
   }
   activity: {
     list(): Promise<Array<{ id: string; type: string; source: string; workspace: string | null; sessionId: string | null; status: string; title: string; lastEvent: string; createdAt: number; updatedAt: number }>>
@@ -206,6 +211,10 @@ interface DesktopApi {
     stop(sessionId: string): Promise<SessionStopResultView>
     /** 停止当前所有运行中的会话。 */
     stopAll(): Promise<SessionStopResultView>
+    /** 删除单条已结束的活动记录。 */
+    delete(id: string): Promise<{ ok: boolean }>
+    /** 清掉所有已结束的活动记录;运行中/等待中的保留。 */
+    clearFinished(): Promise<{ ok: boolean; removed: number }>
   }
   workspace: {
     health(): Promise<Array<{ workspaceId: string | null; title: string; path: string; exists: boolean; readable: boolean; writable: boolean; freeBytes: number | null; sessions: number | null }>>

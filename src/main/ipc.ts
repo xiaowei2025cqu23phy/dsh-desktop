@@ -207,6 +207,23 @@ export function registerIpc(deps: IpcDeps): void {
     deps.commands?.stopSession(sessionId) ?? { ok: false, message: '操作不可用' })
   ipcMain.handle('activity:stopAll', () =>
     deps.commands?.stopAllSessions() ?? { ok: false, message: '操作不可用' })
+  // 清理入口:活动/队列/任务历史堆积会让人找不到当前在跑的东西。
+  // 一律只清「已结束」的条目 —— 运行中/等待中的记录被删掉,用户就再没有入口看到并停止它。
+  ipcMain.handle('activity:delete', (_event, id: string) => {
+    deps.config.deleteActivity(id)
+    return { ok: true }
+  })
+  ipcMain.handle('activity:clearFinished', () => ({ ok: true, removed: deps.config.clearFinishedActivities() }))
+  ipcMain.handle('queue:delete', (_event, id: string) => {
+    const removed = deps.config.deleteQueueEntry(id)
+    return removed ? { ok: true } : { ok: false, message: '该条目正在排队或运行中,请先取消再删除' }
+  })
+  ipcMain.handle('queue:clearFinished', () => ({ ok: true, removed: deps.config.clearFinishedQueue() }))
+  ipcMain.handle('tasks:clearHistory', () => {
+    const removed = (deps.config.get().taskHistory ?? []).length
+    deps.config.update('taskHistory', [])
+    return { ok: true, removed }
+  })
   ipcMain.handle('workspace:health', () => {
     if (!harnessReady()) return Promise.resolve([])
     return deps.gateway?.healthReport() ?? Promise.resolve([])

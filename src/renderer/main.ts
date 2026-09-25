@@ -324,6 +324,24 @@ async function loadActivities(): Promise<void> {
         })
         row.appendChild(stop)
       }
+      // 结束的活动可以单条删除,不必等「最近 200 条」自然淘汰。
+      if (item.status !== 'running' && item.status !== 'queued' && item.status !== 'waiting') {
+        const del = document.createElement('button')
+        del.className = 'btn btn-sm queue-act'
+        del.textContent = '删除'
+        del.title = '从活动中心移除这条记录(不影响任何会话)'
+        del.addEventListener('click', (event) => {
+          event.stopPropagation()
+          del.disabled = true
+          void API.activity.delete(item.id).then(() => {
+            void loadActivities()
+          }).catch((error: unknown) => {
+            del.disabled = false
+            S.toast(`删除失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+          })
+        })
+        row.appendChild(del)
+      }
       row.title = '点击查看详情'
       row.addEventListener('click', () => void showActivityDetail(item))
       host.appendChild(row)
@@ -722,6 +740,30 @@ async function loadQueue(): Promise<void> {
             .catch((error: unknown) => { retry.disabled = false; S.toast(`重试失败:${error instanceof Error ? error.message : String(error)}`, 'error') })
         })
         row.appendChild(retry)
+      }
+      // 终态条目可直接删除(排队/运行中的必须先取消,服务端也会拒绝并给原因)。
+      if (item.status === 'completed' || item.status === 'cancelled' || item.status === 'failed') {
+        const del = document.createElement('button')
+        del.className = 'btn btn-sm queue-act'
+        del.textContent = '删除'
+        del.title = '从队列中移除这条记录'
+        del.addEventListener('click', (event) => {
+          event.stopPropagation()
+          del.disabled = true
+          void API.queue.delete(item.id).then((result) => {
+            if (!result.ok) {
+              del.disabled = false
+              S.toast(result.message ?? '删除失败', 'error')
+              return
+            }
+            if (selectedQueueId === item.id) selectedQueueId = null
+            void loadQueue()
+          }).catch((error: unknown) => {
+            del.disabled = false
+            S.toast(`删除失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+          })
+        })
+        row.appendChild(del)
       }
       row.addEventListener('click', () => {
         selectedQueueId = item.id
@@ -2385,6 +2427,34 @@ function bindWorkbench(): void {
     })
   })
   $id('btn-queue-refresh').addEventListener('click', () => void loadQueue())
+  // 清理已结束的条目:活动/队列堆积会让人找不到当前在跑的东西。
+  // 一律只清终态 —— 运行中/等待中的记录若被删掉,用户就再没有入口看到并停止它。
+  $id('btn-activity-clear').addEventListener('click', () => {
+    void API.activity.clearFinished().then(async (result) => {
+      S.toast(result.removed > 0 ? `已清除 ${result.removed} 条已结束的活动` : '没有可清除的已结束活动', result.removed > 0 ? 'ok' : 'error')
+      await loadActivities()
+    }).catch((error: unknown) => {
+      S.toast(`清除失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+    })
+  })
+  $id('btn-queue-clear').addEventListener('click', () => {
+    void API.queue.clearFinished().then(async (result) => {
+      S.toast(result.removed > 0 ? `已清除 ${result.removed} 条已结束的队列记录` : '没有可清除的已结束记录', result.removed > 0 ? 'ok' : 'error')
+      await loadQueue()
+    }).catch((error: unknown) => {
+      S.toast(`清除失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+    })
+  })
+  $id('btn-task-history-clear').addEventListener('click', () => {
+    // 任务记录是本地历史,清空不可逆,先确认。
+    if (!window.confirm('清空全部任务记录?\n\n这只删除本地历史列表,不影响正在运行的任务与会话。')) return
+    void API.tasks.clearHistory().then(async (result) => {
+      S.toast(result.removed > 0 ? `已清空 ${result.removed} 条任务记录` : '任务记录本来就是空的', 'ok')
+      await loadTaskHistory()
+    }).catch((error: unknown) => {
+      S.toast(`清空失败:${error instanceof Error ? error.message : String(error)}`, 'error')
+    })
+  })
   $id('ad-close').addEventListener('click', () => $id('activity-detail').classList.add('hidden'))
   // 弹层背景点击关闭。
   $id('activity-detail').addEventListener('click', (event) => {

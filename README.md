@@ -317,6 +317,8 @@ scripts/             构建、冒烟、端到端与离线测试脚本
 
 ## 已知限制
 
+- 审批只有「允许一次 / 拒绝」两种选择,这不是界面偷懒:`@deepseek-ai/dsh-user-approval` 里 `ApprovalOutcome` 是封闭枚举(`allowed-once` / `rejected` / `cancelled` / `unavailable`),协议里**不存在「一直允许」**。想减少审批次数请用 DSH 的权限预设(permission presets)。
+- 审批卡片能展示的信息上限是「工具名 + 原因」两项文本:协议里审批请求的客户端可见字段只有 `toolName`、`callId`、`reason`,**不含工具参数**。原因字段通常包含完整命令,手机端已按 markdown 完整渲染(过长可展开)。
 - 手机浏览器普遍禁用 iframe 内嵌 PDF 预览,手机端提供「新窗口打开 / 下载」两种方式查看 PDF。
 - 屏保为纯展示(壁纸 + 时钟),不承载交互;需要看 agent 在做什么请回到主窗口的 Web UI 或手机 PWA。
 - 系统屏保注册仅支持 Windows(注册表方案,注册前自动备份原设置,取消时恢复);macOS/Linux 可用内置空闲检测模式。

@@ -6,7 +6,7 @@
  * 同一个闭包 —— 与拆分前"一个 IIFE 装下全部"的运行语义一致。
  */
 
-import { $, S } from './util'
+import { $, S, renderMarkdown } from './util'
 import { apiAction, apiRpc, apiRespond, state } from './api'
 import { CACHE_MAX_MSGS, clearAllCache, flushCacheNow, loadCachedMessages, persistCache } from './cache'
 import { closeSheet, loadHealth, loadPresetRoots, loadScheduled, loadUsage, openSheet } from './panels'
@@ -102,6 +102,12 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
     ;(el as any)._textNode = textNode
     stream.appendChild(el)
     var entry: any = { kind: kind, text: text }
+    // 历史回放/缓存恢复的消息都已结束,直接渲染 markdown;流式起始的空消息跳过
+    // (appendDelta 会在收尾时渲染,见 finalizeLastAssistant)。
+    if (kind === 'assistant' && text !== '') {
+      ;(el as any)._rawText = text
+      renderAssistantMarkdown(el)
+    }
     if (images && images.length > 0) {
       entry.images = images
       renderImagesInto(el, images, stream)
@@ -157,6 +163,21 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
     return els.length > 0 ? els[els.length - 1] : null
   }
 
+  /**
+   * 把某条已结束的 assistant 消息渲染为 markdown。
+   *
+   * 为什么不在流式期间渲染:每个 token 都重新解析并重建 DOM 是 O(n²),手机会明显卡。
+   * 流式期间保持纯文本追加(见 appendDelta),消息结束时渲染一次——这是可接受的取舍,
+   * 而且渲染完就不再改动,不会和后续 delta 打架。
+   */
+  function renderAssistantMarkdown(el) {
+    if (!el || (el as any)._mdRendered === true) return
+    var text = (el as any)._rawText
+    if (typeof text !== 'string' || text === '') return
+    el.innerHTML = renderMarkdown(text)
+    ;(el as any)._mdRendered = true
+  }
+
   function appendDelta(delta) {
     var last = state.msgLog[state.msgLog.length - 1]
     if (!last || last.kind !== 'assistant') {
@@ -168,6 +189,7 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
     if (el) {
       // 只追加新增 delta(appendData),而非重写整个文本节点——否则每个 token 都 O(n) 重写全文。
       ;(el as any)._textNode.appendData(delta)
+      ;(el as any)._rawText = last.text
       el.classList.add('cursor-blink')
     }
     scrollToBottom()
@@ -183,10 +205,27 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
     var el = lastAssistantEl()
     if (el) {
       ;(el as any)._textNode.textContent = full
+      ;(el as any)._rawText = full
       el.classList.remove('cursor-blink')
+      renderAssistantMarkdown(el)
     }
     persistCache()
     scrollToBottom()
+  }
+
+  /**
+   * 收尾:socket 侧只发 chunk(没有 assistant/message)时,靠这个把最后一条渲染成
+   * markdown。turn/end 是唯一权威终点信号,所以在那里也调一次。
+   */
+  function finalizeLastAssistant() {
+    var el = lastAssistantEl()
+    if (!el) return
+    el.classList.remove('cursor-blink')
+    if (typeof (el as any)._rawText !== 'string') {
+      // 从未收到 delta(只有最终消息):文本节点本身就是全文。
+      ;(el as any)._rawText = (el as any)._textNode ? (el as any)._textNode.textContent : el.textContent
+    }
+    renderAssistantMarkdown(el)
   }
 
   function renderCachedMessage(m) {
@@ -372,6 +411,9 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
         break
       case 'turn/end':
         setChatStatus('空闲', '')
+        // turn/end 是唯一权威终点:在这里收尾,保证消息一定被渲染成 markdown,
+        // 而不依赖 harness 是否额外发 assistant/message。
+        finalizeLastAssistant()
         persistCache()
         break
       case 'user/message': {
@@ -386,6 +428,8 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
           appendDelta(chunk.text)
         } else if (chunk.type === 'finish') {
           setChatStatus('空闲', '')
+          // 有些路径只发 chunk 不发 turn/end:这里兜底收尾一次(幂等,renderAssistantMarkdown 有标记)。
+          finalizeLastAssistant()
         }
         break
       }
@@ -453,8 +497,14 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
       }
       if (!Array.isArray(state.approvals[sessionId])) state.approvals[sessionId] = []
       state.approvals[sessionId].push(item)
-      if (state.sessionId === sessionId) renderApprovalCard(item)
-      else S.toast('会话 ' + sessionId + ' 需要审批', 'error')
+      if (state.sessionId === sessionId) {
+        renderApprovalCard(item)
+      } else {
+        // 不在当前会话:不能只弹一个转瞬即逝的 toast(用户很可能没注意,而 agent 会一直卡着
+        // 等审批)。改为在会话列表里给该会话打标 + 顶部常驻提示条,可直接点进去应答。
+        markSessionWaiting(sessionId, item.toolName)
+        showPendingBanner(sessionId, item.toolName)
+      }
     } else {
       var approvalId = String(payload.approvalId || '')
       var key = sessionId + ':' + approvalId
@@ -467,29 +517,52 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
       if (Array.isArray(list)) {
         state.approvals[sessionId] = list.filter(function (a) { return String(a.approvalId) !== approvalId })
       }
+      // 该会话没有别的未决项了就撤掉等待标记与提示条(可能是在桌面端或机器人通道应答的,
+      // 手机端也要跟着收掉,否则会一直显示一条已经处理完的提示)。
+      clearSessionWaiting(sessionId)
     }
   }
 
   function renderApprovalCard(item) {
+    var key = item.sessionId + ':' + item.approvalId
+    // 去重:同一审批可能因「帧到达」与「切回会话重绘」两条路径各渲染一次,
+    // 不去重就会在聊天里出现两张同样的卡片(两张都能点,先点的成功、后点的报已处理)。
+    var existing = state.approvalCards[key]
+    if (existing && existing.isConnected) return
     var stream = $('chat-stream')
     hideEmpty(true)
     var card = document.createElement('div')
     card.className = 'interaction-card approval-card'
-    var html = '<div class="interaction-title">⚠️ 需要审批</div>' +
-      '<div class="interaction-tool">工具:' + S.escapeHtml(item.toolName) + '</div>' +
-      '<div class="interaction-reason">' + S.escapeHtml(item.reason || '') + '</div>' +
+    // reason 里常常就是完整命令/参数(harness 只给 toolName + reason 两个文本字段),
+    // 因此按 markdown 渲染:命令行、代码块、多行说明能保留结构;不截断。
+    var detail = item.reason !== '' ? renderMarkdown(item.reason) : '<span class="muted">(未提供命令详情)</span>'
+    card.innerHTML =
+      '<div class="interaction-title">⚠️ 需要审批</div>' +
+      '<div class="interaction-tool"><span class="label">工具</span>' + S.escapeHtml(item.toolName) + '</div>' +
+      '<div class="interaction-reason">' + detail + '</div>' +
       '<div class="interaction-actions">' +
-      '<button class="btn btn-allow">允许</button>' +
+      '<button class="btn btn-allow">允许一次</button>' +
       '<button class="btn btn-deny">拒绝</button></div>'
-    card.innerHTML = html
-    card.querySelector('.btn-allow').addEventListener('click', function () {
-      respondApproval(item, 'allowed-once', card)
-    })
-    card.querySelector('.btn-deny').addEventListener('click', function () {
-      respondApproval(item, 'rejected', card)
-    })
+    ;(card as any)._renderedText = (card.textContent || '').length
+    var allowBtn = card.querySelector('.btn-allow')
+    var denyBtn = card.querySelector('.btn-deny')
+    if (allowBtn) allowBtn.addEventListener('click', function () { respondApproval(item, 'allowed-once', card) })
+    if (denyBtn) denyBtn.addEventListener('click', function () { respondApproval(item, 'rejected', card) })
+    // 长命令折叠:卡片默认展示前 8 行 + 淡出,点「展开」看全部,避免一条超长命令霸屏。
+    var body = card.querySelector('.interaction-reason')
+    if (body && body.scrollHeight > 260) {
+      body.classList.add('clamped')
+      var toggle = document.createElement('button')
+      toggle.className = 'btn btn-sm btn-toggle-args'
+      toggle.textContent = '展开完整内容'
+      toggle.addEventListener('click', function () {
+        var clamped = body.classList.toggle('clamped')
+        toggle.textContent = clamped ? '展开完整内容' : '收起'
+      })
+      card.insertBefore(toggle, card.querySelector('.interaction-actions'))
+    }
     stream.appendChild(card)
-    state.approvalCards[item.sessionId + ':' + item.approvalId] = card
+    state.approvalCards[key] = card
     scrollToBottom()
   }
 
@@ -508,6 +581,7 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
       card.classList.add('done')
       card.innerHTML = outcome === 'allowed-once' ? '✓ 已允许' : '✗ 已拒绝'
       delete state.approvalCards[item.sessionId + ':' + item.approvalId]
+      clearSessionWaiting(item.sessionId)
       S.toast(outcome === 'allowed-once' ? '已允许' : '已拒绝', 'ok')
     }).catch(function (err) {
       buttons.forEach(function (b) { b.disabled = false })
@@ -1190,6 +1264,80 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
     rows.forEach(function (row) {
       row.classList.toggle('current', (row as any)._sid === sessionId)
     })
+    // 切回某会话时,该会话若已无未决审批就撤掉等待标记。
+    if (sessionId !== null && sessionId !== undefined) clearSessionWaiting(sessionId)
+  }
+
+  /**
+   * 会话「等待审批」标记。
+   *
+   * 为什么需要:审批请求可能属于**当前没在看的会话**(定时任务、机器人通道或另一个会话)。
+   * 此前只弹一个 3.2 秒的 toast,用户很容易错过,而 agent 会一直卡在那里等;
+   * 在侧边栏会话行打标 + 顶部常驻提示条,用户扫一眼就知道要去哪应答。
+   */
+  function markSessionWaiting(sessionId, toolName) {
+    var rows = document.querySelectorAll('.session-row')
+    rows.forEach(function (row) {
+      if ((row as any)._sid !== sessionId) return
+      row.classList.add('waiting')
+      var badge = row.querySelector('.row-waiting')
+      if (!badge) {
+        badge = document.createElement('span')
+        badge.className = 'row-waiting'
+        row.appendChild(badge)
+      }
+      badge.textContent = '⚠ 待审批' + (toolName ? ':' + String(toolName).slice(0, 12) : '')
+      ;(badge as any).title = '该会话正在等待你的审批,点进会话即可应答'
+    })
+  }
+
+  function clearSessionWaiting(sessionId) {
+    var pending = state.approvals[sessionId]
+    if (Array.isArray(pending) && pending.length > 0) return
+    if (state.questions[sessionId] !== undefined) return
+    var rows = document.querySelectorAll('.session-row')
+    rows.forEach(function (row) {
+      if ((row as any)._sid !== sessionId) return
+      row.classList.remove('waiting')
+      var badge = row.querySelector('.row-waiting')
+      if (badge) badge.remove()
+    })
+    hidePendingBanner(sessionId)
+  }
+
+  /** 顶部常驻提示条:有待审批时一直显示,点「去处理」直接切到那个会话。 */
+  function showPendingBanner(sessionId, toolName) {
+    var bar = $('pending-banner')
+    if (!bar) return
+    bar.classList.remove('hidden')
+    bar.innerHTML = ''
+    var text = document.createElement('span')
+    text.className = 'pending-banner-text'
+    text.textContent = '⚠️ 有会话在等待审批:' + (toolName ? '工具 ' + toolName : '未知工具')
+    var go = document.createElement('button')
+    go.className = 'btn btn-sm'
+    go.textContent = '去处理'
+    go.addEventListener('click', function () {
+      openSession(sessionId, state.currentWsPath)
+      hidePendingBanner(sessionId)
+    })
+    var close = document.createElement('button')
+    close.className = 'btn btn-sm'
+    close.textContent = '稍后'
+    close.addEventListener('click', function () { hidePendingBanner(sessionId) })
+    bar.appendChild(text)
+    bar.appendChild(go)
+    bar.appendChild(close)
+    ;(bar as any)._sid = sessionId
+  }
+
+  function hidePendingBanner(sessionId) {
+    var bar = $('pending-banner')
+    if (!bar) return
+    if (sessionId !== undefined && (bar as any)._sid !== sessionId) return
+    bar.classList.add('hidden')
+    bar.innerHTML = ''
+    ;(bar as any)._sid = null
   }
 
   // ---- 新建工作区(仅限预设根目录) ----

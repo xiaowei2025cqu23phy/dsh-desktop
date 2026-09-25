@@ -107,17 +107,24 @@ const api = {
   },
   tasks: {
     history: () => ipcRenderer.invoke('tasks:history'),
+    clearHistory: () => ipcRenderer.invoke('tasks:clearHistory'),
   },
   queue: {
     list: () => ipcRenderer.invoke('queue:list'),
     cancel: (id: string) => ipcRenderer.invoke('queue:cancel', id),
     retry: (id: string) => ipcRenderer.invoke('queue:retry', id),
+    // 清理:只允许删除终态条目,排队/运行中的要先取消。
+    delete: (id: string) => ipcRenderer.invoke('queue:delete', id),
+    clearFinished: () => ipcRenderer.invoke('queue:clearFinished'),
   },
   activity: {
     list: () => ipcRenderer.invoke('activity:list'),
     // 停止会话(session.cancel):返回 { ok, message },成功失败都反馈给用户。
     stop: (sessionId: string) => ipcRenderer.invoke('activity:stop', sessionId),
     stopAll: () => ipcRenderer.invoke('activity:stopAll'),
+    // 清理:只删已结束的记录,运行中/等待中的保留(否则用户没有入口看到并停止它)。
+    delete: (id: string) => ipcRenderer.invoke('activity:delete', id),
+    clearFinished: () => ipcRenderer.invoke('activity:clearFinished'),
   },
   workspace: {
     health: () => ipcRenderer.invoke('workspace:health'),
