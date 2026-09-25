@@ -336,7 +336,11 @@ const DEFAULTS: AppConfig = {
     mode: 'auto',
     url: 'http://127.0.0.1:3080',
     port: 3080,
-    command: 'npx --yes @deepseek-ai/dsh web --port {port} --no-open',
+    // 必须用 next 渠道:@latest(0.1.5-rc.3)的会话格式迁移包只到 v2→v3,
+    // 读不了 v4 格式的会话 —— 而较新的 harness(含官方版桌面端自带的 0.1.7 系)
+    // 会把会话写成 v4。用 latest 的表现是"最近若干会话在所有端都看不见",
+    // 且发生在 harness 层,与本项目各客户端无关。详见 docs/COMPATIBILITY.md。
+    command: 'npx --yes @deepseek-ai/dsh@next web --port {port} --no-open',
     autoStart: true,
     restartOnCrash: true,
     stopOnQuit: true,
@@ -349,7 +353,8 @@ const DEFAULTS: AppConfig = {
     enabled: false,
     url: 'http://127.0.0.1:3081',
     port: 3081,
-    command: 'npx --yes @deepseek-ai/dsh web --port {port} --no-open',
+    // 同上:预览实例也用 next,避免它与主实例写的会话互不可见。
+    command: 'npx --yes @deepseek-ai/dsh@next web --port {port} --no-open',
     dshHome: join(homedir(), '.dsh-preview'),
     cwd: join(homedir(), 'dsh-preview-workspace'),
     restartOnCrash: true,

@@ -8,12 +8,41 @@
 | 项目 | 值 |
 | --- | --- |
 | 桌面端版本 | 0.6.1 |
-| 官方 harness(`@deepseek-ai/dsh`) | **0.1.5-rc.3** |
+| 官方 harness(`@deepseek-ai/dsh`) | **0.1.7-rc.2**(`next` 渠道) |
 | 协议形态 | typert 斜杠协议(`_request` / `request` 参数壳自动协商) |
-| 运行方式 | 托管启动 `npx --yes @deepseek-ai/dsh web --port {port} --no-open` |
+| 运行方式 | 托管启动 `npx --yes @deepseek-ai/dsh@next web --port {port} --no-open` |
 
 桌面端直接实现 harness 的 HTTP RPC,不依赖它的内部包。因此**小幅版本变化通常无感**,
 但跨越协议变更(方法改名、参数壳改动、事件字段调整)就会失效 —— 见下节。
+
+### ⚠️ 必须跟住 `next` 渠道的原因:会话格式版本
+
+`dsh` 的会话文件是**多版本并存的物理格式**(同一会话可能有 `session.jsonl.zstd`、
+`session.v3.jsonl.zstd`、`session.v4.jsonl.zstd`),读取靠一组迁移包:
+
+| harness 版本 | 带的格式迁移包 | 能读的会话 |
+| --- | --- | --- |
+| `0.1.5-rc.3`(`latest`) | v0→v1、v1→v2、v2→v3 | **只到 v3** |
+| `0.1.7-rc.2`(`next`) | 追加 **v3→v4** | v3 + v4 |
+
+**踩过的坑**:本机同时存在官方版桌面端(自带 0.1.7 系 harness)与本项目。官方版把会话
+写成了 **v4**,而本项目用 `latest`(0.1.5-rc.3)拉起的 harness **读不了 v4** —— 表现是
+
+```
+session.list 只返回 200 条,磁盘上较新的 15 个会话全部不见
+(这些会话的格式文件全都含 v4,可见的全部只有 v1/v3)
+```
+
+而且**桌面端内嵌页面、手机 PWA、网关三处同时看不到** —— 因为它发生在 harness 层,
+与各客户端无关。定位时先看这一点,不要一上来查客户端取数链路。
+
+**结论:本项目必须使用 `next` 渠道**(`@deepseek-ai/dsh@next`)。用 `latest` 会读不到
+官方版/较新版本写出的会话。若同一台机器上还有官方版桌面端之类的 v4 写入方,
+保持 `next` 是唯一能双向读写的方式。
+
+> 代价:`next` 是预发布渠道,升级会带来行为变化。升级后请回归一遍会话列表、历史回放、
+> 网关鉴权(见 `scripts/gateway-stop-test.mjs` 与 `node scripts/pwa-shell-test.mjs`)。
+
 
 ## 二、超出边界时的行为(韧性优先,不做多版本适配)
 
