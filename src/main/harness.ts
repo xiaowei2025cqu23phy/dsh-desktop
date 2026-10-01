@@ -3,8 +3,8 @@
  */
 
 import { spawn, execFile, exec } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, openSync, closeSync, statSync, readSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { HarnessClient, type RpcProtocolBox } from './client'
@@ -40,6 +40,11 @@ export class HarnessManager extends EventEmitter {
   private probeTimer: ReturnType<typeof setTimeout> | null = null
   private restartTimer: ReturnType<typeof setTimeout> | null = null
   private restartAttempts = 0
+  /** 托管进程输出文件的读取游标与轮询定时器(输出走文件而非管道,见 start() 处的说明)。 */
+  private logTailOffset = 0
+  private logTailTimer: ReturnType<typeof setInterval> | null = null
+  /** 当前托管进程的输出文件路径(null = 无托管进程)。 */
+  private managedLogPath: string | null = null
   readonly logs: string[] = []
   /** RPC 端点协议共享盒:一次协商,所有 client 实例(探测/网关/mux)共用。 */
   private readonly protocolBox: RpcProtocolBox = { value: null }
@@ -299,15 +304,25 @@ export class HarnessManager extends EventEmitter {
     // Node 的 DEP0190 弃用告警(参数拼接),也保留对含空格路径/引号参数的正确处理。
     const isWindows = process.platform === 'win32'
     const cmdLine = [command, ...args].map((token) => quoteForShell(token)).join(' ')
+    // ⚠ 输出必须重定向到**文件**,不能用管道。
+    // 新版 harness 启动时打印的 `dsh web: http://…/?token=…` 只在 stdout 是文件/终端
+    // 时才会输出;走管道时该行根本不会产生(实测 0 字节),于是 launchToken 永远捕获不到、
+    // webview 与 RPC 全部 401,表现为「托管服务 180 秒未就绪」。改成文件后实测稳定拿到。
+    const logPath = join(this.runtimeDir(), `harness-${this.config.port}.out.log`)
+    try { rmSync(logPath, { force: true }) } catch { /* 首次运行不存在 */ }
+    this.managedLogPath = logPath
+    this.logTailOffset = 0
+    const outFd = openSync(logPath, 'a')
     const child = isWindows
-      ? spawn(cmdLine, [], { env, cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: true })
-      : spawn(command, args, { env, cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+      ? spawn(cmdLine, [], { env, cwd, windowsHide: true, stdio: ['ignore', outFd, outFd], shell: true })
+      : spawn(command, args, { env, cwd, windowsHide: true, stdio: ['ignore', outFd, outFd] })
+    // 父进程侧的 fd 用完即关,子进程持有自己的副本,文件继续被写入。
+    try { closeSync(outFd) } catch { /* 忽略 */ }
     this.child = child
     this.managedPid = child.pid ?? null
     this.emit('status', this.status())
+    this.startTailingLog()
 
-    child.stdout?.on('data', (chunk: Buffer) => this.pushLog(chunk.toString(), false))
-    child.stderr?.on('data', (chunk: Buffer) => this.pushLog(chunk.toString(), true))
     child.on('error', (error) => {
       this.pushLog(`进程错误:${error.message}`, true)
       console.error('[harness] 托管进程启动失败:', error.message)
@@ -403,6 +418,9 @@ export class HarnessManager extends EventEmitter {
     const deadline = Date.now() + 180000
     for (;;) {
       if (this.stopRequested || this.child === null) return
+      // 每轮同步读一次托管输出:token 就藏在其中一行里,必须在探测成功前拿到。
+      // 放在轮询里而不是定时器里 —— 就绪判定本身就依赖它(没有 token 时 probe 恒 401)。
+      this.readManagedOutputOnce()
       const ok = await client.probe(12000)
       if (this.stopRequested || this.child === null) return
       if (ok) {
@@ -423,6 +441,32 @@ export class HarnessManager extends EventEmitter {
     }
   }
 
+  /**
+   * 同步读取托管输出文件中尚未消费的部分并交给 pushLog。
+   *
+   * 由就绪轮询每轮调用一次;不依赖定时器,避免"文件明明有 token 但没被读到"。
+   */
+  private readManagedOutputOnce(): void {
+    const logPath = this.managedLogPath
+    if (logPath === null) return
+    let size: number
+    try { size = statSync(logPath).size } catch { return }
+    if (size <= this.logTailOffset) return
+    let fd: number | null = null
+    try {
+      fd = openSync(logPath, 'r')
+      const len = size - this.logTailOffset
+      const buf = Buffer.allocUnsafe(len)
+      const read = readSync(fd, buf, 0, len, this.logTailOffset)
+      this.logTailOffset += read
+      this.pushLog(buf.subarray(0, read).toString('utf8'), false)
+    } catch (error) {
+      this.log(`[harness] 读取托管输出失败:${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      if (fd !== null) { try { closeSync(fd) } catch { /* 忽略 */ } }
+    }
+  }
+
   private async killChild(): Promise<void> {
     const child = this.child
     this.child = null
@@ -435,6 +479,35 @@ export class HarnessManager extends EventEmitter {
       setTimeout(resolve, 4000)
     })
     this.managedPid = null
+    this.stopTailingLog()
+  }
+
+  /** 托管进程输出文件所在目录(临时目录下,避免污染用户数据目录)。 */
+  private runtimeDir(): string {
+    const dir = join(tmpdir(), 'dsh-desktop-harness')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  /**
+   * 启动对托管输出的定时读取。
+   *
+   * 不依赖定时器保证正确性:就绪轮询每轮也会同步调用一次 readManagedOutputOnce,
+   * 这里是让启动期的输出能及时进入日志。用轮询而不是 fs.watch —— Windows 上
+   * fs.watch 在子进程持有写句柄时行为不稳定,而启动期输出量很小。
+   */
+  private startTailingLog(): void {
+    this.stopTailingLog()
+    this.logTailTimer = setInterval(() => this.readManagedOutputOnce(), 250)
+    // 不阻止进程退出。
+    this.logTailTimer.unref?.()
+  }
+
+  private stopTailingLog(): void {
+    if (this.logTailTimer !== null) {
+      clearInterval(this.logTailTimer)
+      this.logTailTimer = null
+    }
   }
 
   private pushLog(line: string, isError: boolean): void {
