@@ -193,9 +193,18 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('notifications:getConfig', () => deps.config.get().notifications)
   ipcMain.handle('notifications:setConfig', (_event, patch: object) => deps.config.update('notifications', patch))
   // ---- 用量报告(QQ/PWA/桌面端共用同一统计) ----
-  ipcMain.handle('usage:report', () => {
+  ipcMain.handle('usage:report', async () => {
     if (!harnessReady()) return null
-    return deps.commands?.usageReport() ?? null
+    // 状态栏每 10 秒轮询一次,而它连带的 session.list 在会话多时非常慢。
+    // 失败返回 null(界面显示占位),不要把异常抛回渲染层 —— 否则主进程日志里
+    // 会每 10 秒出现一条 "Error occurred in handler for 'usage:report'",
+    // 既淹没真正的错误,也让人以为应用坏了。
+    try {
+      return (await deps.commands?.usageReport()) ?? null
+    } catch (error) {
+      console.error('[usage] 报表构建失败:', error instanceof Error ? error.message : String(error))
+      return null
+    }
   })
   ipcMain.handle('interactions:list', () => deps.commands?.pendingInteractions() ?? [])
   ipcMain.handle('interactions:respondApproval', (_event, sessionId: string, approvalId: string, outcome: 'allowed-once' | 'rejected') => deps.commands?.respondApprovalDesktop(sessionId, approvalId, outcome) ?? '不可用')

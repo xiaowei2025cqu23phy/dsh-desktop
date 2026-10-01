@@ -602,6 +602,9 @@ function makeHarness(log) {
   check('导出-markdown 含消息', exported.markdown.includes('你好') && exported.markdown.includes('嗨!'), true)
   check('导出-条数', exported.count, 2)
   // 用量
+  // 用量报表带 30 秒缓存(为挡住状态栏的 10 秒轮询);本段在同一次运行里连续注入不同
+  // 数据并断言不同结果,必须显式失效,否则第二次读到的是第一次的缓存。
+  processor.invalidateUsageReport()
   const usage = await processor.handleText('telegram', '42', '用量', undefined)
   check('用量-今日会话', usage.includes('今日会话:1 个'), true)
   check('用量-回合', usage.includes('回合'), true)
@@ -623,12 +626,15 @@ function makeHarness(log) {
     type: 'server-request', rpcId: 'r-gu', method: 'session/event',
     payload: { sessionId: 'session-test-1', event: { type: 'assistant/chunk', data: { chunk: { type: 'usage', usage: { inputTokens: 500, outputTokens: 250, cacheReadTokens: 0 } } } } },
   })
+  // 上面刚注入了新的 usage/模型事件 → 失效缓存后再取,断言才反映本次注入。
+  processor.invalidateUsageReport()
   const report = await processor.usageReport()
   check('用量-模型分组', report.byModel.some((m) => m.provider === 'deepseek' && m.model === 'deepseek-v4-pro' && m.input === 1000 && m.output === 2000 && m.cache === 100 && m.calls === 1), true)
   check('用量-同会话切模型分开', report.byModel.some((m) => m.provider === 'google' && m.model === 'gemini-3.6-flash' && m.input === 500 && m.output === 250 && m.calls === 1), true)
   check('用量-费用估算', report.cost.total > 0, true)
   check('用量-倍率默认1', report.prices.multiplier, 1)
   check('用量-费用计算', report.cost.total, (1500 / 1e6 * 2 + 2250 / 1e6 * 8 + 100 / 1e6 * 0.5))
+  processor.invalidateUsageReport()
   check('用量-文本含费用', (await processor.handleText('telegram', '42', '用量', undefined)).includes('💰'), true)
 }
 

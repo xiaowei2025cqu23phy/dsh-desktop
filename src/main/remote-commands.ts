@@ -282,6 +282,23 @@ export interface SessionStopResult {
   message: string
 }
 
+/** 用量与费用报表(命令端 / PWA / 桌面端状态栏共用同一份结构)。 */
+export interface UsageReport {
+  todaySessions: number
+  totalSessions: number
+  todayTurns: number
+  totalTurns: number
+  todayLlmMs: number
+  totalLlmMs: number
+  tokens: { input: number; output: number; cache: number; total: number }
+  byModel: Array<{ provider: string; model: string; input: number; output: number; cache: number; calls: number }>
+  cost: { input: number; output: number; cache: number; total: number }
+  prices: { inputPerM: number; outputPerM: number; cachePerM: number; multiplier: number }
+  todayList: Array<{ title: string; turns: number }>
+  /** 预算判定(仅在设置了上限且为全局报表时给出;未设预算时 null)。 */
+  budget: BudgetStatus | null
+}
+
 export class RemoteCommandProcessor {
   private chatContexts = new Map<string, ChatContext>()
   /** 所有会话的进程内运行时状态(owner/任务描述/token/回复/播报/跟随等,统一淘汰)。 */
@@ -1692,23 +1709,47 @@ export class RemoteCommandProcessor {
   }
 
   /** 用量与费用估算(结构化;命令端与 PWA 共用)。owner 提供时按发起者过滤(机器人命令),桌面端/PWA 传 undefined 看全量。 */
-  async usageReport(owner?: Pick<SessionOwner, 'channel' | 'userId'>): Promise<{
-    todaySessions: number
-    totalSessions: number
-    todayTurns: number
-    totalTurns: number
-    todayLlmMs: number
-    totalLlmMs: number
-    tokens: { input: number; output: number; cache: number; total: number }
-    byModel: Array<{ provider: string; model: string; input: number; output: number; cache: number; calls: number }>
-    cost: { input: number; output: number; cache: number; total: number }
-    prices: { inputPerM: number; outputPerM: number; cachePerM: number; multiplier: number }
-    todayList: Array<{ title: string; turns: number }>
-    /** 预算判定(仅在设置了上限且为全局报表时给出;未设预算时 null)。 */
-    budget: BudgetStatus | null
-  }> {
+  async usageReport(owner?: Pick<SessionOwner, 'channel' | 'userId'>): Promise<UsageReport> {
+    // session.list 随会话数线性变慢(实测 233 个会话时单次要 20–110 秒)。它本来被
+    // 每 10 秒轮询一次的状态栏用量调用,于是同一时刻堆叠多个重查询,互相把 harness
+    // 拖慢 —— 表现为列表要一分钟才出来、网关转发超时。
+    // 两道闸:①同一时刻只允许一个在飞,后来者复用它的结果;②结果缓存 30 秒。
+    const now0 = Date.now()
+    if (this.usageReportCache !== null && now0 - this.usageReportCache.at < 30000) {
+      return this.usageReportCache.value
+    }
+    if (this.usageReportInFlight !== null) return this.usageReportInFlight
+    const flight = this.buildUsageReport(owner)
+    this.usageReportInFlight = flight
+    try {
+      const value = await flight
+      this.usageReportCache = { at: Date.now(), value }
+      return value
+    } finally {
+      this.usageReportInFlight = null
+    }
+  }
+
+  /** 最近一次成功构建的用量报表(含时间戳),用于避免重复打重查询。 */
+  private usageReportCache: { at: number; value: UsageReport } | null = null
+  /** 正在构建中的用量报表;并发调用复用同一个 Promise,不重复发请求。 */
+  private usageReportInFlight: Promise<UsageReport> | null = null
+
+  /**
+   * 丢弃用量缓存的下一帧。
+   *
+   * 缓存是为了挡住状态栏的 10 秒轮询,但**新事件到达后必须失效**,否则用户刚跑完
+   * 一轮,token 统计要等最多 30 秒才更新。测试里也用它取得确定性(同一毫秒内多次
+   * 调用要能看到不同的注入数据)。
+   */
+  invalidateUsageReport(): void {
+    this.usageReportCache = null
+  }
+
+  private async buildUsageReport(owner?: Pick<SessionOwner, 'channel' | 'userId'>): Promise<UsageReport> {
     const client = this.harness.client()
-    const list = await client.rpc<{ items: Array<{ sessionId: string; updatedAt?: number; title?: string | null; projections?: { values?: { sessionStats?: { turns?: number; llmMs?: number } } } }> }>('session.list', {}, 20000)
+    // 超时按真实耗时给足(此前 20 秒必超时);仍然设上限,避免永久挂住。
+    const list = await client.rpc<{ items: Array<{ sessionId: string; updatedAt?: number; title?: string | null; projections?: { values?: { sessionStats?: { turns?: number; llmMs?: number } } } }> }>('session.list', {}, 180000)
     const items = (list.items ?? []).filter((s) => owner === undefined || this.ownedByOwner(owner, s.sessionId))
     const now = new Date()
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()

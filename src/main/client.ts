@@ -100,7 +100,7 @@ export class HarnessClient {
       try {
         const response = await fetch(`${this.baseUrl}/?token=${encodeURIComponent(token)}`, {
           redirect: 'manual',
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(20000),
         })
         const setCookie = response.headers.get('set-cookie')
         if (setCookie !== null) {
@@ -155,40 +155,35 @@ export class HarnessClient {
    * 业务错误码而非 404——这种响应同样确认协议(参数形状不影响探测)。
    */
   async probe(timeoutMs = 12000): Promise<boolean> {
-    // 协议已协商过:只探测当前协议对应的端点,避免每次重启探测都重试
-    // 两个候选(会话多时 session.list 较重,反复探测会拖慢 waitReady)。
-    if (this.protocolBox.value !== null) {
-      const [wireName, payload] = this.protocolBox.value === 'slash'
-        ? ['session/list', { args: { _request: {} } } as unknown]
-        : ['session.list', {}]
-      try {
-        await this.rpcRaw(wireName, payload, timeoutMs)
-        return true
-      } catch (error) {
-        this.probeFailure = error instanceof HarnessError
-          ? { code: error.code, message: error.message }
-          : { code: 'unknown', message: String(error) }
+    // ⚠ 探针**不能**用 session/list:它随会话数线性变慢。实测在 233 个会话的实例上
+    // 稳定耗时 19–20 秒(每次都如此,不只首次),而探针超时是 12 秒 —— 于是 harness
+    // 明明已经起来、也能正常服务,却被判为"未就绪",180 秒后报错并重启,永久循环。
+    //
+    // 改用 `GET /`(带已登录 cookie):它只校验服务在听且 cookie 被接受,实测 15ms。
+    // 未鉴权时返回 401,这正好是对"token 还没读到"的如实反馈,不会假报成功。
+    await this.login()
+    try {
+      const response = await fetch(`${this.baseUrl}/`, {
+        redirect: 'manual',
+        signal: AbortSignal.timeout(timeoutMs),
+        ...(this.cookie !== null ? { headers: { cookie: this.cookie } } : {}),
+      })
+      if (response.status === 401) {
+        // cookie 可能因服务重启而失效:清掉后下一轮会重新登录。
+        this.cookie = null
+        this.probeFailure = { code: 'unauthorized', message: 'HTTP 401 on /' }
         return false
       }
+      // 200/30x 都说明服务在正常应答。
+      // 顺带定下协议:0.1.2-rc.1+ 一律斜杠协议,首次会话建立时(见 login 后的
+      // rpcRaw 协商)若发现是点协议会被纠正,这里只是给个正确概率更高的初值。
+      if (this.protocolBox.value === null) this.protocolBox.value = 'slash'
+      this.probeFailure = null
+      return true
+    } catch (error) {
+      this.probeFailure = { code: 'unknown', message: String(error) }
+      return false
     }
-    for (const [candidate, isSlash] of [['session/list', true], ['session.list', false]] as const) {
-      try {
-        await this.rpcRaw(candidate, isSlash ? { args: { _request: {} } } : {}, timeoutMs)
-        this.protocolBox.value = isSlash ? 'slash' : 'dot'
-        return true
-      } catch (error) {
-        if (isSlash && error instanceof HarnessError &&
-          (error.code === 'gateway/arguments-invalid' || error.code === 'gateway/internal')) {
-          // 端点存在(参数形状无关紧要):官方协议确认。
-          this.protocolBox.value = 'slash'
-          return true
-        }
-        this.probeFailure = error instanceof HarnessError
-          ? { code: error.code, message: error.message }
-          : { code: 'unknown', message: String(error) }
-      }
-    }
-    return false
   }
 
   /** 最近一次 probe 的失败详情(null = 成功或从未探测);401 表示需要 launch token。 */

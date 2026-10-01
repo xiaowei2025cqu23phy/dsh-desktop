@@ -391,7 +391,9 @@ export class HarnessManager extends EventEmitter {
    */
   private async resolveOccupiedInstance(): Promise<'adopt' | 'auth' | 'occupied' | null> {
     const client = this.client()
-    const ok = await client.probe(8000)
+    // 这里探的是"已占用端口上跑的是不是可用 dsh"。probe 现在用 GET /,代价极低,
+    // 给足超时避免把慢响应误判成"不是 dsh"而错误地另起一个进程。
+    const ok = await client.probe(20000)
     if (this.stopRequested) return null
     if (ok) {
       this.state = this.config.mode === 'external' ? 'external' : 'running'
@@ -413,15 +415,16 @@ export class HarnessManager extends EventEmitter {
   /** 轮询探测直到就绪或超时。 */
   private async waitReady(): Promise<void> {
     const client = this.client()
-    // 冷启动实测可达 92 秒(npx 解析 + 官方 0.1.2 首启),90 秒超时太紧;
-    // 放宽到 180 秒并记录失败时的 token 捕获状态,便于诊断。
-    const deadline = Date.now() + 180000
+    // 冷启动实测可达 92 秒(npx 解析 + 官方 0.1.2 首启),90 秒超时太紧。
+    // 再放宽到 300 秒:首次拉取一个全新版本(npx 冷下载)实测可超过 180 秒,
+    // 而"没等到"的代价是整个 harness 被判失败并重启,代价远大于多等一会。
+    const deadline = Date.now() + 300000
     for (;;) {
       if (this.stopRequested || this.child === null) return
       // 每轮同步读一次托管输出:token 就藏在其中一行里,必须在探测成功前拿到。
       // 放在轮询里而不是定时器里 —— 就绪判定本身就依赖它(没有 token 时 probe 恒 401)。
       this.readManagedOutputOnce()
-      const ok = await client.probe(12000)
+      const ok = await client.probe(30000)
       if (this.stopRequested || this.child === null) return
       if (ok) {
         this.state = 'running'
@@ -432,8 +435,8 @@ export class HarnessManager extends EventEmitter {
       }
       if (Date.now() > deadline) {
         this.state = 'error'
-        this.error = '托管服务在 180 秒内未就绪,请查看日志'
-        console.error('[harness] 托管服务 180 秒未就绪;launchToken=' + String(this.launchTokenValue !== null))
+        this.error = '托管服务在 300 秒内未就绪,请查看日志'
+        console.error('[harness] 托管服务 300 秒未就绪;launchToken=' + String(this.launchTokenValue !== null))
         this.emit('status', this.status())
         return
       }
@@ -498,7 +501,16 @@ export class HarnessManager extends EventEmitter {
    */
   private startTailingLog(): void {
     this.stopTailingLog()
-    this.logTailTimer = setInterval(() => this.readManagedOutputOnce(), 250)
+    // 只在还没拿到 token 时轮询:harness 启动后输出基本静止,拿到令牌后再每 250ms
+    // 打开一次文件纯属浪费(它会让任务管理器看到持续的磁盘活动,也会掩盖真正的异常)。
+    // 就绪轮询每轮本来就会补一次同步读取,这里只是让启动期的输出更早进入日志。
+    this.logTailTimer = setInterval(() => {
+      if (this.launchTokenValue !== null || this.child === null) {
+        this.stopTailingLog()
+        return
+      }
+      this.readManagedOutputOnce()
+    }, 250)
     // 不阻止进程退出。
     this.logTailTimer.unref?.()
   }

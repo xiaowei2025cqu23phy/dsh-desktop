@@ -225,6 +225,9 @@ if (!gotLock) {
     // 审批/提问等交互帧转发给命令核心(应答走 /api/respond,与 PWA 同一路径)。
     events.subscribe((frame) => {
       commands.handleInteractionFrame(frame)
+      // 会话事件到达 → 用量统计必然变化,丢掉缓存的报表。否则用户刚跑完一轮,
+      // 状态栏 token 数最多要 30 秒后才更新(缓存是为挡住 10 秒轮询加的重查询)。
+      commands.invalidateUsageReport()
       const payload = frame.payload !== null && typeof frame.payload === 'object' ? frame.payload as Record<string, unknown> : {}
       if (frame.method === 'approval/requested') notifications.show('approval', '需要审批', `会话 ${String(payload.sessionId ?? '').slice(0, 16)} 等待工具审批`)
       if (frame.method === 'question/requested') notifications.show('question', '需要回答', `会话 ${String(payload.sessionId ?? '').slice(0, 16)} 等待你的选择`)
