@@ -7,7 +7,7 @@
 
 | 项目 | 值 |
 | --- | --- |
-| 桌面端版本 | 0.6.1 |
+| 桌面端版本 | 0.6.2 |
 | 官方 harness(`@deepseek-ai/dsh`) | **0.1.7-rc.2**(`next` 渠道) |
 | 协议形态 | typert 斜杠协议(`_request` / `request` 参数壳自动协商) |
 | 运行方式 | 托管启动 `npx --yes @deepseek-ai/dsh@next web --port {port} --no-open` |
@@ -97,7 +97,7 @@ one complete ordered attempt; source v0 artifact remains unchanged
 只会在 end-seed 恰好落进消息窗口时触发。如果你遇到同样的报错,先按上面的方式核对起点
 是不是 `session/end-seed` 之类的结构性事件 —— 是的话改声明即可,不需要重编号,也不需要重建会话。
 
-## 四、已知的打包陷阱(与本项目相关,已在 0.6.1 修复)
+## 四、已知的打包陷阱(与本项目相关,已在 0.6.2 修复)
 
 - **`ws` 未随 SDK 解包**:`@tencent-connect/qqbot-nodejs` 被 `asarUnpack` 解到磁盘,
   而它的唯一运行时依赖 `ws` 留在 asar 里;SDK 是从磁盘路径加载的,沿文件系统向上找
