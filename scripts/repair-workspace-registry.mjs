@@ -12,14 +12,21 @@
  *  - 只往**已登记的**工作区里补,不新建工作区(id 由 harness 生成,自造 id 有风险);
  *  - 最长的 path 前缀优先,避免 AppData 抢走它的子目录。
  *
- * 用法:node scripts/repair-workspace-registry.mjs [--apply]
+ * 另有 `--create`:为「目录存在、但从未登记为工作区」的路径新建工作区
+ * (用于会话存在而工作区被删干净的情况)。缺目录的路径**不会**新建 —— 那只会得到
+ * 一个指向不存在目录的空工作区。新建时 id 用 `crypto.randomUUID()`,与既有 id 同形态;
+ * title 取 path 末段,重名时加 -2/-3 后缀。
+ *
+ * 用法:node scripts/repair-workspace-registry.mjs [--apply] [--create]
  *   不带 --apply 时只报告将发生的改动(dry-run)。
  */
 import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { randomUUID } from 'node:crypto'
 
 const APPLY = process.argv.includes('--apply')
+const CREATE = process.argv.includes('--create')
 const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
 const REG = join(dshHome, 'storages', 'workspace.json')
 
@@ -95,12 +102,45 @@ console.log('  合计补充: ' + total + ' 个会话')
 console.log('  已正确归属(不动): ' + alreadyOk)
 console.log('  无法归属(跳过): ' + skippedNoCwd.length)
 
+// ---- 可选:为「目录存在但从未登记」的路径新建工作区 ----
+// 只处理目录仍然存在的路径:为一个不存在的目录建工作区,只会得到空壳。
+const creations = []
+if (CREATE) {
+  const noHome = new Map() // path -> sessionId[]
+  for (const id of skippedNoCwd) {
+    const s = sessions.find((x) => x.id === id)
+    if (s === undefined || s.cwd === null || s.cwd === '') continue
+    if (!noHome.has(s.cwd)) noHome.set(s.cwd, [])
+    noHome.get(s.cwd).push(id)
+  }
+  const takenTitles = new Set(Object.values(rows).map((r) => r.title))
+  const takenKeys = new Set(Object.values(rows).map((r) => normPath(r.path)))
+  for (const [cwd, ids] of noHome) {
+    if (!existsSync(cwd)) continue
+    if (takenKeys.has(normPath(cwd))) continue
+    const seg = String(cwd).split(/[\\/]/).filter(Boolean).pop() ?? cwd
+    let title = seg
+    for (let n = 2; takenTitles.has(title); n++) title = seg + '-' + n
+    takenTitles.add(title)
+    creations.push({ path: cwd, title, sessionIds: ids })
+  }
+  console.log('')
+  console.log('=== 将新建的工作区(仅目录存在者)===')
+  let createdSessions = 0
+  for (const c of creations) {
+    console.log('  +' + String(c.sessionIds.length).padStart(3) + ' 会话  ' + c.title.padEnd(30) + c.path)
+    createdSessions += c.sessionIds.length
+  }
+  console.log('  ---')
+  console.log('  新建工作区: ' + creations.length + ' 个,覆盖会话 ' + createdSessions + ' 个')
+}
+
 if (!APPLY) {
   console.log('')
   console.log('(dry-run;加 --apply 才会写入)')
   process.exit(0)
 }
-if (total === 0) {
+if (total === 0 && creations.length === 0) {
   console.log('')
   console.log('无需修改。')
   process.exit(0)
@@ -113,8 +153,17 @@ copyFileSync(REG, backup)
 console.log('')
 console.log('已备份: ' + backup)
 
-// 写入(只追加,不改动既有条目)
 const now = new Date().toISOString()
+
+// 新建工作区:字段与既有条目完全一致(id 用 randomUUID,同形态)
+for (const c of creations) {
+  const id = randomUUID()
+  rows[id] = { path: c.path, title: c.title, sessionIds: c.sessionIds, createdAt: now, updatedAt: now }
+  if (Array.isArray(reg.global?.workspaceIds)) reg.global.workspaceIds.push(id)
+  console.log('新建工作区 ' + c.title + '  (' + id + ')')
+}
+
+// 写入(只追加,不改动既有条目)
 for (const [id, sids] of additions) {
   const row = rows[id]
   row.sessionIds = [...(row.sessionIds ?? []), ...sids]
