@@ -895,7 +895,9 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
    *  in case or trailing slash yet be the same directory). */
   function groupKey(path) {
     if (!path) return ''
-    var p = String(path).replace(/[\\/]+$/, '')
+    // 统一分隔符后再小写:同一个目录可能以 `C:\x` 与 `C:/x` 两种形式出现,
+    // 只判 `/^[A-Za-z]:/` 会让正斜杠形式漏掉小写化,于是同一工作区裂成两个桶。
+    var p = String(path).replace(/\\/g, '/').replace(/\/+$/, '')
     return /^[A-Za-z]:/.test(p) ? p.toLowerCase() : p
   }
 
@@ -977,16 +979,16 @@ import { applyWallpaper, loadDiagnostics, loadInteractions, loadPwaQueue, loadTa
       rest.forEach(function (s) {
         var key = groupKey(s.cwd)
         if (key !== '') {
-          // A session created in a preset root's descendant, or a cwd with a
-          // differing case/trailing slash, still belongs to the matching
-          // workspace; only true non-project sessions fall to "recent".
+          // 会话建在预设根的子目录里、或 cwd 大小写/结尾斜杠不同,仍算那个工作区;
+          // 只有真正不属于任何项目的会话才落到「最近」。
+          // groupKey 已把分隔符统一成 `/`,所以这里一律用 `/` 判前缀。
           var ws = byPath[key]
           if (ws) { ws.sessions.push(s); return }
           var root = rootByPath[key]
           if (root) { root.sessions.push(s); return }
-          var inside = workspaces.find(function (w) { return key.indexOf(groupKey(w.path) + '\\') === 0 || key.indexOf(groupKey(w.path) + '/') === 0 })
+          var inside = workspaces.find(function (w) { var wk = groupKey(w.path); return wk !== '' && key.indexOf(wk + '/') === 0 })
           if (inside !== undefined) { inside.sessions.push(s); return }
-          var insideRoot = presetRoots.find(function (r) { return key.indexOf(groupKey(r.path) + '\\') === 0 || key.indexOf(groupKey(r.path) + '/') === 0 })
+          var insideRoot = presetRoots.find(function (r) { var rk = groupKey(r.path); return rk !== '' && key.indexOf(rk + '/') === 0 })
           if (insideRoot !== undefined) { insideRoot.sessions.push(s); return }
         }
         unmatched.push(s)

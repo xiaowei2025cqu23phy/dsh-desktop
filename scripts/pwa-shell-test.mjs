@@ -87,6 +87,25 @@ for (const [label, needle] of markers) {
   check(`产物保留:${label}`, bundle.includes(needle), true)
 }
 
+// ---- 4b. 工作区分组键必须统一分隔符 ----
+// 同一个目录在会话 cwd 与工作区 path 里可能分别写成 `C:\x` 与 `C:/x`。
+// groupKey 只对 `/^[A-Za-z]:/` 的输入小写化,如果不在小写化之前统一分隔符,
+// 正斜杠形式就会漏掉小写化 → 同一个工作区在侧栏裂成两个桶。
+// 这里直接抽出产物里的 groupKey 实现来跑边界用例(不依赖浏览器)。
+const groupKeyMatch = /function groupKey\(path\)\s*\{[\s\S]*?\n {2}\}/.exec(bundle)
+check('产物可提取 groupKey', groupKeyMatch !== null, true)
+if (groupKeyMatch !== null) {
+  // eslint-disable-next-line no-new-func -- 测试需要执行产物里的实现
+  const groupKey = new Function(`${groupKeyMatch[0]}; return groupKey`)()
+  check('groupKey 反斜杠形式', groupKey('C:\\Users\\x'), 'c:/users/x')
+  check('groupKey 正斜杠形式', groupKey('C:/Users/x'), 'c:/users/x')
+  check('groupKey 两种形式同键', groupKey('C:\\Users\\x') === groupKey('C:/Users/x'), true)
+  check('groupKey 结尾斜杠归一', groupKey('C:/Users/x/'), 'c:/users/x')
+  check('groupKey 大小写归一', groupKey('C:/Users/X') === groupKey('c:/users/x'), true)
+  check('groupKey 空输入', groupKey(''), '')
+  check('groupKey 非盘符路径保留大小写', groupKey('\\\\server\\Share'), '//server/Share')
+}
+
 // ---- 5. 每个模块都被打包进去 ----
 for (const file of sourceFiles) {
   const text = readFileSync(file, 'utf8')
